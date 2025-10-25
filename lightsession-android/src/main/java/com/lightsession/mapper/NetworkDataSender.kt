@@ -55,7 +55,7 @@ class NetworkDataSender : DataSender {
         height: Int,
         appVersionCode: Int,
         appVersionName: String,
-        theme: String // Novo parâmetro
+        theme: String
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             if (apiKey.isEmpty()) {

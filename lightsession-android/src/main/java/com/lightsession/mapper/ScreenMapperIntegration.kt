@@ -56,6 +56,29 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         return lastScreen
     }
 
+    fun getCurrentScreenId(): String? {
+        val screenName = lastScreen ?: return null
+        val activity = currentActivityWeakRef?.get() ?: return null
+        if (activity.isFinishing || activity.isDestroyed) return null
+        return try {
+            val appVersionCode = getAppVersionCode()
+            val appVersionName = getAppVersionName()
+            val displayMetrics = activity.resources.displayMetrics
+            val theme = getCurrentTheme(activity)
+            generateScreenID(
+                screenName = screenName,
+                appVersionName = appVersionName,
+                appVersionCode = appVersionCode,
+                width = displayMetrics.widthPixels,
+                height = displayMetrics.heightPixels,
+                theme = theme
+            )
+        } catch (e: Exception) {
+            Log.e("ScreenMapper", "Error generating current screen ID", e)
+            null
+        }
+    }
+
     private val navigationFlows = mutableListOf<NavigationFlow>()
     private val utils = Utils()
     private val screenDrawing = ScreenDrawing()

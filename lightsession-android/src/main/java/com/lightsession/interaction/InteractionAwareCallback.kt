@@ -185,6 +185,14 @@ class InteractionAwareCallback(
                         put("points", interactionPointsToJson(currentInteractionPoints)) // ← Coordenadas escaladas
                         put("start_time", gestureStartTime)
                         put("end_time", gestureEndTime)
+                        try {
+                            val screenId = ScreenMapperIntegration.getInstance().getCurrentScreenId()
+                            if (screenId != null) {
+                                put("screen_id", screenId)
+                            }
+                        } catch (e: Exception) {
+                            Log.e("InteractionCallback", "Error obtaining screen_id", e)
+                        }
                     }.toString()
 
                     try {

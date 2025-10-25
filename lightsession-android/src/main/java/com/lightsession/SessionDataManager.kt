@@ -131,6 +131,7 @@ class SessionDataManager(
         val targetElementType: String? = null,
         val resourceId: String? = null,
         val screen: String,
+        val screenId: String? = null,
         val coordinates: Coordinates,
         val duration: Long? = null,
         val path: List<Coordinates>? = null, // For swipe gestures
@@ -322,6 +323,7 @@ class SessionDataManager(
             val startTime = jsonObject.getLong("start_time")
             val endTime = jsonObject.getLong("end_time")
             val pointsArray = jsonObject.getJSONArray("points")
+            val screenId = jsonObject.optString("screen_id", null)
 
             // Extract screen and coordinates from the first point
             var screen = ""
@@ -351,6 +353,7 @@ class SessionDataManager(
                 targetElementType = null,
                 resourceId = null,
                 screen = screen,
+                screenId = screenId,
                 coordinates = coordinates.firstOrNull() ?: Coordinates(0f, 0f),
                 duration = endTime - startTime,
                 path = if (type == "SWIPE" && coordinates.size > 1) coordinates else null,
@@ -581,6 +584,7 @@ class SessionDataManager(
                         put("user_id", JsonPrimitive(userId ?: "unknown"))
                         put("user_type", JsonPrimitive(userType))
                         put("app_version", JsonPrimitive(appVersion))
+                        interaction.screenId?.let { sid -> put("screen_id", JsonPrimitive(sid)) }
 
                         if (interaction.rawInteractionData != null) {
                             val rawObject = Json.parseToJsonElement(interaction.rawInteractionData).jsonObject
