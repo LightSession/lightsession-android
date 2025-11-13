@@ -189,7 +189,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         return when (uiMode) {
             Configuration.UI_MODE_NIGHT_YES -> "Dark"
             Configuration.UI_MODE_NIGHT_NO -> "Light"
-            Configuration.UI_MODE_NIGHT_UNDEFINED -> "Undefined" // ou "Light" como padrão se preferir
+            Configuration.UI_MODE_NIGHT_UNDEFINED -> "Undefined"
             else -> "Unknown"
         }
     }
@@ -505,9 +505,12 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         )
 
         val flowKey = "$fromScreenId->$toScreenId"
-        if (cacheManager.isFlowSent(flowKey)) {
+        val flowCacheKey = generateCacheKey(flowKey)
+
+        if (cacheManager.isFlowSent(flowCacheKey)) {
             Log.d("ScreenMapper", "Navigation flow already mapped: $flowKey (skipping)")
-            if (!cacheManager.isScreenFullyCaptured(toScreenId.toString())) {
+            val toCacheKey = generateCacheKey(toScreenId.toString())
+            if (!cacheManager.isScreenFullyCaptured(toCacheKey)) {
                 isScreenshotScheduledForCurrentScreen = true
                 scheduleScreenshot()
             } else {
@@ -525,7 +528,8 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             }
         }
 
-        if (!cacheManager.isScreenFullyCaptured(to)) {
+        val toCacheKey = generateCacheKey(to)
+        if (!cacheManager.isScreenFullyCaptured(toCacheKey)) {
             isScreenshotScheduledForCurrentScreen = true
             scheduleScreenshot()
         } else {
@@ -555,20 +559,22 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             val screenWidth = displayMetrics.widthPixels
             val screenHeight = displayMetrics.heightPixels
 
-            if (!cacheManager.isScreenSent(to)) {
+            val screenId = generateScreenID(
+                screenName = to,
+                appVersionName = appVersionName,
+                appVersionCode = appVersionCode,
+                width = screenWidth,
+                height = screenHeight,
+                theme = currentTheme
+            )
+            val screenCacheKey = generateCacheKey(screenId)
+
+            if (!cacheManager.isScreenSent(screenCacheKey)) {
                 screenNodes[to]?.let { toNode ->
                     val (skeletonScreenBase64, _) = screenDrawing.generateRandomSkeletonScreenAsBase64()
 
                     if (skeletonScreenBase64 != null) {
                         // Use activity dimensions, NOT skeleton dimensions
-                        val screenId = generateScreenID(
-                            screenName = to,
-                            appVersionName = appVersionName,
-                            appVersionCode = appVersionCode,
-                            width = screenWidth,
-                            height = screenHeight,
-                            theme = currentTheme
-                        )
 
                         val result = dataSender?.sendScreenData(
                             screenId = screenId,
@@ -583,7 +589,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                         )
 
                         if (result?.isSuccess == true) {
-                            cacheManager.markScreenAsSent(screenId, false)
+                            cacheManager.markScreenAsSent(screenCacheKey, false)
                             Log.d("ScreenMapper", "Placeholder screen sent for: $screenId (${screenWidth}x${screenHeight})")
                         } else {
                             Log.e("ScreenMapper", "Failed to send placeholder screen for: $to", result?.exceptionOrNull())
@@ -622,8 +628,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             )
 
             val flowKey = "$fromScreenId->$toScreenId"
+            val flowCacheKey = generateCacheKey(flowKey)
             if (flowResult?.isSuccess == true) {
-                cacheManager.markFlowAsSent(flowKey)
+                cacheManager.markFlowAsSent(flowCacheKey)
                 Log.d("ScreenMapper", "Navigation flow sent and cached: $flowKey")
             } else {
                 Log.e("ScreenMapper", "Failed to send navigation flow", flowResult?.exceptionOrNull())
@@ -731,7 +738,8 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                             )
 
                             if (result?.isSuccess == true) {
-                                cacheManager.markScreenAsSent(screenId, true)
+                                val screenCacheKey = generateCacheKey(screenId)
+                                cacheManager.markScreenAsSent(screenCacheKey, true)
                                 Log.d("ScreenMapper", "Real screenshot sent and cached for: $screenId")
                             } else {
                                 Log.e("ScreenMapper", "Failed to send real screenshot", result?.exceptionOrNull())
@@ -787,6 +795,19 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             height,
             theme
         )
+    }
+
+    /**
+     * Generates a cache key that includes the API key to ensure cache invalidation
+     * when the API key changes. This is used for cache lookups only.
+     *
+     * @param screenId The screen ID generated by generateScreenID
+     * @return A cache key that includes the API key
+     */
+    private fun generateCacheKey(screenId: String): String {
+        val apiKey = dataSender?.getApiKey() ?: ""
+        val apiKeyHash = if (apiKey.isNotEmpty()) apiKey.take(8) else "nokey"
+        return "${screenId}_${apiKeyHash}"
     }
 }
 

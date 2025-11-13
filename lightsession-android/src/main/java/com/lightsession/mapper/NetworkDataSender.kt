@@ -46,6 +46,10 @@ class NetworkDataSender : DataSender {
         Log.d(TAG, "API Key configured: ${apiKey.take(8)}...")
     }
 
+    override fun getApiKey(): String {
+        return apiKey
+    }
+
     override suspend fun sendScreenData(
         screenId: String,
         screenName: String,

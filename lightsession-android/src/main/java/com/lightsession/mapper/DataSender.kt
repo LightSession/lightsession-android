@@ -3,6 +3,7 @@ package com.lightsession.mapper
 interface DataSender {
     fun setBaseUrl(url: String)
     fun setApiKey(apiKey: String)
+    fun getApiKey(): String
 
     suspend fun sendScreenData(
         screenId: String,
