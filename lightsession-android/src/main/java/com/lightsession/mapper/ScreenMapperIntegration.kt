@@ -408,8 +408,11 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             routes.add(screenName)
         }
 
-        lastScreen?.let { fromScreen ->
-            trackNavigationFlow(fromScreen, screenName)
+        if (lastScreen != null) {
+            trackNavigationFlow(lastScreen!!, screenName)
+        } else {
+            // First screen - send it as initial screen without navigation flow
+            sendInitialScreen(screenName, ScreenType.ACTIVITY, activity)
         }
 
         lastScreen = screenName
@@ -426,8 +429,14 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             routes.add(screenName)
         }
 
-        lastScreen?.let { fromScreen ->
-            trackNavigationFlow(fromScreen, screenName)
+        if (lastScreen != null) {
+            trackNavigationFlow(lastScreen!!, screenName)
+        } else {
+            // First screen - send it as initial screen without navigation flow
+            val activity = currentActivityWeakRef?.get()
+            if (activity != null) {
+                sendInitialScreen(screenName, ScreenType.CONVENTIONAL, activity)
+            }
         }
 
         lastScreen = screenName
@@ -441,8 +450,14 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             routes.add(route)
         }
 
-        lastScreen?.let { fromScreen ->
-            trackNavigationFlow(fromScreen, screenName)
+        if (lastScreen != null) {
+            trackNavigationFlow(lastScreen!!, screenName)
+        } else {
+            // First screen - send it as initial screen without navigation flow
+            val activity = currentActivityWeakRef?.get()
+            if (activity != null) {
+                sendInitialScreen(screenName, ScreenType.COMPOSE, activity)
+            }
         }
         lastScreen = screenName
     }
@@ -469,10 +484,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         val appVersionCode = getAppVersionCode()
         val appVersionName = getAppVersionName()
 
-        // Usando 'run' para agrupar as variáveis e garantir que não são nulas antes de prosseguir
         val screenParams = currentActivityWeakRef?.get()?.run {
             val metrics = resources?.displayMetrics
-            val theme = getCurrentTheme(this) // 'this' é a Activity aqui
+            val theme = getCurrentTheme(this)
 
             if (metrics != null && theme != null) {
                 ScreenParams(metrics, theme)
@@ -524,7 +538,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
         currentActivityWeakRef?.get()?.let { activity ->
             (activity as? ComponentActivity)?.lifecycleScope?.launch {
-                sendNavigationData(from, to, activity) // Passa a activity
+                sendNavigationData(from, to, activity)
             }
         }
 
@@ -637,6 +651,80 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             }
         } catch (e: Exception) {
             Log.e("ScreenMapper", "Error sending data to server", e)
+        }
+    }
+
+    /**
+     * Sends the initial screen data to the server.
+     * This is called when the first screen is detected (lastScreen is null).
+     * It sends the screen without a navigation flow.
+     *
+     * @param screenName The name of the screen.
+     * @param screenType The type of the screen (ACTIVITY, CONVENTIONAL, or COMPOSE).
+     * @param activity The activity reference to get context and theme.
+     */
+    private fun sendInitialScreen(screenName: String, screenType: ScreenType, activity: Activity) {
+        val scope = (activity as? ComponentActivity)?.lifecycleScope ?: return
+
+        scope.launch {
+            try {
+                val appVersionCode = getAppVersionCode()
+                val appVersionName = getAppVersionName()
+                val currentTheme = getCurrentTheme(activity)
+
+                // Get dimensions from activity
+                val displayMetrics = activity.resources.displayMetrics
+                val screenWidth = displayMetrics.widthPixels
+                val screenHeight = displayMetrics.heightPixels
+
+                val screenId = generateScreenID(
+                    screenName = screenName,
+                    appVersionName = appVersionName,
+                    appVersionCode = appVersionCode,
+                    width = screenWidth,
+                    height = screenHeight,
+                    theme = currentTheme
+                )
+                val screenCacheKey = generateCacheKey(screenId)
+
+                if (!cacheManager.isScreenSent(screenCacheKey)) {
+                    val (skeletonScreenBase64, _) = screenDrawing.generateRandomSkeletonScreenAsBase64()
+
+                    if (skeletonScreenBase64 != null) {
+                        val result = dataSender?.sendScreenData(
+                            screenId = screenId,
+                            screenName = screenName,
+                            screenType = screenType,
+                            bitmapBase64 = skeletonScreenBase64,
+                            width = screenWidth,
+                            height = screenHeight,
+                            appVersionCode = appVersionCode,
+                            appVersionName = appVersionName,
+                            theme = currentTheme
+                        )
+
+                        if (result?.isSuccess == true) {
+                            cacheManager.markScreenAsSent(screenCacheKey, false)
+                            Log.d("ScreenMapper", "Initial screen sent: $screenId (${screenWidth}x${screenHeight})")
+                        } else {
+                            Log.e("ScreenMapper", "Failed to send initial screen: $screenName", result?.exceptionOrNull())
+                        }
+                    } else {
+                        Log.e("ScreenMapper", "Failed to generate skeleton for initial screen")
+                    }
+                }
+
+                // Schedule screenshot for the initial screen
+                val toCacheKey = generateCacheKey(screenId)
+                if (!cacheManager.isScreenFullyCaptured(toCacheKey)) {
+                    isScreenshotScheduledForCurrentScreen = true
+                    scheduleScreenshot()
+                } else {
+                    Log.d("ScreenMapper", "Initial screen $screenName already fully captured. Skipping screenshot.")
+                }
+            } catch (e: Exception) {
+                Log.e("ScreenMapper", "Error sending initial screen data to server", e)
+            }
         }
     }
 
@@ -817,15 +905,14 @@ fun NavHostController.withNavigationTracking(): NavHostController {
         try {
             ScreenMapperIntegration.getInstance().registerComposeNavController(this@withNavigationTracking)
         } catch (e: Exception) {
-            Log.e("ComposeExtensions", "Error registering Navcontroller", e)
+            Log.e("ComposeExtensions", "Error registering NavController", e)
         }
     }
 
     DisposableEffect(this) {
         onDispose {
             try {
-                ScreenMapperIntegration.getInstance()
-                    .unregisterComposeNavController(this@withNavigationTracking)
+                ScreenMapperIntegration.getInstance().unregisterComposeNavController(this@withNavigationTracking)
             } catch (e: Exception) {
                 Log.e("ComposeExtensions", "Erro ao desregistrar NavController", e)
             }

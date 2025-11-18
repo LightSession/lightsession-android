@@ -60,7 +60,7 @@ class SessionDataManager(
     // Sequence tracking
     private val globalSequenceCounter = AtomicInteger(0)
     private val frameSequenceCounter = AtomicInteger(0)
-    private var baseUrl: String = "http://192.168.0.114:5000" // Default para emulador
+    private var baseUrl: String = "http://192.168.0.105:5000" // Default para emulador
 
 
     // Statistics
@@ -654,7 +654,7 @@ class SessionDataManager(
 
         return try {
             val request = Request.Builder()
-                .url("http://192.168.0.114:3001/api/v1/ipinfo")
+                .url("http://192.168.0.105:3001/api/v1/ipinfo")
                 .get()
                 .build()
 
