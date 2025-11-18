@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 
 class NetworkDataSender : DataSender {
 
-    private var baseUrl: String = "http://192.168.0.114:3001/api/v1/screenmapper" // Default para emulador
+    private var baseUrl: String = "http://192.168.0.105:3001/api/v1/screenmapper"
     private var apiKey: String = ""
 
     private val client: OkHttpClient by lazy {
@@ -107,7 +107,7 @@ class NetworkDataSender : DataSender {
         height: Int,
         appVersionCode: Int,
         appVersionName: String,
-        theme: String // Novo parâmetro
+        theme: String
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             if (apiKey.isEmpty()) {
@@ -121,7 +121,7 @@ class NetworkDataSender : DataSender {
                 put("height", height)
                 put("appVersionCode", appVersionCode)
                 put("appVersionName", appVersionName)
-                put("theme", theme) // Adicionado ao body
+                put("theme", theme)
                 put("timestamp", System.currentTimeMillis())
             }
 
