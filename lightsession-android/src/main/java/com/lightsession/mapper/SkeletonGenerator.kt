@@ -1,11 +1,13 @@
 package com.lightsession.mapper
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.drawable.*
 import android.os.Build
 import android.util.Base64
@@ -26,7 +28,7 @@ import androidx.compose.ui.tooling.data.asTree
 import androidx.core.view.children
 import java.io.ByteArrayOutputStream
 import androidx.core.graphics.createBitmap
-
+import radiography.ExperimentalRadiographyComposeApi
 class SkeletonGenerator {
 
     private data class SkeletonNode(
@@ -34,6 +36,7 @@ class SkeletonGenerator {
         val type: NodeType,
         val color: Int,
         val style: Paint.Style,
+        val name: String? = null, // 🆕 ADICIONADO: Nome real do composable ou View
         val children: List<SkeletonNode> = emptyList()
     )
 
@@ -41,17 +44,17 @@ class SkeletonGenerator {
         CONTAINER, TEXT, IMAGE, INPUT, BUTTON, WEBVIEW, COMPOSE_HOST, UNKNOWN, CARD
     }
 
-    private val defaultColors = mapOf(
-        NodeType.CONTAINER to Color.parseColor("#E0E0E0"),
+    private val defaultColors: Map<NodeType, Int> = mapOf(
+        NodeType.CONTAINER to -0x1f1f20, // #E0E0E0
         NodeType.TEXT to Color.DKGRAY,
-        NodeType.IMAGE to Color.parseColor("#BDBDBD"),
-        NodeType.INPUT to Color.parseColor("#E0E0E0"),
-        NodeType.BUTTON to Color.parseColor("#6200EE"),
+        NodeType.IMAGE to -0x424243, // #BDBDBD
+        NodeType.INPUT to -0x1f1f20, // #E0E0E0
+        NodeType.BUTTON to -0x9dff3200, // #6200EE
         NodeType.UNKNOWN to Color.TRANSPARENT,
         NodeType.CARD to Color.WHITE,
         NodeType.WEBVIEW to Color.LTGRAY,
         NodeType.COMPOSE_HOST to Color.TRANSPARENT
-    )
+    ) as Map<NodeType, Int>
 
     /**
      * Detecta se a Activity contém uma tela Compose.
@@ -89,7 +92,7 @@ class SkeletonGenerator {
                 rootView.postDelayed({
                     val bitmap = generateSkeletonBitmapSync(activity, rootView)
                     onComplete(bitmap)
-                }, 1000) // 300ms para dar tempo da recomposição
+                }, 1000)
             } else {
                 val bitmap = generateSkeletonBitmapSync(activity, rootView)
                 onComplete(bitmap)
@@ -168,13 +171,10 @@ class SkeletonGenerator {
 
         val childrenNodes = mutableListOf<SkeletonNode>()
 
-        // DETECÇÃO DE COMPOSE - A forma correta usando Radiography technique!
         if (isComposeView(view)) {
-            Log.d("SkeletonGenerator", "AndroidComposeView detected! Scanning using UI Tooling API...")
             val composeNodes = scanComposeHierarchyUsingTooling(view)
             childrenNodes.addAll(composeNodes)
         } else if (view is ViewGroup) {
-            // View Android tradicional
             view.children.forEach { childView ->
                 scanViewHierarchy(childView)?.let { childrenNodes.add(it) }
             }
@@ -183,7 +183,14 @@ class SkeletonGenerator {
         val type = determineNodeType(view)
         val (color, style) = extractVisuals(view, type)
 
-        return SkeletonNode(rect, type, color, style, childrenNodes)
+        // 🆕 CORREÇÃO: Armazena o nome da View Android também
+        val viewName = if (isComposeView(view)) {
+            "AndroidComposeView"
+        } else {
+            view.javaClass.simpleName
+        }
+
+        return SkeletonNode(rect, type, color, style, viewName, childrenNodes)
     }
 
     /**
@@ -217,41 +224,26 @@ class SkeletonGenerator {
     }
 
     /**
-     * AQUI ESTÁ A MÁGICA! 🎉
      * Usa a mesma técnica do Radiography para escanear Compose usando UI Tooling API
      */
     @OptIn(UiToolingDataApi::class)
     private fun scanComposeHierarchyUsingTooling(composeView: View): List<SkeletonNode> {
         try {
-            // 1. Acessar mKeyedTags via reflection
-            val keyedTags = composeView.getKeyedTags() ?: run {
-                Log.w("SkeletonGenerator", "Could not access mKeyedTags")
-                return emptyList()
-            }
-
-            // 2. Encontrar a Composition
-            val composition = keyedTags.findComposition() ?: run {
-                Log.w("SkeletonGenerator", "Could not find Composition")
-                return emptyList()
-            }
-
-            // 3. Unwrap se necessário
+            val keyedTags = composeView.getKeyedTags() ?: return emptyList()
+            val composition = keyedTags.findComposition() ?: return emptyList()
             val actualComposition = composition.unwrap()
+            val composer = actualComposition.getComposer() ?: return emptyList()
 
-            // 4. Extrair o Composer
-            val composer = actualComposition.getComposer() ?: run {
-                Log.w("SkeletonGenerator", "Could not get Composer")
-                return emptyList()
-            }
+            val rootGroup = composer.compositionData.asTree()
 
-            // 5. USAR A TOOLING API! (A linha mágica)
-            val compositionData = composer.compositionData
-            val rootGroup = compositionData.asTree()
+            // Usa a função computeLayoutInfos do Radiography
+            // Passamos null para semanticsOwner pois não é estritamente necessário para o esqueleto
+            val layoutInfos = rootGroup.computeLayoutInfos(semanticsOwner = null)
 
-            Log.d("SkeletonGenerator", "Successfully extracted Compose tree!")
+            Log.d("SkeletonGen", "Found ${layoutInfos.count()} layout infos")
 
-            // 6. Parsear a árvore de Groups
-            return parseGroupTree(rootGroup)
+            // Converte ComposeLayoutInfo para SkeletonNode
+            return layoutInfos.map { convertLayoutInfoToSkeletonNode(it) }.toList()
 
         } catch (e: Exception) {
             Log.e("SkeletonGenerator", "Failed to scan Compose hierarchy using Tooling API", e)
@@ -260,8 +252,64 @@ class SkeletonGenerator {
     }
 
     /**
-     * Acessa o campo privado mKeyedTags do View
+     * Converte ComposeLayoutInfo para SkeletonNode
      */
+    private fun convertLayoutInfoToSkeletonNode(layoutInfo: ComposeLayoutInfo): SkeletonNode {
+        return when (layoutInfo) {
+            is ComposeLayoutInfo.LayoutNodeInfo -> {
+                val rect = Rect(
+                    layoutInfo.bounds.left,
+                    layoutInfo.bounds.top,
+                    layoutInfo.bounds.right,
+                    layoutInfo.bounds.bottom
+                )
+                val type = determineComposeNodeType(layoutInfo.name)
+                val color = defaultColors[type] ?: Color.LTGRAY
+                val style = if (type == NodeType.CONTAINER) Paint.Style.STROKE else Paint.Style.FILL
+
+                val children = layoutInfo.children.map { convertLayoutInfoToSkeletonNode(it) }.toMutableList()
+
+                SkeletonNode(
+                    rect = rect,
+                    type = type,
+                    color = color,
+                    style = style,
+                    name = layoutInfo.name.ifEmpty { null },
+                    children = children
+                )
+            }
+            is ComposeLayoutInfo.SubcompositionInfo -> {
+                val rect = Rect(
+                    layoutInfo.bounds.left,
+                    layoutInfo.bounds.top,
+                    layoutInfo.bounds.right,
+                    layoutInfo.bounds.bottom
+                )
+                val children = layoutInfo.children.map { convertLayoutInfoToSkeletonNode(it) }.toMutableList()
+
+                SkeletonNode(
+                    rect = rect,
+                    type = NodeType.CONTAINER,
+                    color = defaultColors[NodeType.CONTAINER] ?: Color.LTGRAY,
+                    style = Paint.Style.STROKE,
+                    name = layoutInfo.name.ifEmpty { null },
+                    children = children
+                )
+            }
+            is ComposeLayoutInfo.AndroidViewInfo -> {
+                // Para AndroidView, escaneia a view Android recursivamente
+                scanViewHierarchy(layoutInfo.view) ?: SkeletonNode(
+                    rect = Rect(),
+                    type = NodeType.UNKNOWN,
+                    color = Color.TRANSPARENT,
+                    style = Paint.Style.FILL,
+                    name = "AndroidView"
+                )
+            }
+        }
+    }
+
+    @SuppressLint("PrivateApi")
     private fun View.getKeyedTags(): SparseArray<*>? {
         return try {
             val field = View::class.java.getDeclaredField("mKeyedTags")
@@ -273,9 +321,6 @@ class SkeletonGenerator {
         }
     }
 
-    /**
-     * Encontra a Composition no SparseArray
-     */
     private fun SparseArray<*>.findComposition(): Composition? {
         for (i in 0 until size()) {
             val value = valueAt(i)
@@ -286,9 +331,6 @@ class SkeletonGenerator {
         return null
     }
 
-    /**
-     * Desempacota WrappedComposition
-     */
     private fun Composition.unwrap(): Composition {
         val className = this::class.java.name
         if (className != "androidx.compose.ui.platform.WrappedComposition") {
@@ -306,9 +348,6 @@ class SkeletonGenerator {
         }
     }
 
-    /**
-     * Extrai o Composer da Composition
-     */
     private fun Composition.getComposer(): Composer? {
         val className = this::class.java.name
         if (className != "androidx.compose.runtime.CompositionImpl") {
@@ -328,29 +367,36 @@ class SkeletonGenerator {
     }
 
     /**
-     * Parseia recursivamente a árvore de Groups do Compose
+     * 🆕 CORREÇÃO PRINCIPAL: Parseia recursivamente a árvore de Groups ACUMULANDO o callChain
      */
     @OptIn(UiToolingDataApi::class)
-    private fun parseGroupTree(group: Group): List<SkeletonNode> {
-        val result = mutableListOf<SkeletonNode>()
+    private fun parseGroupTree(group: Group, parentCallChain: List<String>): List<SkeletonNode> {
+        // 🆕 Acumula o nome deste grupo no callChain
+        val callChain: List<String> = if (group.name != null) {
+            parentCallChain + group.name!!
+        } else {
+            parentCallChain
+        }
 
-        // NodeGroup = algo que desenha na tela (LayoutNode)
+        // Se é NodeGroup, cria um SkeletonNode
         if (group is NodeGroup) {
             val bounds = group.box
 
-            // Ignora grupos com bounds inválidos
+            // Ignora grupos com bounds inválidos (mas processa filhos)
             if (bounds.width > 0 && bounds.height > 0) {
                 val rect = Rect(bounds.left, bounds.top, bounds.right, bounds.bottom)
-                val type = determineComposeNodeType(group)
-                val color = defaultColors[type] ?: Color.LTGRAY
 
-                // Determina o estilo: FILL para elementos visíveis, STROKE apenas para containers grandes
+                // 🆕 CHAVE: Usa o PRIMEIRO nome do callChain
+                val name = callChain.firstOrNull() ?: ""
+                val type = determineComposeNodeType(name)
+                val color: Int = defaultColors[type] ?: Color.LTGRAY
+
+                // Determina o estilo
                 val style = when (type) {
                     NodeType.TEXT, NodeType.BUTTON, NodeType.IMAGE, NodeType.INPUT -> Paint.Style.FILL
                     NodeType.CONTAINER -> {
-                        // Se o container é pequeno ou tem nome específico, usa FILL, senão STROKE
-                        val name = group.name?.lowercase() ?: ""
-                        if ("card" in name || "surface" in name || bounds.width * bounds.height < 500000) {
+                        val nameLower = name.lowercase()
+                        if ("card" in nameLower || "surface" in nameLower || bounds.width * bounds.height < 500000) {
                             Paint.Style.FILL
                         } else {
                             Paint.Style.STROKE
@@ -359,41 +405,44 @@ class SkeletonGenerator {
                     else -> Paint.Style.STROKE
                 }
 
-                // Recursivamente processa filhos
-                val children = group.children.flatMap { parseGroupTree(it) }.toMutableList()
+                // 🆕 CORREÇÃO: Recursivamente processa filhos, MAS RESETA O CALLCHAIN
+                val children = group.children.flatMap {
+                    parseGroupTree(it, emptyList())
+                }.toMutableList()
 
-                result.add(SkeletonNode(
+                return listOf(SkeletonNode(
                     rect = rect,
                     type = type,
                     color = color,
                     style = style,
+                    name = name.ifEmpty { null }, // 🆕 Armazena o nome real
                     children = children
                 ))
-            }
-        } else {
-            // Não é NodeGroup, apenas processa filhos
-            group.children.forEach { child ->
-                result.addAll(parseGroupTree(child))
+            } else {
+                // Bounds inválido, só processa filhos
+                return group.children.flatMap {
+                    parseGroupTree(it, emptyList())
+                }
             }
         }
-
-        return result
+        return group.children.flatMap { child ->
+            parseGroupTree(child, callChain)
+        }
     }
 
     /**
-     * Determina o tipo de um composable baseado no nome
+     * 🆕 CORREÇÃO: Agora recebe String em vez de NodeGroup
      */
-    @OptIn(UiToolingDataApi::class)
-    private fun determineComposeNodeType(group: NodeGroup): NodeType {
-        val name = group.name?.lowercase() ?: ""
+    private fun determineComposeNodeType(name: String): NodeType {
+        val nameLower = name.lowercase()
 
         return when {
-            "text" in name && "field" !in name -> NodeType.TEXT
-            "textfield" in name || "outlinedtextfield" in name || "basictextfield" in name -> NodeType.INPUT
-            "button" in name || "iconbutton" in name || "floatingactionbutton" in name -> NodeType.BUTTON
-            "image" in name || "icon" in name -> NodeType.IMAGE
-            "box" in name || "column" in name || "row" in name ||
-            "surface" in name || "card" in name || "scaffold" in name -> NodeType.CONTAINER
+            "text" in nameLower && "field" !in nameLower -> NodeType.TEXT
+            "textfield" in nameLower || "outlinedtextfield" in nameLower || "basictextfield" in nameLower -> NodeType.INPUT
+            "button" in nameLower || "iconbutton" in nameLower || "floatingactionbutton" in nameLower -> NodeType.BUTTON
+            "image" in nameLower || "icon" in nameLower -> NodeType.IMAGE
+            "box" in nameLower || "column" in nameLower || "row" in nameLower ||
+                    "surface" in nameLower || "card" in nameLower || "scaffold" in nameLower -> NodeType.CONTAINER
             else -> NodeType.CONTAINER
         }
     }
@@ -462,30 +511,18 @@ class SkeletonGenerator {
 
         // 6. FALLBACKS
         if (type == NodeType.CONTAINER) {
-            return Pair(defaultColors[NodeType.CONTAINER]!!, Paint.Style.STROKE)
+            return Pair(defaultColors[NodeType.CONTAINER] ?: Color.LTGRAY, Paint.Style.STROKE)
         }
 
         return Pair(defaultColors[type] ?: Color.LTGRAY, Paint.Style.FILL)
     }
 
     /**
-     * Renderiza a hierarquia de views como texto ASCII art, similar ao Radiography.scan()
-     * Útil para debug e comparação com o output do Radiography
-     *
-     * Exemplo de output:
-     * MainActivity:
-     * window-focus:true
-     *  DecorView { 1080×2400px, pos:(0,0), color:#FFFFFFFF, fill }
-     *  ╰─LinearLayout { 1080×2400px, pos:(0,0), color:#E0E0E0, stroke }
-     *    ├─AndroidComposeView { 1080×2148px, pos:(0,252), fill }
-     *    │ ╰─Column { 1080×2148px, pos:(0,252), color:#LTGRAY, stroke }
-     *    │   ├─Text { 200×40px, pos:(440,600), color:#DKGRAY, fill }
-     *    │   ╰─Button { 300×100px, pos:(390,700), color:#6200EE, fill }
+     * Renderiza a hierarquia de views como texto ASCII art
      */
     fun renderHierarchyAsText(): String {
         val activity = getCurrentActivity() ?: return "Nenhuma Activity encontrada no momento"
 
-        // Pega a view raiz da janela (decorView)
         val rootView = activity.window?.decorView ?: return "Window/decorView não disponível"
 
         if (rootView.width <= 0 || rootView.height <= 0) {
@@ -501,12 +538,11 @@ class SkeletonGenerator {
             appendLine("  window focus: ${rootView.hasWindowFocus()}")
             appendLine("  root view: ${rootView.javaClass.simpleName} (${rootView.width}×${rootView.height})")
 
-            // Aqui você renderiza a árvore
             renderNodeAsText(
                 node = skeletonTree,
                 depth = 0,
                 isLast = true,
-                parentIsLast = booleanArrayOf() // ou use MutableList<Boolean> se preferir
+                parentIsLast = booleanArrayOf()
             )
         }
     }
@@ -517,7 +553,7 @@ class SkeletonGenerator {
         isLast: Boolean,
         parentIsLast: BooleanArray
     ) {
-        // Adiciona o non-breaking space no início (igual ao Radiography usa \u00a0)
+        // Non-breaking space no início
         append('\u00a0')
 
         // Desenha as linhas verticais dos pais
@@ -530,41 +566,36 @@ class SkeletonGenerator {
             append(if (isLast) "╰─" else "├─")
         }
 
-        // Nome do tipo
-        val typeName = when (node.type) {
+        // 🆕 CORREÇÃO: Usa o nome real ou fallback para o tipo
+        val displayName = node.name ?: when (node.type) {
             NodeType.TEXT -> "Text"
             NodeType.BUTTON -> "Button"
             NodeType.IMAGE -> "Image"
             NodeType.INPUT -> "TextField"
             NodeType.CONTAINER -> "Container"
             NodeType.WEBVIEW -> "WebView"
+            NodeType.CARD -> "Card"
+            NodeType.COMPOSE_HOST -> "AndroidComposeView"
             NodeType.UNKNOWN -> "Unknown"
-            else -> {}
         }
-        append(typeName)
+        append(displayName)
 
         // Atributos
         append(" { ")
         val attributes = mutableListOf<String>()
 
-        // Dimensões
         val width = node.rect.width()
         val height = node.rect.height()
         attributes.add("${width}×${height}px")
-
-        // Posição (x,y)
         attributes.add("pos:(${node.rect.left},${node.rect.top})")
 
-        // Cor (em hex)
         if (node.color != Color.TRANSPARENT) {
             val colorHex = String.format("#%08X", node.color)
             attributes.add("color:$colorHex")
         }
 
-        // Estilo
         attributes.add(if (node.style == Paint.Style.FILL) "fill" else "stroke")
 
-        // Número de filhos
         if (node.children.isNotEmpty()) {
             attributes.add("children:${node.children.size}")
         }
@@ -574,18 +605,14 @@ class SkeletonGenerator {
         appendLine()
 
         // Renderiza filhos recursivamente
-        val children = node.children
-        children.forEachIndexed { index, child ->
-            val childIsLast = (index == children.size - 1)
+        node.children.forEachIndexed { index, child ->
+            val childIsLast = (index == node.children.size - 1)
             val newParentIsLast = parentIsLast.copyOf(depth + 1)
             newParentIsLast[depth] = isLast
             renderNodeAsText(child, depth + 1, childIsLast, newParentIsLast)
         }
     }
 
-    /**
-     * Função recursiva para achar a cor dentro de Drawables complexos
-     */
     private fun extractColorFromDrawable(drawable: Drawable?): Int? {
         if (drawable == null) return null
 
@@ -614,7 +641,6 @@ class SkeletonGenerator {
             }
         }
 
-        // RippleDrawable (API 21+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && drawable is RippleDrawable) {
             if (drawable.numberOfLayers > 0) {
                 return extractColorFromDrawable(drawable.getDrawable(0))
@@ -636,7 +662,7 @@ class SkeletonGenerator {
      * Renderiza a árvore no canvas
      */
     private fun renderTreeToCanvas(node: SkeletonNode, canvas: Canvas) {
-        // Não desenha nós transparentes (como AndroidComposeView container)
+        // Não desenha nós transparentes
         if (node.color != Color.TRANSPARENT) {
             val paint = Paint().apply {
                 color = node.color
@@ -647,58 +673,33 @@ class SkeletonGenerator {
 
             when (node.type) {
                 NodeType.TEXT -> {
-                    // Textos são retângulos preenchidos com cor cinza escuro
                     paint.style = Paint.Style.FILL
                     canvas.drawRect(node.rect, paint)
                 }
                 NodeType.BUTTON -> {
-                    // Botões são retângulos arredondados preenchidos
                     paint.style = Paint.Style.FILL
-                    canvas.drawRoundRect(
-                        node.rect.left.toFloat(),
-                        node.rect.top.toFloat(),
-                        node.rect.right.toFloat(),
-                        node.rect.bottom.toFloat(),
-                        16f, 16f, paint
-                    )
+                    val rectF = RectF(node.rect)
+                    canvas.drawRoundRect(rectF, 16f, 16f, paint)
                 }
                 NodeType.IMAGE -> {
-                    // Imagens são ovais preenchidos
                     paint.style = Paint.Style.FILL
-                    canvas.drawOval(
-                        node.rect.left.toFloat(),
-                        node.rect.top.toFloat(),
-                        node.rect.right.toFloat(),
-                        node.rect.bottom.toFloat(),
-                        paint
-                    )
+                    val rectF = RectF(node.rect)
+                    canvas.drawOval(rectF, paint)
                 }
                 NodeType.INPUT -> {
-                    // Inputs são retângulos com fundo claro e borda
-                    // Primeiro desenha o fundo
+                    // Fundo
                     paint.style = Paint.Style.FILL
-                    paint.color = Color.parseColor("#F5F5F5")
-                    canvas.drawRoundRect(
-                        node.rect.left.toFloat(),
-                        node.rect.top.toFloat(),
-                        node.rect.right.toFloat(),
-                        node.rect.bottom.toFloat(),
-                        8f, 8f, paint
-                    )
-                    // Depois desenha a borda
+                    paint.color = -0x0a0a0b // #F5F5F5
+                    val rectF = RectF(node.rect)
+                    canvas.drawRoundRect(rectF, 8f, 8f, paint)
+
+                    // Borda
                     paint.style = Paint.Style.STROKE
                     paint.color = node.color
                     paint.strokeWidth = 2f
-                    canvas.drawRoundRect(
-                        node.rect.left.toFloat(),
-                        node.rect.top.toFloat(),
-                        node.rect.right.toFloat(),
-                        node.rect.bottom.toFloat(),
-                        8f, 8f, paint
-                    )
+                    canvas.drawRoundRect(rectF, 8f, 8f, paint)
                 }
                 NodeType.CONTAINER, NodeType.CARD -> {
-                    // Containers: se for FILL, preenche, senão apenas contorno
                     canvas.drawRect(node.rect, paint)
                 }
                 else -> {
