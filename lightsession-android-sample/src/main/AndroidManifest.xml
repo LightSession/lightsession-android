@@ -29,6 +29,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name="com.sample.lightsession.ComposeActivity"
+            android:exported="false" />
+        <activity
+            android:name="com.sample.lightsession.ComposeWithNavigationActivity"
+            android:exported="false" />
     </application>
 
 </manifest>

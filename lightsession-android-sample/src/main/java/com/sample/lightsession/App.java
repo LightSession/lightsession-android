@@ -12,8 +12,8 @@ public class App extends Application {
         super.onCreate();
 
         LightSessionConfig config = new LightSessionConfig(
-                "1ef80924561895395e71b7f8dbe3eba7d1d5fc43",
-                false,
+                "fd149df7c02e32cec9f2b735cd1d35cbf30f6027",
+                true,
                 LightSessionConfig.CaptureQuality.MEDIUM
         );
 

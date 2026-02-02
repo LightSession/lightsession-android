@@ -23,6 +23,7 @@ public class SecondActivity extends AppCompatActivity {
 
         colorChangingView = findViewById(R.id.colorChangingViewSegunda);
         Button backButton = findViewById(R.id.backButton);
+        Button goToComposeButton = findViewById(R.id.goToComposeButton);
 
         backButton.setOnClickListener(v -> {
             finish();
@@ -33,6 +34,12 @@ public class SecondActivity extends AppCompatActivity {
             // eventProperties.put("from_screen", "SecondActivity");
             // LightSession.getInstance().trackEvent("Navigation Back", eventProperties);
             // --- FIM NOVO ---
+        });
+
+        // Botão para navegar para a tela em Jetpack Compose
+        goToComposeButton.setOnClickListener(v -> {
+            android.content.Intent intent = new android.content.Intent(SecondActivity.this, ComposeWithNavigationActivity.class);
+            startActivity(intent);
         });
 
         // Cria um Runnable para mudar a cor periodicamente (com cores diferentes da primeira tela)
