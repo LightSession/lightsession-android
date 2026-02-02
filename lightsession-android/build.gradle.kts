@@ -65,6 +65,9 @@ dependencies {
     api("androidx.compose.material:material")
     api("androidx.compose.material3:material3")
 
+    // Compose UI Tooling Data for skeleton generation (required for accessing Compose hierarchy)
+    implementation("androidx.compose.ui:ui-tooling-data")
+    implementation("com.squareup.radiography:radiography:2.7")
     testImplementation(libs.junit)
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
@@ -75,7 +78,7 @@ publishing {
         create<MavenPublication>("release") {
             groupId = "com.lightsession"
             artifactId = "lightsession-android"
-            version = "0.1.3-alpha"
+            version = "0.1.11-alpha"
 
             afterEvaluate {
                 from(components["release"])

@@ -51,6 +51,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
     private var sessionDataManager: SessionDataManager? = null
 
+    private val skeletonGenerator = SkeletonGenerator()
 
     fun getCurrentScreen(): String? {
         return lastScreen
@@ -542,8 +543,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             }
         }
 
-        val toCacheKey = generateCacheKey(to)
-        if (!cacheManager.isScreenFullyCaptured(toCacheKey)) {
+        // Use toScreenId instead of just 'to' for cache key consistency
+        val toCacheKey = toScreenId?.let { generateCacheKey(it) }
+        if (toCacheKey != null && !cacheManager.isScreenFullyCaptured(toCacheKey)) {
             isScreenshotScheduledForCurrentScreen = true
             scheduleScreenshot()
         } else {
@@ -568,7 +570,6 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             val appVersionName = getAppVersionName()
             val currentTheme = getCurrentTheme(activity)
 
-            // Get dimensions from activity - USE THIS FOR ALL SCREEN IDs
             val displayMetrics = activity.resources.displayMetrics
             val screenWidth = displayMetrics.widthPixels
             val screenHeight = displayMetrics.heightPixels
@@ -585,31 +586,35 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
             if (!cacheManager.isScreenSent(screenCacheKey)) {
                 screenNodes[to]?.let { toNode ->
-                    val (skeletonScreenBase64, _) = screenDrawing.generateRandomSkeletonScreenAsBase64()
-
-                    if (skeletonScreenBase64 != null) {
-                        // Use activity dimensions, NOT skeleton dimensions
-
-                        val result = dataSender?.sendScreenData(
-                            screenId = screenId,
-                            screenName = to,
-                            screenType = toNode.type,
-                            bitmapBase64 = skeletonScreenBase64,
-                            width = screenWidth,
-                            height = screenHeight,
-                            appVersionCode = appVersionCode,
-                            appVersionName = appVersionName,
-                            theme = currentTheme
-                        )
-
-                        if (result?.isSuccess == true) {
-                            cacheManager.markScreenAsSent(screenCacheKey, false)
-                            Log.d("ScreenMapper", "Placeholder screen sent for: $screenId (${screenWidth}x${screenHeight})")
-                        } else {
-                            Log.e("ScreenMapper", "Failed to send placeholder screen for: $to", result?.exceptionOrNull())
+                    skeletonGenerator.generateSkeletonBitmap(activity) { skeletonBitmap ->
+                        val skeletonScreenBase64 = skeletonBitmap?.let {
+                            skeletonGenerator.bitmapToBase64(it)
                         }
-                    } else {
-                        Log.e("ScreenMapper", "Failed to generate skeleton")
+
+                        if (skeletonScreenBase64 != null) {
+                            (activity as? ComponentActivity)?.lifecycleScope?.launch {
+                                val result = dataSender?.sendScreenData(
+                                    screenId = screenId,
+                                    screenName = to,
+                                    screenType = toNode.type,
+                                    bitmapBase64 = skeletonScreenBase64,
+                                    width = screenWidth,
+                                    height = screenHeight,
+                                    appVersionCode = appVersionCode,
+                                    appVersionName = appVersionName,
+                                    theme = currentTheme
+                                )
+
+                                if (result?.isSuccess == true) {
+                                    cacheManager.markScreenAsSent(screenCacheKey, false)
+                                    Log.d("ScreenMapper", "Skeleton screen sent for: $screenId (${screenWidth}x${screenHeight})")
+                                } else {
+                                    Log.e("ScreenMapper", "Failed to send skeleton screen for: $to", result?.exceptionOrNull())
+                                }
+                            }
+                        } else {
+                            Log.e("ScreenMapper", "Failed to generate skeleton")
+                        }
                     }
                 }
             }
@@ -688,29 +693,35 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                 val screenCacheKey = generateCacheKey(screenId)
 
                 if (!cacheManager.isScreenSent(screenCacheKey)) {
-                    val (skeletonScreenBase64, _) = screenDrawing.generateRandomSkeletonScreenAsBase64()
-
-                    if (skeletonScreenBase64 != null) {
-                        val result = dataSender?.sendScreenData(
-                            screenId = screenId,
-                            screenName = screenName,
-                            screenType = screenType,
-                            bitmapBase64 = skeletonScreenBase64,
-                            width = screenWidth,
-                            height = screenHeight,
-                            appVersionCode = appVersionCode,
-                            appVersionName = appVersionName,
-                            theme = currentTheme
-                        )
-
-                        if (result?.isSuccess == true) {
-                            cacheManager.markScreenAsSent(screenCacheKey, false)
-                            Log.d("ScreenMapper", "Initial screen sent: $screenId (${screenWidth}x${screenHeight})")
-                        } else {
-                            Log.e("ScreenMapper", "Failed to send initial screen: $screenName", result?.exceptionOrNull())
+                    skeletonGenerator.generateSkeletonBitmap(activity) { skeletonBitmap ->
+                        val skeletonScreenBase64 = skeletonBitmap?.let {
+                            skeletonGenerator.bitmapToBase64(it)
                         }
-                    } else {
-                        Log.e("ScreenMapper", "Failed to generate skeleton for initial screen")
+
+                        if (skeletonScreenBase64 != null) {
+                            scope.launch {
+                                val result = dataSender?.sendScreenData(
+                                    screenId = screenId,
+                                    screenName = screenName,
+                                    screenType = screenType,
+                                    bitmapBase64 = skeletonScreenBase64,
+                                    width = screenWidth,
+                                    height = screenHeight,
+                                    appVersionCode = appVersionCode,
+                                    appVersionName = appVersionName,
+                                    theme = currentTheme
+                                )
+
+                                if (result?.isSuccess == true) {
+                                    cacheManager.markScreenAsSent(screenCacheKey, false)
+                                    Log.d("ScreenMapper", "Initial skeleton screen sent: $screenId (${screenWidth}x${screenHeight})")
+                                } else {
+                                    Log.e("ScreenMapper", "Failed to send initial skeleton screen: $screenName", result?.exceptionOrNull())
+                                }
+                            }
+                        } else {
+                            Log.e("ScreenMapper", "Failed to generate skeleton for initial screen")
+                        }
                     }
                 }
 
@@ -757,7 +768,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                 delay(2500)
 
                 if (isActive) {
-                    takeScreenshot(activity)
+
                 } else {
                     Log.d("ScreenMapper", "Screenshot action was canceled before execution for ${activity.javaClass.simpleName}.")
                 }
@@ -847,8 +858,6 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             isScreenshotScheduledForCurrentScreen = false
         }
     }
-
-    // Removida a função getApplicationId() pois não será usada no ScreenID
 
     /**
      * Generates a composite screen ID including screen name, app version, dimensions, and theme.

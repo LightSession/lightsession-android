@@ -28,7 +28,8 @@ import androidx.compose.ui.tooling.data.asTree
 import androidx.core.view.children
 import java.io.ByteArrayOutputStream
 import androidx.core.graphics.createBitmap
-import radiography.ExperimentalRadiographyComposeApi
+import radiography.Radiography
+
 class SkeletonGenerator {
 
     private data class SkeletonNode(
@@ -45,16 +46,16 @@ class SkeletonGenerator {
     }
 
     private val defaultColors: Map<NodeType, Int> = mapOf(
-        NodeType.CONTAINER to -0x1f1f20, // #E0E0E0
-        NodeType.TEXT to Color.DKGRAY,
-        NodeType.IMAGE to -0x424243, // #BDBDBD
-        NodeType.INPUT to -0x1f1f20, // #E0E0E0
-        NodeType.BUTTON to -0x9dff3200, // #6200EE
-        NodeType.UNKNOWN to Color.TRANSPARENT,
-        NodeType.CARD to Color.WHITE,
-        NodeType.WEBVIEW to Color.LTGRAY,
-        NodeType.COMPOSE_HOST to Color.TRANSPARENT
-    ) as Map<NodeType, Int>
+        NodeType.CONTAINER to Color.parseColor("#E0E0E0"), // Cinza claro para containers
+        NodeType.TEXT to Color.parseColor("#4CAF50"),      // Verde para texto
+        NodeType.IMAGE to Color.parseColor("#2196F3"),     // Azul para imagens
+        NodeType.INPUT to Color.parseColor("#FF9800"),     // Laranja para inputs
+        NodeType.BUTTON to Color.parseColor("#9C27B0"),    // Roxo para botões
+        NodeType.UNKNOWN to Color.parseColor("#757575"),   // Cinza escuro para desconhecidos
+        NodeType.CARD to Color.parseColor("#FFEB3B"),      // Amarelo para cards
+        NodeType.WEBVIEW to Color.parseColor("#00BCD4"),   // Ciano para webview
+        NodeType.COMPOSE_HOST to Color.TRANSPARENT         // Transparente para o host
+    )
 
     /**
      * Detecta se a Activity contém uma tela Compose.
@@ -133,7 +134,8 @@ class SkeletonGenerator {
         val bitmap = createBitmap(rootView.width, rootView.height)
         val canvas = Canvas(bitmap)
 
-        // Pega a cor de fundo da janela
+        val a = Radiography.scan()
+
         val windowBackground = getWindowBackgroundColor(activity)
         canvas.drawColor(windowBackground)
 
@@ -369,80 +371,114 @@ class SkeletonGenerator {
     /**
      * 🆕 CORREÇÃO PRINCIPAL: Parseia recursivamente a árvore de Groups ACUMULANDO o callChain
      */
+    /**
+     * 🆕 CORREÇÃO: Varre a hierarquia para encontrar o tipo mais específico (Text, Image, etc)
+     */
     @OptIn(UiToolingDataApi::class)
     private fun parseGroupTree(group: Group, parentCallChain: List<String>): List<SkeletonNode> {
-        // 🆕 Acumula o nome deste grupo no callChain
-        val callChain: List<String> = if (group.name != null) {
+        val callChain: List<String> = if (!group.name.isNullOrBlank()) {
             parentCallChain + group.name!!
         } else {
             parentCallChain
         }
 
-        // Se é NodeGroup, cria um SkeletonNode
         if (group is NodeGroup) {
             val bounds = group.box
-
-            // Ignora grupos com bounds inválidos (mas processa filhos)
             if (bounds.width > 0 && bounds.height > 0) {
                 val rect = Rect(bounds.left, bounds.top, bounds.right, bounds.bottom)
 
-                // 🆕 CHAVE: Usa o PRIMEIRO nome do callChain
-                val name = callChain.firstOrNull() ?: ""
-                val type = determineComposeNodeType(name)
-                val color: Int = defaultColors[type] ?: Color.LTGRAY
+                // Tenta descobrir o tipo pelo nome, se não conseguir, assume CONTAINER
+                val type = resolveNodeTypeFromChain(callChain)
 
-                // Determina o estilo
-                val style = when (type) {
-                    NodeType.TEXT, NodeType.BUTTON, NodeType.IMAGE, NodeType.INPUT -> Paint.Style.FILL
-                    NodeType.CONTAINER -> {
-                        val nameLower = name.lowercase()
-                        if ("card" in nameLower || "surface" in nameLower || bounds.width * bounds.height < 500000) {
-                            Paint.Style.FILL
-                        } else {
-                            Paint.Style.STROKE
-                        }
-                    }
-                    else -> Paint.Style.STROKE
-                }
-
-                // 🆕 CORREÇÃO: Recursivamente processa filhos, MAS RESETA O CALLCHAIN
+                // Processa os filhos primeiro para saber se este nó é um "Pai" ou uma "Folha"
                 val children = group.children.flatMap {
-                    parseGroupTree(it, emptyList())
+                    parseGroupTree(it, callChain) // Passa o callChain acumulado
                 }.toMutableList()
+
+                val isLeaf = children.isEmpty()
+
+                // LÓGICA DE CORES E ESTILOS:
+                // 1. Elementos específicos (Text, Image, Button, Input, Card) -> FILL com cor vibrante
+                // 2. Container folha (sem filhos) -> FILL com cinza claro
+                // 3. Container pai (com filhos) -> STROKE com cinza claro (apenas borda)
+                val (finalColor, style) = when {
+                    // Elementos específicos sempre têm cores vibrantes e são preenchidos
+                    type in listOf(NodeType.TEXT, NodeType.IMAGE, NodeType.BUTTON, NodeType.INPUT, NodeType.CARD) -> {
+                        Pair(defaultColors[type] ?: Color.LTGRAY, Paint.Style.FILL)
+                    }
+                    // Container folha (bloco de conteúdo sem filhos identificados)
+                    type == NodeType.CONTAINER && isLeaf -> {
+                        Pair(Color.parseColor("#E0E0E0"), Paint.Style.FILL)
+                    }
+                    // Container pai (apenas organizador) - apenas borda
+                    type == NodeType.CONTAINER && !isLeaf -> {
+                        Pair(Color.parseColor("#BDBDBD"), Paint.Style.STROKE)
+                    }
+                    // Outros casos
+                    else -> {
+                        Pair(defaultColors[type] ?: Color.LTGRAY, Paint.Style.FILL)
+                    }
+                }
 
                 return listOf(SkeletonNode(
                     rect = rect,
                     type = type,
-                    color = color,
+                    color = finalColor,
                     style = style,
-                    name = name.ifEmpty { null }, // 🆕 Armazena o nome real
+                    name = callChain.lastOrNull() ?: "Unknown",
                     children = children
                 ))
-            } else {
-                // Bounds inválido, só processa filhos
-                return group.children.flatMap {
-                    parseGroupTree(it, emptyList())
-                }
             }
         }
+
         return group.children.flatMap { child ->
             parseGroupTree(child, callChain)
         }
     }
 
-    /**
-     * 🆕 CORREÇÃO: Agora recebe String em vez de NodeGroup
-     */
+    private fun resolveNodeTypeFromChain(callChain: List<String>): NodeType {
+        for (name in callChain.reversed()) {
+            val type = determineComposeNodeType(name)
+            if (type != NodeType.CONTAINER && type != NodeType.UNKNOWN) {
+                return type
+            }
+        }
+        return NodeType.CONTAINER
+    }
+
+
     private fun determineComposeNodeType(name: String): NodeType {
         val nameLower = name.lowercase()
 
         return when {
+            // Text components
             "text" in nameLower && "field" !in nameLower -> NodeType.TEXT
+            "basictext" in nameLower -> NodeType.TEXT
+            "label" in nameLower -> NodeType.TEXT
+
+            // Input components
             "textfield" in nameLower || "outlinedtextfield" in nameLower || "basictextfield" in nameLower -> NodeType.INPUT
-            "button" in nameLower || "iconbutton" in nameLower || "floatingactionbutton" in nameLower -> NodeType.BUTTON
-            "image" in nameLower || "icon" in nameLower -> NodeType.IMAGE
+
+            // Button components
+            "button" in nameLower || "iconbutton" in nameLower ||
+            "floatingactionbutton" in nameLower || "fab" in nameLower -> NodeType.BUTTON
+
+            // Image components
+            "image" in nameLower || "icon" in nameLower ||
+            "vectorpainter" in nameLower || "painter" in nameLower -> NodeType.IMAGE
+
+            // Card components
+            "card" in nameLower -> NodeType.CARD
+
+            // WebView
+            "webview" in nameLower -> NodeType.WEBVIEW
+
+            // Containers comuns
             "box" in nameLower || "column" in nameLower || "row" in nameLower ||
-                    "surface" in nameLower || "card" in nameLower || "scaffold" in nameLower -> NodeType.CONTAINER
+            "surface" in nameLower || "scaffold" in nameLower ||
+            "lazycol" in nameLower || "lazyrow" in nameLower ||
+            "layout" in nameLower -> NodeType.CONTAINER
+
             else -> NodeType.CONTAINER
         }
     }
@@ -658,57 +694,26 @@ class SkeletonGenerator {
         return null
     }
 
-    /**
-     * Renderiza a árvore no canvas
-     */
     private fun renderTreeToCanvas(node: SkeletonNode, canvas: Canvas) {
-        // Não desenha nós transparentes
-        if (node.color != Color.TRANSPARENT) {
-            val paint = Paint().apply {
-                color = node.color
-                style = node.style
-                strokeWidth = if (node.style == Paint.Style.STROKE) 2f else 0f
-                isAntiAlias = true
-            }
-
-            when (node.type) {
-                NodeType.TEXT -> {
-                    paint.style = Paint.Style.FILL
-                    canvas.drawRect(node.rect, paint)
-                }
-                NodeType.BUTTON -> {
-                    paint.style = Paint.Style.FILL
-                    val rectF = RectF(node.rect)
-                    canvas.drawRoundRect(rectF, 16f, 16f, paint)
-                }
-                NodeType.IMAGE -> {
-                    paint.style = Paint.Style.FILL
-                    val rectF = RectF(node.rect)
-                    canvas.drawOval(rectF, paint)
-                }
-                NodeType.INPUT -> {
-                    // Fundo
-                    paint.style = Paint.Style.FILL
-                    paint.color = -0x0a0a0b // #F5F5F5
-                    val rectF = RectF(node.rect)
-                    canvas.drawRoundRect(rectF, 8f, 8f, paint)
-
-                    // Borda
-                    paint.style = Paint.Style.STROKE
-                    paint.color = node.color
-                    paint.strokeWidth = 2f
-                    canvas.drawRoundRect(rectF, 8f, 8f, paint)
-                }
-                NodeType.CONTAINER, NodeType.CARD -> {
-                    canvas.drawRect(node.rect, paint)
-                }
-                else -> {
-                    canvas.drawRect(node.rect, paint)
-                }
-            }
+        if (node.color == Color.TRANSPARENT) {
+            node.children.forEach { renderTreeToCanvas(it, canvas) }
+            return
         }
 
-        // Renderiza filhos recursivamente
+        val paint = Paint().apply {
+            color = node.color
+            style = node.style
+            strokeWidth = if (node.style == Paint.Style.STROKE) 4f else 0f
+            isAntiAlias = true
+        }
+
+        if (node.style == Paint.Style.FILL) {
+            val rectF = RectF(node.rect)
+            canvas.drawRoundRect(rectF, 12f, 12f, paint)
+        } else {
+            canvas.drawRect(node.rect, paint)
+        }
+
         node.children.forEach { child ->
             renderTreeToCanvas(child, canvas)
         }

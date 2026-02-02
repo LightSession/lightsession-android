@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import android.view.View
 import android.view.ViewTreeObserver
-import com.lightsession.replay.ScreenDrawing
 import curtains.Curtains
 import curtains.OnRootViewsChangedListener
 import curtains.onDecorViewReady
@@ -488,7 +487,7 @@ internal class Recorder {
      * - Keeping dead references on the map reduces performance and consumes memory
      *
      * Process:
-     * 1. Itera for all monitored views
+     * 1. Iterate for all monitored views
      * 2. *
      * 3. Collect IDS of the dead views
      * 4. Removes all the dead views from the map

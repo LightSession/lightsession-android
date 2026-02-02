@@ -159,9 +159,8 @@ class InteractionAwareCallback(
                                 "type" to clickedView.javaClass.simpleName,
                                 "resourceId" to (getResourceId(clickedView) ?: ""),
                                 "screen" to activity.javaClass.simpleName,
-                                "x" to touchX, // Coordenadas originais para identificação
-                                "y" to touchY, // Coordenadas originais para identificação
-                                // Opcionalmente, incluir também as escaladas para debug
+                                "x" to touchX,
+                                "y" to touchY,
                                 "x_scaled" to scaledX,
                                 "y_scaled" to scaledY
                             )
