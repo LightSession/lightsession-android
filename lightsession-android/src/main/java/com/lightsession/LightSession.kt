@@ -34,6 +34,7 @@ class LightSession private constructor() {
     private var userIdentifiedExplicitly = false
 
     private var replayIntegration: ReplayIntegration? = null
+    private var flushTriggers: FlushTriggers? = null
 
     fun init(application: Application, config: LightSessionConfig) {
         if (isInitialized) {
@@ -47,14 +48,19 @@ class LightSession private constructor() {
         sessionDataManager = SessionDataManager(application.applicationContext, config)
         sessionDataManager.init()
 
+        // Without this the only flush that ever runs is the five-second ticker:
+        // `onTerminate`, `onLowMemory` and `onDestroy` were all written and none of
+        // them had a caller, so closing the app dropped whatever was buffered.
+        flushTriggers = FlushTriggers(sessionDataManager).also { it.register(application) }
+
         if (this.config.enableReplay) {
             replayIntegration = ReplayIntegration(application.applicationContext, config)
             replayIntegration?.init(sessionDataManager)
         }
 
-        // Criar NetworkDataSender e configurar com a apiKey
         val networkDataSender = NetworkDataSender()
         networkDataSender.setApiKey(config.apiKey)
+        networkDataSender.setBaseUrl("${config.normalizedApiUrl}/api/v1/screenmap")
 
         // Passar o networkDataSender configurado para o ScreenMapperIntegration
         ScreenMapperIntegration.getInstance().init(application, networkDataSender, sessionDataManager)

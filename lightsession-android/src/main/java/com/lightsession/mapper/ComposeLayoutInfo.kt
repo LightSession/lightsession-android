@@ -102,43 +102,63 @@ internal sealed class ComposeLayoutInfo {
  * To preserve details about the Call Groups between Layout Nodes, the call chain is preserved in order
  * to provide granular detail about the hierarchy if desired.
  */
+/**
+ * Índice de semantics por id de nó, calculado uma única vez.
+ *
+ * O código original chamava `getAllSemanticsNodes()` dentro do laço, uma vez por
+ * LayoutNode — numa tela com 200 nós isso é 200 varreduras completas da árvore de
+ * semantics, na main thread, durante a navegação. Agrupar por id uma vez torna a
+ * busca O(1).
+ */
+internal class SemanticsIndex(owner: SemanticsOwner?) {
+  private val byId: Map<Int, List<SemanticsNode>> =
+    owner?.getAllSemanticsNodes(mergingEnabled = false)?.groupBy { it.id } ?: emptyMap()
+
+  val isEmpty: Boolean get() = byId.isEmpty()
+
+  fun nodesFor(semanticsId: Int?): List<SemanticsNode> =
+    semanticsId?.let { byId[it] } ?: emptyList()
+
+  companion object {
+    val EMPTY = SemanticsIndex(null)
+  }
+}
+
 internal fun Group.computeLayoutInfos(
     parentCallChain: List<CallGroupInfo> = emptyList(),
     /**
    * The semantics owner for this Group. This is used to look up the semantics nodes for each
    * layout node.
    */
-  semanticsOwner: SemanticsOwner? = null,
+  semantics: SemanticsIndex = SemanticsIndex.EMPTY,
 ): Sequence<ComposeLayoutInfo> {
   val callChain = this.name?.let { parentCallChain + CallGroupInfo(it, this.location) } ?: parentCallChain
 
   // Things that we want to consider children of the current node, but aren't actually child nodes
   // as reported by Group.children.
-  val irregularChildren = subComposedChildren(callChain, semanticsOwner) + androidViewChildren()
+  val irregularChildren = subComposedChildren(callChain, semantics) + androidViewChildren()
 
   // Certain composables produce an internal structure that is hard to read if we report it exactly.
   // Instead, we use heuristics to recognize subtrees that match certain expected structures and
   // aggregate them somewhat before reporting.
-  tryParseSubcomposition(callChain, irregularChildren, semanticsOwner)
+  tryParseSubcomposition(callChain, irregularChildren, semantics)
     ?.let { return it }
-  tryParseAndroidView(callChain, irregularChildren, semanticsOwner)
+  tryParseAndroidView(callChain, irregularChildren, semantics)
     ?.let { return it }
 
   // This is an intermediate group that doesn't represent a LayoutNode, so we flatten by just
   // reporting its children without reporting a new subtree.
   if (this !is NodeGroup) {
     return children.asSequence()
-      .flatMap { it.computeLayoutInfos(callChain, semanticsOwner) } + irregularChildren
+      .flatMap { it.computeLayoutInfos(callChain, semantics) } + irregularChildren
   }
 
   val children = children.asSequence()
     // This node will "consume" the name, so reset it name to empty for children.
-    .flatMap { it.computeLayoutInfos(semanticsOwner = semanticsOwner) }
+    .flatMap { it.computeLayoutInfos(semantics = semantics) }
 
   val semanticsId = (this.node as? LayoutInfo)?.semanticsId
-  val semanticsNodes = semanticsOwner?.getAllSemanticsNodes(mergingEnabled = false)
-    ?.filter { it.id == semanticsId }
-    ?: emptyList()
+  val semanticsNodes = semantics.nodesFor(semanticsId)
 
   val layoutInfo = ComposeLayoutInfo.LayoutNodeInfo(
     name = callChain.firstOrNull()?.name.orEmpty(),
@@ -157,7 +177,7 @@ internal fun Group.computeLayoutInfos(
  * The compositionData val is marked as internal, and not intended for public consumption.
  * The returned [SubcompositionInfo]s should be collated by [tryParseSubcomposition].
  */
-private fun Group.subComposedChildren(callChain: List<CallGroupInfo>, semanticsOwner: SemanticsOwner?): Sequence<ComposeLayoutInfo.SubcompositionInfo> =
+private fun Group.subComposedChildren(callChain: List<CallGroupInfo>, semantics: SemanticsIndex): Sequence<ComposeLayoutInfo.SubcompositionInfo> =
   getCompositionContexts()
     .flatMap { it.tryGetComposers().asSequence() }
     .map { subcomposer ->
@@ -165,7 +185,7 @@ private fun Group.subComposedChildren(callChain: List<CallGroupInfo>, semanticsO
         name = callChain.firstOrNull()?.name.orEmpty(),
         callChain = callChain,
         bounds = box,
-        children = subcomposer.compositionData.asTree().computeLayoutInfos(semanticsOwner = semanticsOwner)
+        children = subcomposer.compositionData.asTree().computeLayoutInfos(semantics = semantics)
       )
     }
 
@@ -212,12 +232,12 @@ data class CallGroupInfo(
 private fun Group.tryParseSubcomposition(
   callChain: List<CallGroupInfo>,
   irregularChildren: Sequence<ComposeLayoutInfo>,
-  semanticsOwner: SemanticsOwner?
+  semantics: SemanticsIndex
 ): Sequence<ComposeLayoutInfo>? {
   if (this.name != "SubcomposeLayout") return null
 
   val (subcompositions, regularChildren) =
-    (children.asSequence().flatMap { it.computeLayoutInfos(callChain, semanticsOwner) } + irregularChildren)
+    (children.asSequence().flatMap { it.computeLayoutInfos(callChain, semantics) } + irregularChildren)
       .partition { it is ComposeLayoutInfo.SubcompositionInfo }
       .let {
         // There's no type-safe partition operator so we just cast.
@@ -268,13 +288,13 @@ private fun Group.tryParseSubcomposition(
 private fun Group.tryParseAndroidView(
   callChain: List<CallGroupInfo>,
   irregularChildren: Sequence<ComposeLayoutInfo>,
-  semanticsOwner: SemanticsOwner?
+  semantics: SemanticsIndex
 ): Sequence<ComposeLayoutInfo>? {
   if (this.name != "AndroidView") return null
   if (this !is CallGroup) return null
 
   val (androidViews, regularChildren) =
-    (children.asSequence().flatMap { it.computeLayoutInfos(callChain, semanticsOwner) } + irregularChildren)
+    (children.asSequence().flatMap { it.computeLayoutInfos(callChain, semantics) } + irregularChildren)
       .partition { it is AndroidViewInfo }
       .let {
         // There's no type-safe partition operator so we just cast.

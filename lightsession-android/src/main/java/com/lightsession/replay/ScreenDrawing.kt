@@ -29,6 +29,9 @@ internal class ScreenDrawing {
     companion object {
         private const val DIMMING_STEP = 0.2f
 
+        /** Draw and encode overlap by one frame; two buffers covers it. */
+        private const val MAX_POOLED_BITMAPS = 2
+
         object ScalePresets {
             const val THUMBNAIL = 0.1f
             const val LOW_QUALITY = 0.25f
@@ -38,10 +41,18 @@ internal class ScreenDrawing {
         }
     }
 
-    // Pool of reusable objects
+    // Pool of reusable objects.
+    //
+    // The bitmap is the expensive one and it was the one NOT pooled: a
+    // 540x1168 RGB_565 buffer is 1.2 MB, allocated and recycled on every
+    // capture, three times a second. Paint and Canvas — which were pooled — cost
+    // almost nothing. Pooling the bitmap is also what lets the draw happen on
+    // the main thread while the JPEG encode happens somewhere else: the encoder
+    // hands the buffer back when it is done with it.
     private val paintPool = mutableListOf<Paint>()
     private val canvasPool = mutableListOf<Canvas>()
     private val byteArrayPool = mutableListOf<ByteArrayOutputStream>()
+    private val bitmapPool = java.util.concurrent.ConcurrentLinkedQueue<Bitmap>()
     private val skeletonGenerator = SkeletonScreenGenerator()
 
     private var globalScaleFactor = ScalePresets.MEDIUM_QUALITY
@@ -111,46 +122,111 @@ internal class ScreenDrawing {
      * @param scaleFactor Scale factor to resize the image (0.1f to 1.0f)
      * @return ByteArray of the captured image in JPEG format, or null if capture fails
      */
-    fun captureCurrentScreenOptimized(scaleFactor: Float = globalScaleFactor): ByteArray? {
-        var finalBitmap: Bitmap? = null
+    /**
+     * Draws the current screen into a bitmap. **Main thread only.**
+     *
+     * `view.draw(canvas)` reads live View state, so it cannot move off the UI
+     * thread — that constraint is real and is why this half stays here. The
+     * JPEG encode is a different matter: it is pure CPU over a finished buffer,
+     * and it used to run here too. At three captures a second that was roughly
+     * 8-20ms of avoidable UI time per capture. [encodeToJpeg] does it elsewhere.
+     *
+     * The returned bitmap belongs to the pool. Pass it to [encodeToJpeg], or to
+     * [recycleBitmap] if you decide not to encode it, otherwise the pool starves
+     * and every capture allocates again.
+     */
+    fun captureToBitmap(scaleFactor: Float = globalScaleFactor): Bitmap? {
         return try {
             val windowData = getWindowManagerViewsAndParams() ?: return null
-            val views = windowData.views!! // Non-null asserted because of the check in getWindowManagerViewsAndParams
+            val views = windowData.views!!
             val params = windowData.params
 
             val displayMetrics = Resources.getSystem().displayMetrics
-            val originalWidth = displayMetrics.widthPixels
-            val originalHeight = displayMetrics.heightPixels
             val effectiveScale = scaleFactor.coerceIn(0.1f, 1.0f)
-            val screenWidth = (originalWidth * effectiveScale).toInt()
-            val screenHeight = (originalHeight * effectiveScale).toInt()
-
-            Log.d(
-                "ScreenCaptureUtils", "Creating bitmap: ${screenWidth}x${screenHeight}" +
-                        " (${(effectiveScale * 100).toInt()}% of ${originalWidth}x${originalHeight})"
-            )
+            val width = (displayMetrics.widthPixels * effectiveScale).toInt()
+            val height = (displayMetrics.heightPixels * effectiveScale).toInt()
+            if (width <= 0 || height <= 0) return null
 
             val config =
                 if (effectiveScale <= 0.5f) Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888
-            finalBitmap = Bitmap.createBitmap(screenWidth, screenHeight, config)
-            val canvas = getCanvasFromPool()
-            canvas.setBitmap(finalBitmap)
+            val bitmap = obtainBitmap(width, height, config)
 
+            val canvas = getCanvasFromPool()
+            canvas.setBitmap(bitmap)
             if (effectiveScale != 1.0f) {
                 canvas.scale(effectiveScale, effectiveScale)
             }
 
             processViewsOptimized(views, params, canvas, effectiveScale, displayMetrics)
+            // Detach so the canvas can be reused without holding the bitmap.
+            canvas.setBitmap(null)
+            returnCanvasToPool(canvas)
 
-            val compressionQuality = calculateCompressionQuality(effectiveScale)
-            convertBitmapToByteArrayOptimized(finalBitmap, compressionQuality)
+            bitmap
         } catch (e: Throwable) {
-            Log.w("ScreenCaptureUtils", "Failed to create optimized composed bitmap", e)
+            Log.w("ScreenCaptureUtils", "Failed to draw screen", e)
+            null
+        }
+    }
+
+    /**
+     * Compresses a bitmap from [captureToBitmap] and returns it to the pool.
+     *
+     * Safe to call from a background thread — nothing here touches View state.
+     */
+    fun encodeToJpeg(bitmap: Bitmap, scaleFactor: Float = globalScaleFactor): ByteArray? {
+        return try {
+            convertBitmapToByteArrayOptimized(bitmap, calculateCompressionQuality(scaleFactor))
+        } catch (e: Throwable) {
+            Log.w("ScreenCaptureUtils", "Failed to encode frame", e)
             null
         } finally {
-            finalBitmap?.let {
-                if (!it.isRecycled) it.recycle()
+            recycleBitmap(bitmap)
+        }
+    }
+
+    /**
+     * Captures and encodes in one step, on the calling thread.
+     *
+     * Kept for callers that need a synchronous result on the main thread — the
+     * screen-map skeleton path, which runs once per navigation rather than
+     * several times a second.
+     */
+    fun captureCurrentScreenOptimized(scaleFactor: Float = globalScaleFactor): ByteArray? {
+        val bitmap = captureToBitmap(scaleFactor) ?: return null
+        return encodeToJpeg(bitmap, scaleFactor)
+    }
+
+    private fun obtainBitmap(width: Int, height: Int, config: Bitmap.Config): Bitmap {
+        // Reuse only an exact match: a rotation or a scale change makes the
+        // pooled buffers the wrong shape, and they are dropped rather than
+        // reconfigured.
+        while (true) {
+            val candidate = bitmapPool.poll() ?: break
+            if (!candidate.isRecycled &&
+                candidate.width == width &&
+                candidate.height == height &&
+                candidate.config == config
+            ) {
+                // Stale pixels would show through anywhere the hierarchy does
+                // not paint.
+                candidate.eraseColor(android.graphics.Color.TRANSPARENT)
+                return candidate
             }
+            if (!candidate.isRecycled) candidate.recycle()
+        }
+        return Bitmap.createBitmap(width, height, config)
+    }
+
+    /** Returns a bitmap to the pool. Idempotent-safe: a recycled one is dropped. */
+    fun recycleBitmap(bitmap: Bitmap) {
+        if (bitmap.isRecycled) return
+        // Two buffers is enough for draw-then-encode overlap; more would just
+        // hold memory. The third and beyond are released.
+        if (bitmapPool.size < MAX_POOLED_BITMAPS) {
+            bitmapPool.offer(bitmap)
+        } else {
+            bitmap.recycle()
         }
     }
 
@@ -186,43 +262,9 @@ internal class ScreenDrawing {
      * @param scaleFactor Scale factor to resize the image (0.1f to 1.0f)
      * @return Bitmap of the captured screen, or null if capture fails
      */
-    fun getWindowManagerComposedBitmapOptimized(scaleFactor: Float = globalScaleFactor): Bitmap? {
-        val finalBitmap: Bitmap?
-        return try {
-            val windowData = getWindowManagerViewsAndParams() ?: return null
-            val views = windowData.views!!
-            val params = windowData.params
-
-            val displayMetrics = Resources.getSystem().displayMetrics
-            val originalWidth = displayMetrics.widthPixels
-            val originalHeight = displayMetrics.heightPixels
-            val effectiveScale = scaleFactor.coerceIn(0.1f, 1.0f)
-            val screenWidth = (originalWidth * effectiveScale).toInt()
-            val screenHeight = (originalHeight * effectiveScale).toInt()
-
-            Log.d(
-                "ScreenCaptureUtils", "Creating bitmap: ${screenWidth}x${screenHeight}" +
-                        " (${(effectiveScale * 100).toInt()}% of ${originalWidth}x${originalHeight})"
-            )
-
-            val config =
-                if (effectiveScale <= 0.5f) Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888
-            finalBitmap = Bitmap.createBitmap(screenWidth, screenHeight, config)
-            val canvas = getCanvasFromPool()
-            canvas.setBitmap(finalBitmap)
-
-            if (effectiveScale != 1.0f) {
-                canvas.scale(effectiveScale, effectiveScale)
-            }
-
-            processViewsOptimized(views, params, canvas, effectiveScale, displayMetrics)
-
-            return finalBitmap
-        } catch (e: Throwable) {
-            Log.w("ScreenCaptureUtils", "Failed to create optimized composed bitmap", e)
-            null
-        }
-    }
+    /** Raw bitmap of the current screen. Main thread only; caller owns it. */
+    fun getWindowManagerComposedBitmapOptimized(scaleFactor: Float = globalScaleFactor): Bitmap? =
+        captureToBitmap(scaleFactor)
 
     /**
      * Calculates the compression quality based on the scale factor.
@@ -594,6 +636,10 @@ internal class ScreenDrawing {
         }
     }
 
+    private fun returnCanvasToPool(canvas: Canvas) {
+        if (canvasPool.size < 2) canvasPool.add(canvas)
+    }
+
     /**
      * Gets a ByteArrayOutputStream from the pool or creates a new one if the pool is empty.
      *
@@ -642,6 +688,10 @@ internal class ScreenDrawing {
      * - Helps prevent memory leaks in long-running applications
      */
     fun clearObjectPools() {
+        while (true) {
+            val bitmap = bitmapPool.poll() ?: break
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
         paintPool.clear()
         canvasPool.clear()
         byteArrayPool.forEach { it.close() }

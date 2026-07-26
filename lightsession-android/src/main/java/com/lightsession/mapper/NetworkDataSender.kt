@@ -12,7 +12,9 @@ import java.util.concurrent.TimeUnit
 
 class NetworkDataSender : DataSender {
 
-    private var baseUrl: String = "http://192.168.0.114:3001/api/v1/screenmapper"
+    // Set by LightSession.init from LightSessionConfig.apiUrl. No default:
+    // a hardcoded address is what made the published artifact unusable.
+    private var baseUrl: String = ""
     private var apiKey: String = ""
 
     private val client: OkHttpClient by lazy {

@@ -11,7 +11,12 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        minSdk = 28
+        // 26, not 28. Nothing here needs 28 as a floor — every version check in the
+        // SDK guards *upward* (>= P, >= TIRAMISU) and some guard as low as
+        // LOLLIPOP — and a library's minSdk is a ceiling on who can consume it. At
+        // 28 an app on minSdk 26 cannot even merge the manifest, which is how this
+        // came up: Phoenix is minSdk 26.
+        minSdk = 26
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
     }
@@ -37,6 +42,15 @@ android {
         compose = true
     }
 
+    testOptions {
+        unitTests {
+            // BatchSpool touches android.util.Log, which is not implemented in the
+            // JVM stub jar and throws by default. The spool is otherwise plain file
+            // IO, so returning defaults is enough — no Robolectric needed.
+            isReturnDefaultValues = true
+        }
+    }
+
     composeOptions {
         kotlinCompilerExtensionVersion = "1.6.1"
     }
@@ -51,6 +65,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
     implementation("com.squareup.curtains:curtains:1.2.5")
+
+    // ProcessLifecycleOwner: tells the SDK when the *app* goes to background, which
+    // is when most sessions end and the last moment the process is reliably alive.
+    implementation("androidx.lifecycle:lifecycle-process:${libs.versions.androidx.lifecycle.get()}")
 
     // Navigation
     implementation("androidx.navigation:navigation-fragment-ktx:${libs.versions.androidx.compose.navigation.get()}")
@@ -78,7 +96,10 @@ publishing {
         create<MavenPublication>("release") {
             groupId = "com.lightsession"
             artifactId = "lightsession-android"
-            version = "0.1.11-alpha"
+            // Distinct from the published 0.1.11-alpha on purpose: that artifact is
+            // the one hardcoded to a laptop's LAN address, and a consumer resolving
+            // it by accident would look like the SDK silently not working.
+            version = "0.2.0-local"
 
             afterEvaluate {
                 from(components["release"])

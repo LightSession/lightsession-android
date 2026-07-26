@@ -43,6 +43,14 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     private var activityLifecycleCallbacks: Application.ActivityLifecycleCallbacks? = null
 
     private val registeredComposeControllers = mutableSetOf<WeakReference<NavController>>()
+
+    /** Warned once per process; the message is advice, not an event. */
+    private var composeIntegrationWarned = false
+
+    /** The delayed integration check runs here, because
+     *  `registeredComposeControllers` is read and written on the main thread
+     *  everywhere else and is not synchronised. */
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val registeredConventionalListeners =
         ConcurrentHashMap<NavController, NavController.OnDestinationChangedListener>()
 
@@ -113,6 +121,16 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     }
 
     companion object {
+        /**
+         * How long to wait before deciding a Compose host is not going to register
+         * a NavController.
+         *
+         * `withNavigationTracking()` registers from a `LaunchedEffect`, so it lands
+         * after the first composition. Three seconds clears that comfortably even on
+         * a cold start on a slow device, and the check runs once per process.
+         */
+        private const val COMPOSE_INTEGRATION_GRACE_MS = 3_000L
+
         @Volatile
         private var instance: ScreenMapperIntegration? = null
 
@@ -212,6 +230,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     private var touchEventListener: OnTouchEventListener? = null
 
     private var onScreenClickListener: (() -> Unit)? = {
+        // O usuário interagiu antes da tela assentar: ela não é uma tela
+        // "parada" e não vale mapear. Essa é a heurística original.
+        skeletonGenerator.cancelPendingCapture()
         cancelScreenshot()
     }
 
@@ -246,11 +267,20 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                 if (activity is ComponentActivity) {
                     if (isActivityUsingCompose(activity)) {
                         /**
-                        This means we're dealing with a Compose host activity. It uses a different
-                        NavController mechanism than the conventional one. Its lifecycle is embedded
-                        within the composable, and we can't access it because it loads asynchronously.
-                        However, we can track it using method "LaunchedEffect" which will automatically register our listener.
+                         * A Compose host. Its NavController is created inside the
+                         * composition by `rememberNavController()`, and Compose keeps
+                         * no global registry of them — so unlike the Fragment case
+                         * below, there is nothing here for the SDK to find. The host
+                         * app has to hand it over with
+                         * `rememberNavController().withNavigationTracking()`.
+                         *
+                         * That is a documented requirement, not an oversight. What
+                         * *was* an oversight is that nothing said so: an app that
+                         * skipped the call recorded frames normally and produced a
+                         * screen map with no screen names, which is indistinguishable
+                         * from the SDK being broken. Hence the check below.
                          */
+                        warnIfNavControllerMissing(activity)
                     } else {
                         if (checkNavControllerConventional(activity)) {
                             /**
@@ -314,6 +344,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                     }
                 }
                 if (currentActivityWeakRef?.get() == activity) {
+                    skeletonGenerator.cancelPendingCapture()
                     cancelScreenshot()
                     currentActivityWeakRef = null
                 }
@@ -339,6 +370,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                     }
                 }
                 if (currentActivityWeakRef?.get() == activity) {
+                    skeletonGenerator.cancelPendingCapture()
                     cancelScreenshot()
                     currentActivityWeakRef = null
                 }
@@ -376,6 +408,38 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
         navController.addOnDestinationChangedListener(listener)
         registeredConventionalListeners[navController] = listener
+    }
+
+    /**
+     * Complains, once, if a Compose host never handed over its NavController.
+     *
+     * Delayed rather than immediate: `withNavigationTracking()` registers from a
+     * `LaunchedEffect`, which runs after the first composition, so at
+     * `onActivityResumed` nothing has arrived yet and an immediate check would warn
+     * at every app that *does* integrate correctly.
+     *
+     * The message names the exact line to add. A warning that only says "screen
+     * tracking is not working" costs the reader the same afternoon this cost me.
+     */
+    private fun warnIfNavControllerMissing(activity: Activity) {
+        if (composeIntegrationWarned) return
+        val activityName = activity.javaClass.simpleName
+
+        mainHandler.postDelayed({
+            registeredComposeControllers.removeAll { it.get() == null }
+            if (registeredComposeControllers.isNotEmpty() || composeIntegrationWarned) return@postDelayed
+            composeIntegrationWarned = true
+
+            Log.w(
+                "ScreenMapper",
+                "$activityName hosts Compose but no NavController was registered, so the " +
+                    "screen map will have no screen names. Compose keeps no global registry " +
+                    "of NavControllers, so LightSession cannot find yours — hand it over:\n" +
+                    "    import com.lightsession.mapper.withNavigationTracking\n" +
+                    "    val navController = rememberNavController().withNavigationTracking()\n" +
+                    "Session recording and replay are unaffected either way."
+            )
+        }, COMPOSE_INTEGRATION_GRACE_MS)
     }
 
     internal fun registerComposeNavController(navController: NavController) {
@@ -637,9 +701,16 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                 theme = currentTheme
             )
 
+            // Envia os NOMES das telas, não os IDs compostos.
+            //
+            // O ID composto embute versão, resolução e tema
+            // (`home_2.1_2_1080_2337_Light`). Mandá-lo como extremidade do fluxo
+            // fazia o servidor registrar uma tela nova por resolução, então o
+            // grafo enchia de nós fantasma duplicados — um por combinação de
+            // aparelho. A identidade da tela é o nome; o resto descreve a captura.
             val flowResult = dataSender?.sendNavigationFlow(
-                fromScreen = fromScreenId,
-                toScreen = toScreenId,
+                fromScreen = from,
+                toScreen = to,
                 transitionType = "navigation",
                 timestamp = System.currentTimeMillis(),
                 appVersionCode = appVersionCode,
@@ -783,6 +854,11 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     }
 
     private fun cancelScreenshot() {
+        // NÃO cancela a geração de skeleton aqui. scheduleScreenshot() chama
+        // esta função na primeira linha, e sendInitialScreen/trackNavigationFlow
+        // chamam scheduleScreenshot() logo depois de iniciar a captura — cancelar
+        // aqui matava toda captura microssegundos após iniciá-la.
+        // O cancelamento certo vem do toque e do ciclo de vida; ver abaixo.
         if (currentScreenshotJob?.isActive == true) {
             currentScreenshotJob?.cancel()
             Log.d("ScreenMapper", "Scheduled screenshot was canceled.")

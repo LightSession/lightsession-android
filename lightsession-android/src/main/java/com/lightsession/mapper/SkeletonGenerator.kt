@@ -16,6 +16,7 @@ import android.util.SparseArray
 import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.webkit.WebView
 import android.widget.ImageView
 import android.widget.TextView
@@ -23,6 +24,12 @@ import androidx.compose.runtime.Composer
 import androidx.compose.runtime.Composition
 import androidx.compose.ui.tooling.data.Group
 import androidx.compose.ui.tooling.data.NodeGroup
+import androidx.compose.ui.node.RootForTest
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsNode
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.tooling.data.UiToolingDataApi
 import androidx.compose.ui.tooling.data.asTree
 import androidx.core.view.children
@@ -31,6 +38,11 @@ import androidx.core.graphics.createBitmap
 import radiography.Radiography
 
 class SkeletonGenerator {
+
+    private companion object {
+        /** Teto para o desembrulho de Composition aninhada. */
+        const val MAX_UNWRAP_DEPTH = 8
+    }
 
     private data class SkeletonNode(
         val rect: Rect,
@@ -66,7 +78,7 @@ class SkeletonGenerator {
     }
 
     private fun containsComposeView(view: View): Boolean {
-        if (view.javaClass.name.contains("AndroidComposeView")) {
+        if (isComposeView(view)) {
             return true
         }
         if (view is ViewGroup) {
@@ -79,51 +91,86 @@ class SkeletonGenerator {
         return false
     }
 
+    private val settleDetector = ComposeSettleDetector()
+
+    /**
+     * Conta quantos LayoutNodes a composição da tela já produziu.
+     *
+     * Usado como sinal de "tem conteúdo". Só é chamado quando a tela parece
+     * quieta, então o custo de varrer a composição é pago uma ou duas vezes por
+     * navegação, não a cada quadro.
+     */
+    private fun composeNodeCount(rootView: View): Int {
+        val composeView = findComposeView(rootView) ?: return 0
+        return runCatching { scanComposeHierarchyUsingTooling(composeView).size }.getOrDefault(0)
+    }
+
+    private fun findComposeView(view: View): View? {
+        if (isComposeView(view)) return view
+        if (view is ViewGroup) {
+            view.children.forEach { child -> findComposeView(child)?.let { return it } }
+        }
+        return null
+    }
+
+    /**
+     * Gera o skeleton assim que a tela estiver pronta.
+     *
+     * Para uma Activity clássica, a hierarquia já está medida quando chegamos
+     * aqui e a captura é imediata.
+     *
+     * Para Compose não: o evento de navegação chega antes da composição emitir
+     * qualquer nó. A versão anterior contornava com `postDelayed(1000)`, um
+     * palpite que era longo demais para tela estática e curto demais para tela
+     * que carrega dados — e quando errava, gravava um skeleton vazio sem avisar.
+     * Agora [ComposeSettleDetector] espera a composição *parar de mudar*, o que
+     * é rápido quando dá e paciente quando precisa.
+     *
+     * @param onComplete recebe null quando não houve o que capturar. Melhor
+     *   nenhum skeleton do que um em branco marcado como válido.
+     */
     fun generateSkeletonBitmap(activity: Activity, onComplete: (Bitmap?) -> Unit) {
         val rootView = activity.window.decorView.rootView
 
-        // Detecta se é uma tela Compose
-        val isComposeScreen = containsComposeView(rootView)
-
-        // Se a view já está pronta, gera imediatamente (ou com delay para Compose)
-        if (rootView.width > 0 && rootView.height > 0) {
-            if (isComposeScreen) {
-                // Para Compose, aguarda um frame adicional para garantir que a recomposição foi concluída
-                Log.d("SkeletonGenerator", "Compose detected, waiting for recomposition...")
-                rootView.postDelayed({
-                    val bitmap = generateSkeletonBitmapSync(activity, rootView)
-                    onComplete(bitmap)
-                }, 1000)
-            } else {
-                val bitmap = generateSkeletonBitmapSync(activity, rootView)
-                onComplete(bitmap)
+        if (!containsComposeView(rootView)) {
+            // View clássica: já está desenhável.
+            if (rootView.width > 0 && rootView.height > 0) {
+                onComplete(generateSkeletonBitmapSync(activity, rootView))
+                return
             }
+            rootView.viewTreeObserver.addOnGlobalLayoutListener(
+                object : ViewTreeObserver.OnGlobalLayoutListener {
+                    override fun onGlobalLayout() {
+                        rootView.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                        onComplete(
+                            if (rootView.width > 0 && rootView.height > 0) {
+                                generateSkeletonBitmapSync(activity, rootView)
+                            } else {
+                                null
+                            }
+                        )
+                    }
+                }
+            )
             return
         }
 
-        // Caso contrário, aguarda o layout ser concluído
-        rootView.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
-            override fun onGlobalLayout() {
-                rootView.viewTreeObserver.removeOnGlobalLayoutListener(this)
+        settleDetector.await(
+            activity = activity,
+            hasContent = {
+                val root = activity.window?.decorView?.rootView
+                root != null && root.width > 0 && root.height > 0 && composeNodeCount(root) > 0
+            },
+            onSettled = { settled ->
+                val root = settled.window?.decorView?.rootView
+                onComplete(root?.let { generateSkeletonBitmapSync(settled, it) })
+            },
+        )
+    }
 
-                if (rootView.width > 0 && rootView.height > 0) {
-                    if (isComposeScreen) {
-                        // Para Compose, aguarda mais um pouco após o layout
-                        Log.d("SkeletonGenerator", "Layout ready, waiting for Compose recomposition...")
-                        rootView.postDelayed({
-                            val bitmap = generateSkeletonBitmapSync(activity, rootView)
-                            onComplete(bitmap)
-                        }, 300)
-                    } else {
-                        val bitmap = generateSkeletonBitmapSync(activity, rootView)
-                        onComplete(bitmap)
-                    }
-                } else {
-                    // Se ainda assim não tiver dimensões, retorna null
-                    onComplete(null)
-                }
-            }
-        })
+    /** Aborta uma espera em andamento (nova navegação, ou o usuário tocou a tela). */
+    fun cancelPendingCapture() {
+        settleDetector.cancel()
     }
 
     private fun generateSkeletonBitmapSync(activity: Activity, rootView: View): Bitmap? {
@@ -196,11 +243,19 @@ class SkeletonGenerator {
     }
 
     /**
-     * Detecta se é um AndroidComposeView
+     * Detecta o host de uma composição.
+     *
+     * `AndroidComposeView` é interno do Compose e o R8 o renomeia — em release
+     * vira algo como `p0.r`, então casar o nome da classe nunca acerta. Quando
+     * isso acontece a tela Compose é tratada como view clássica: o gerador
+     * percorre a árvore de Views, não encontra filhos dentro do host, e produz
+     * um skeleton vazio sem erro nenhum.
+     *
+     * `RootForTest` é a interface pública que esse host implementa (via
+     * `ViewRootForTest`). Checar o tipo é resolvido pelo compilador contra a
+     * classe real e sobrevive à ofuscação.
      */
-    private fun isComposeView(view: View): Boolean {
-        return view.javaClass.name.contains("AndroidComposeView")
-    }
+    private fun isComposeView(view: View): Boolean = view is RootForTest
 
     fun getCurrentActivity(): Activity? = try {
         Class.forName("android.app.ActivityThread")
@@ -238,11 +293,16 @@ class SkeletonGenerator {
 
             val rootGroup = composer.compositionData.asTree()
 
-            // Usa a função computeLayoutInfos do Radiography
-            // Passamos null para semanticsOwner pois não é estritamente necessário para o esqueleto
-            val layoutInfos = rootGroup.computeLayoutInfos(semanticsOwner = null)
+            // A árvore de semantics é a fonte de tipo que SOBREVIVE à minificação:
+            // acessibilidade depende dela, então o R8 não pode removê-la. Os nomes
+            // de composable, em contraste, vêm da source information do compilador,
+            // que o runtime do Compose apaga em release via -assumenosideeffects.
+            val semantics = SemanticsIndex((composeView as? RootForTest)?.semanticsOwner)
+            if (semantics.isEmpty) {
+                Log.d("SkeletonGenerator", "No semantics available; falling back to call-chain names")
+            }
 
-            Log.d("SkeletonGen", "Found ${layoutInfos.count()} layout infos")
+            val layoutInfos = rootGroup.computeLayoutInfos(semantics = semantics)
 
             // Converte ComposeLayoutInfo para SkeletonNode
             return layoutInfos.map { convertLayoutInfoToSkeletonNode(it) }.toList()
@@ -265,7 +325,9 @@ class SkeletonGenerator {
                     layoutInfo.bounds.right,
                     layoutInfo.bounds.bottom
                 )
-                val type = determineComposeNodeType(layoutInfo.name)
+                // Semantics primeiro (confiável em release), nome depois (só existe em debug).
+                val type = classifyBySemantics(layoutInfo.semanticsNodes)
+                    ?: determineComposeNodeType(layoutInfo.name)
                 val color = defaultColors[type] ?: Color.LTGRAY
                 val style = if (type == NodeType.CONTAINER) Paint.Style.STROKE else Paint.Style.FILL
 
@@ -333,39 +395,57 @@ class SkeletonGenerator {
         return null
     }
 
+    /**
+     * Desembrulha uma [Composition] até chegar na implementação real.
+     *
+     * NÃO compara nome de classe. Num build de release minificado o R8 renomeia
+     * `androidx.compose.ui.platform.WrappedComposition` para algo como `p0.V0`, e
+     * `androidx.compose.runtime.CompositionImpl` para `H.w` — a versão anterior
+     * comparava `this::class.java.name` com o literal, nunca casava, devolvia o
+     * wrapper sem desembrulhar e o [getComposer] logo em seguida retornava null.
+     * Resultado: toda tela Compose gerava um skeleton vazio, em silêncio.
+     *
+     * Buscar por *tipo* funciona depois da ofuscação: `is Composition` é resolvido
+     * pelo compilador contra a classe real, não pelo nome.
+     */
     private fun Composition.unwrap(): Composition {
-        val className = this::class.java.name
-        if (className != "androidx.compose.ui.platform.WrappedComposition") {
-            return this
+        var current: Composition = this
+        // Wrappers aninhados são possíveis; o limite evita ciclo patológico.
+        repeat(MAX_UNWRAP_DEPTH) {
+            val inner = current.javaClass.declaredFields.asSequence()
+                .mapNotNull { field ->
+                    runCatching {
+                        field.isAccessible = true
+                        field.get(current) as? Composition
+                    }.getOrNull()
+                }
+                .firstOrNull { it !== current }
+                ?: return current
+            current = inner
         }
-
-        return try {
-            val wrappedClass = Class.forName("androidx.compose.ui.platform.WrappedComposition")
-            val originalField = wrappedClass.getDeclaredField("original")
-            originalField.isAccessible = true
-            originalField.get(this) as Composition
-        } catch (e: Exception) {
-            Log.w("SkeletonGenerator", "Could not unwrap WrappedComposition", e)
-            this
-        }
+        return current
     }
 
+    /**
+     * Extrai o [Composer] de uma [Composition], também por tipo.
+     */
     private fun Composition.getComposer(): Composer? {
-        val className = this::class.java.name
-        if (className != "androidx.compose.runtime.CompositionImpl") {
-            Log.w("SkeletonGenerator", "Composition is not CompositionImpl: $className")
-            return null
-        }
+        val found = javaClass.declaredFields.asSequence()
+            .mapNotNull { field ->
+                runCatching {
+                    field.isAccessible = true
+                    field.get(this) as? Composer
+                }.getOrNull()
+            }
+            .firstOrNull()
 
-        return try {
-            val compositionImplClass = Class.forName("androidx.compose.runtime.CompositionImpl")
-            val composerField = compositionImplClass.getDeclaredField("composer")
-            composerField.isAccessible = true
-            composerField.get(this) as? Composer
-        } catch (e: Exception) {
-            Log.e("SkeletonGenerator", "Error extracting Composer", e)
-            null
+        if (found == null) {
+            Log.w(
+                "SkeletonGenerator",
+                "No Composer field on ${javaClass.name}; Compose hierarchy unavailable"
+            )
         }
+        return found
     }
 
     /**
@@ -447,6 +527,53 @@ class SkeletonGenerator {
     }
 
 
+    /**
+     * Deriva o tipo do nó a partir da árvore de semantics.
+     *
+     * Retorna null quando a semantics não diz nada de útil, para o chamador cair
+     * no heurístico por nome.
+     */
+    private fun classifyBySemantics(nodes: List<SemanticsNode>): NodeType? {
+        if (nodes.isEmpty()) return null
+
+        for (node in nodes) {
+            val config = node.config
+
+            config.getOrNull(SemanticsProperties.Role)?.let { role ->
+                when (role) {
+                    Role.Button, Role.Checkbox, Role.Switch,
+                    Role.RadioButton, Role.Tab -> return NodeType.BUTTON
+                    Role.Image -> return NodeType.IMAGE
+                    Role.DropdownList -> return NodeType.INPUT
+                    else -> Unit
+                }
+            }
+
+            // Campo editável: EditableText, ou a ação de escrita quando o valor está vazio.
+            if (config.getOrNull(SemanticsProperties.EditableText) != null ||
+                config.getOrNull(SemanticsActions.SetText) != null
+            ) {
+                return NodeType.INPUT
+            }
+
+            if (config.getOrNull(SemanticsProperties.Text)?.isNotEmpty() == true) {
+                return NodeType.TEXT
+            }
+
+            // Descrição sem texto é o padrão de ícone/imagem.
+            if (config.getOrNull(SemanticsProperties.ContentDescription)?.isNotEmpty() == true) {
+                return NodeType.IMAGE
+            }
+
+            // Clicável sem role explícito ainda é um alvo de toque.
+            if (config.getOrNull(SemanticsActions.OnClick) != null) {
+                return NodeType.BUTTON
+            }
+        }
+
+        return null
+    }
+
     private fun determineComposeNodeType(name: String): NodeType {
         val nameLower = name.lowercase()
 
@@ -487,7 +614,7 @@ class SkeletonGenerator {
      * Determina o tipo de um View Android
      */
     private fun determineNodeType(view: View): NodeType {
-        if (view.javaClass.name.contains("AndroidComposeView")) return NodeType.COMPOSE_HOST
+        if (isComposeView(view)) return NodeType.COMPOSE_HOST
         if (view.javaClass.name.contains("CardView")) return NodeType.CARD
         if (view is WebView) return NodeType.WEBVIEW
         if (view is android.widget.EditText) return NodeType.INPUT

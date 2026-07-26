@@ -25,7 +25,9 @@ import androidx.compose.runtime.Composer
 import androidx.compose.runtime.CompositionContext
 import androidx.compose.ui.tooling.data.Group
 import androidx.compose.ui.tooling.data.UiToolingDataApi
-import kotlin.LazyThreadSafetyMode.PUBLICATION
+import java.lang.reflect.Field
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.apply
 import kotlin.collections.asSequence
 import kotlin.jvm.java
@@ -34,42 +36,75 @@ import kotlin.run
 import kotlin.sequences.filter
 import kotlin.sequences.mapNotNull
 
-private val REFLECTION_CONSTANTS by lazy(PUBLICATION) {
-    try {
-        object {
-            val CompositionContextHolderClass =
-                Class.forName("androidx.compose.runtime.ComposerImpl\$CompositionContextHolder")
-            val CompositionContextImplClass =
-                Class.forName("androidx.compose.runtime.ComposerImpl\$CompositionContextImpl")
-            val CompositionContextHolderRefField =
-                CompositionContextHolderClass.getDeclaredField("ref")
-                    .apply { isAccessible = true }
-            val CompositionContextImplComposersField =
-                CompositionContextImplClass.getDeclaredField("composers")
-                    .apply { isAccessible = true }
-        }
-    } catch (e: Throwable) {
-        null
-    }
+/**
+ * Descoberta por ESTRUTURA, não por nome de classe.
+ *
+ * O original fazia `Class.forName("androidx.compose.runtime.ComposerImpl$CompositionContextHolder")`.
+ * Num release minificado o R8 renomeia essa classe, o `forName` lança
+ * ClassNotFoundException, o catch zera REFLECTION_CONSTANTS e
+ * [getCompositionContexts] passa a devolver sequência vazia — ou seja, toda
+ * subcomposição (LazyColumn, LazyRow, bottom sheet) desaparece do skeleton, em
+ * silêncio.
+ *
+ * Procurar um campo cujo TIPO é CompositionContext funciona depois da ofuscação,
+ * porque a referência de tipo é resolvida pelo compilador. O resultado é
+ * memoizado por classe, então o custo de reflection é pago uma vez.
+ */
+private val contextFieldByClass = ConcurrentHashMap<Class<*>, Field>()
+private val classesWithoutContext: MutableSet<Class<*>> =
+    Collections.newSetFromMap(ConcurrentHashMap())
+
+private fun Any.compositionContextField(): Field? {
+    val cls = javaClass
+    contextFieldByClass[cls]?.let { return it }
+    if (cls in classesWithoutContext) return null
+
+    val field = runCatching {
+        cls.declaredFields.firstOrNull { CompositionContext::class.java.isAssignableFrom(it.type) }
+            ?.apply { isAccessible = true }
+    }.getOrNull()
+
+    if (field == null) classesWithoutContext += cls else contextFieldByClass[cls] = field
+    return field
+}
+
+private val composersFieldByClass = ConcurrentHashMap<Class<*>, Field>()
+private val classesWithoutComposers: MutableSet<Class<*>> =
+    Collections.newSetFromMap(ConcurrentHashMap())
+
+private fun CompositionContext.composersField(): Field? {
+    val cls = javaClass
+    composersFieldByClass[cls]?.let { return it }
+    if (cls in classesWithoutComposers) return null
+
+    // `composers` é um Set<Composer>; o tipo declarado é genérico, então
+    // identificamos pelo conteúdo.
+    val field = runCatching {
+        cls.declaredFields
+            .asSequence()
+            .filter { Iterable::class.java.isAssignableFrom(it.type) }
+            .onEach { it.isAccessible = true }
+            .firstOrNull { candidate ->
+                val value = runCatching { candidate.get(this) }.getOrNull() as? Iterable<*>
+                value != null && value.all { it is Composer }
+            }
+    }.getOrNull()
+
+    if (field == null) classesWithoutComposers += cls else composersFieldByClass[cls] = field
+    return field
 }
 
 @OptIn(UiToolingDataApi::class)
-internal fun Group.getCompositionContexts(): Sequence<CompositionContext> {
-  return REFLECTION_CONSTANTS?.run {
+internal fun Group.getCompositionContexts(): Sequence<CompositionContext> =
     data.asSequence()
-      .filter { it != null && it::class.java == CompositionContextHolderClass }
-      .mapNotNull { holder -> holder.tryGetCompositionContext() }
-  } ?: emptySequence()
-}
+        .filterNotNull()
+        .mapNotNull { holder ->
+            holder.compositionContextField()
+                ?.let { runCatching { it.get(holder) as? CompositionContext }.getOrNull() }
+        }
 
 @Suppress("UNCHECKED_CAST")
 internal fun CompositionContext.tryGetComposers(): Iterable<Composer> {
-  return REFLECTION_CONSTANTS?.let {
-    if (!it.CompositionContextImplClass.isInstance(this)) return emptyList()
-    it.CompositionContextImplComposersField.get(this) as? Iterable<Composer>
-  } ?: emptyList()
-}
-
-private fun Any?.tryGetCompositionContext() = REFLECTION_CONSTANTS?.let {
-  it.CompositionContextHolderRefField.get(this) as? CompositionContext
+    val field = composersField() ?: return emptyList()
+    return runCatching { field.get(this) as? Iterable<Composer> }.getOrNull() ?: emptyList()
 }

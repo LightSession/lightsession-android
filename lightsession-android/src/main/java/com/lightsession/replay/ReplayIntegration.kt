@@ -2,6 +2,7 @@ package com.lightsession.replay
 
 import android.content.Context
 import android.util.Log
+import java.util.concurrent.atomic.AtomicInteger
 import com.lightsession.LightSessionConfig
 import com.lightsession.SessionDataManager
 import com.lightsession.mapper.ScreenMapperIntegration
@@ -13,10 +14,13 @@ class ReplayIntegration(
     private val context: Context,
     private val config: LightSessionConfig,
 ) {
-    private var totalCaptures = 0
-    private var uniqueCaptures = 0
-    private var repeatedFrameSignals = 0
+    // Atomic because the capture callback now arrives on the encoder thread,
+    // not the main thread — the JPEG compression moved off the UI thread.
+    private val totalCaptures = AtomicInteger(0)
+    private val uniqueCaptures = AtomicInteger(0)
+    private val repeatedFrameSignals = AtomicInteger(0)
     private var sessionDataManager: SessionDataManager? = null
+    private var recorder: Recorder? = null
 
     /**
      * Initializes the screen capture and automatic flush systems.
@@ -29,11 +33,12 @@ class ReplayIntegration(
     }
 
     private fun start() {
-        val captureDelayMillis = 300L // Capture every 300ms for smoother flow
         val recorder = Recorder()
+        this.recorder = recorder
         recorder.capture(
             context = context,
-            delayMillis = captureDelayMillis,
+            idleDelayMillis = config.captureIntervalMs,
+            burstDelayMillis = config.interactionCaptureIntervalMs,
             scaleFactor = getScaleFactor(config.captureQuality),
         ) { bitmapBytes ->
             handleCaptureResult(bitmapBytes)
@@ -49,7 +54,7 @@ class ReplayIntegration(
     }
 
     private fun handleCaptureResult(bitmapBytes: ByteArray?) {
-        totalCaptures++
+        totalCaptures.incrementAndGet()
 
         if (bitmapBytes != null) {
             val timestamp = System.currentTimeMillis()
@@ -64,13 +69,9 @@ class ReplayIntegration(
             }
 
             if (isRepeatedFrame) {
-                repeatedFrameSignals++
-                Log.d("ReplayIntegration",
-                    "Repeated frame signal at timestamp: $timestamp, total: $repeatedFrameSignals")
+                repeatedFrameSignals.incrementAndGet()
             } else {
-                uniqueCaptures++
-                Log.d("ReplayIntegration",
-                    "New frame captured: ${bitmapBytes.size} bytes, total unique: $uniqueCaptures")
+                uniqueCaptures.incrementAndGet()
             }
 
             // Enviar para SessionDataManager se disponível
@@ -102,9 +103,11 @@ class ReplayIntegration(
      */
     fun onTerminate() {
         sessionDataManager?.forceFlush()
+        recorder?.shutdown()
+        recorder = null
         Log.d("ReplayIntegration",
-            "Terminated. Final stats - Total captures: $totalCaptures, " +
-                    "Unique frames: $uniqueCaptures, Repeated signals: $repeatedFrameSignals")
+            "terminated: ${totalCaptures.get()} captures, ${uniqueCaptures.get()} unique, " +
+                    "${repeatedFrameSignals.get()} repeats")
     }
 
     /**
@@ -121,9 +124,9 @@ class ReplayIntegration(
      */
     fun getStats(): Map<String, Int> {
         return mapOf(
-            "totalCaptures" to totalCaptures,
-            "uniqueCaptures" to uniqueCaptures,
-            "repeatedFrameSignals" to repeatedFrameSignals
+            "totalCaptures" to totalCaptures.get(),
+            "uniqueCaptures" to uniqueCaptures.get(),
+            "repeatedFrameSignals" to repeatedFrameSignals.get()
         )
     }
 }

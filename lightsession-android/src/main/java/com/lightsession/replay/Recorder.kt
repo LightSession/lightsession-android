@@ -2,12 +2,15 @@ package com.lightsession.replay
 
 import android.content.Context
 import android.util.Log
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewTreeObserver
 import curtains.Curtains
 import curtains.OnRootViewsChangedListener
+import curtains.OnTouchEventListener
 import curtains.onDecorViewReady
 import curtains.phoneWindow
+import curtains.touchEventInterceptors
 import curtains.windowAttachCount
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
@@ -15,24 +18,88 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
+/**
+ * Periodic screen capture.
+ *
+ * # Why the interval is not a single number
+ *
+ * Touch data arrives at 60-120Hz. Frames arrive at whatever interval is
+ * configured, and in production that has to be around a second — three captures
+ * a second is not something you ask of a customer's battery.
+ *
+ * The consequence is that a swipe happens entirely between two frames. The
+ * replay then shows a static screen with a trail drawn over it, then cuts to an
+ * already-scrolled screen. The gesture has no visual to be synchronised with,
+ * because none was recorded.
+ *
+ * No amount of work in the renderer fixes that: the frames do not exist. But
+ * the information is not spread evenly through a session — measured on a real
+ * 385-second session, gestures occupied **0.2% of it**. So a single global
+ * interval spends almost its entire budget on a screen nobody is touching, and
+ * under-samples the fraction that carries the interaction.
+ *
+ * Hence two intervals: a slow one while idle, and a burst while something is
+ * happening. This is the same trade the repeated-frame signal already makes —
+ * spend bytes where the change is — applied to time instead of content.
+ *
+ * # When the burst ends
+ *
+ * Not on `ACTION_UP`. A fling keeps animating for several hundred milliseconds
+ * after the finger leaves, and that is the part worth seeing. The burst ends
+ * when drawing goes quiet, with a hard ceiling so an indefinite animation (a
+ * shimmer, a spinner) cannot hold it open forever.
+ */
 internal class Recorder {
 
     companion object {
-        // signal of bytes to indicate a repeated frame
-        val REPEATED_FRAME_SIGNAL = byteArrayOf(0x52, 0x50, 0x54, 0x44) // "RPTD" in ASCII
+        /** Signal bytes standing in for a frame identical to the previous one. */
+        val REPEATED_FRAME_SIGNAL = byteArrayOf(0x52, 0x50, 0x54, 0x44) // "RPTD"
+
+        /** How long a burst survives with no further touch and no drawing. */
+        private const val BURST_QUIET_MS = 250L
+
+        /**
+         * Ceiling on a single burst, measured from the touch that started it.
+         * Without it, a screen that animates forever bursts forever.
+         */
+        private const val BURST_MAX_MS = 3_000L
     }
 
-    // Instância da classe utilitária para captura de tela
     private val screenDrawing = ScreenDrawing()
 
-    // Flag to indicate if the screen content has changed
+    /** Set by the draw listener, consumed by the capture tick. */
     private val isScreenContentChanged = AtomicBoolean(false)
     private var isFirstCapture = true
+
+    /** Wall clock until which captures use the burst interval. */
+    private val burstUntil = AtomicLong(0)
+
+    /** When the current burst began, for the hard ceiling. */
+    private val burstStartedAt = AtomicLong(0)
+
+    private var idleDelayMillis = 1_000L
+    private var burstDelayMillis = 100L
+    private var scaleFactor = ScreenDrawing.Companion.ScalePresets.MEDIUM_QUALITY
+    private var onBitmapBytesReady: ((ByteArray?) -> Unit)? = null
 
     private val scheduler by lazy {
         Executors.newSingleThreadScheduledExecutor(
             LightSessionThreadFactory("LightSession-Scheduler", enableCounter = false)
+        )
+    }
+
+    /**
+     * Where JPEG compression happens.
+     *
+     * Single-threaded on purpose: frames must reach the batch in capture order,
+     * and one encoder keeps that guarantee without any sequencing logic. It also
+     * bounds how much CPU the SDK can take from the host app.
+     */
+    private val encoder by lazy {
+        Executors.newSingleThreadExecutor(
+            LightSessionThreadFactory("LightSession-Encoder", enableCounter = false)
         )
     }
 
@@ -41,477 +108,282 @@ internal class Recorder {
     private var contextRef: WeakReference<Context>? = null
 
     /**
-     * Thread-SAFE Map that stores all views being monitored.
-     * Key: Single View ID (System.IDENTITY_HASH_CODE)
-     * Value: ViewInfo with weak reference and specific listener
+     * One draw listener per window root, not per view.
      *
-     * Concurrent hashmap is used because:
-     * - views can be added/removed from different threads
-     * - prevents endront modification exception during iteration
-     * - Performance higher than Collections.SynchronizedMap()
+     * `View.getViewTreeObserver()` returns the *same* observer for every
+     * attached view under a window root. Registering a listener per view — which
+     * is what this used to do, recursively — therefore put N listeners on one
+     * observer, all firing on every draw pass, each one logging a string it had
+     * to build first. On a scrolling list that was thousands of calls a second
+     * on the UI thread to set a boolean that was already true.
      */
-    private val monitoredViews = ConcurrentHashMap<Int, ViewInfo>()
+    private val drawListeners = ConcurrentHashMap<Int, DrawRegistration>()
 
-    /**
-     * Set of weak references for the main root views.
-     * Used to track the main views of hierarchy and facilitate cleaning.
-     *
-     * Weak reference prevents memory leaks if view is removed
-     * but still referenced here.
-     */
     private val rootViews = mutableSetOf<WeakReference<View>>()
 
-    /**
-     * Data class to store information from a monitored view.
-     *
-     * @param viewRef weak reference for View (avoids memory leak)
-     * @param drawListener Listener specific of this view to detect changes
-     * @param isActive Flag to mark if monitoring is active (future use)
-     */
-    private data class ViewInfo(
+    private data class DrawRegistration(
         val viewRef: WeakReference<View>,
-        val drawListener: ViewTreeObserver.OnDrawListener,
-        val isActive: Boolean = true
+        val listener: ViewTreeObserver.OnDrawListener,
     )
 
     /**
-     * Starts the periodic screen capture system with smart detection of change.
+     * A touch means the user is doing something worth sampling densely.
      *
-     * @param context application context (used to access windimanager)
-     * @param delayMillis Interval between Millys segund Verifications
-     * @param scaleFactor image scale factor (0.1 to 1.0)
-     * @para onBitmapBytesReady callback called when new capture is ready
+     * Registered as a Curtains interceptor on each window, so the Recorder does
+     * not depend on the interaction-tracking code having been wired up.
+     */
+    private val touchListener = OnTouchEventListener { event ->
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN,
+            MotionEvent.ACTION_MOVE,
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_POINTER_DOWN -> onInteraction()
+        }
+    }
+
+    /**
+     * Starts capturing.
      *
-     * Operation:
-     * 1. Install views monitoring (detects visual changes)
-     * 2. For any previous capture task (avoid overlap)
-     * 3. Configures Unique Thread Performer for Background Capture
-     * 4. Agenda periodic checks based on timer
-     * 5. With each check, decides whether to capture new image or send repetition signal
-     *
-     * Decision logic:
-     * - If first capture or screen has changed: Capture new image
-     * - If not: Send repeated_frame_signal (save processing and bandwidth)
-     *
-     * ThreadSafety:
-     * - Captures run in background thread (does not block UI)
-     * - Results are posted back to UI Thread via Handler
-     * - Atomic boolean used for change-sofe
-     *
-     * Why ScheduleDexecuterservice:
-     * - More efficient than Handler.postdelayeed for repetitive tasks
-     * - Better control of Life Cycle (Shutdown Graceful)
-     * - Dedicated thread does not impact UI thread
-     * - ScheduleWithfixedlaylandguarantees consistent interval between executions
+     * @param idleDelayMillis interval while nothing is happening.
+     * @param burstDelayMillis interval while a gesture is in progress. Equal to
+     *   [idleDelayMillis] disables bursting.
      */
     fun capture(
         context: Context,
-        delayMillis: Long,
+        idleDelayMillis: Long,
+        burstDelayMillis: Long,
         scaleFactor: Float = ScreenDrawing.Companion.ScalePresets.MEDIUM_QUALITY,
-        onBitmapBytesReady: (ByteArray?) -> Unit
+        onBitmapBytesReady: (ByteArray?) -> Unit,
     ) {
+        this.idleDelayMillis = idleDelayMillis.coerceAtLeast(50L)
+        this.burstDelayMillis = burstDelayMillis.coerceIn(16L, this.idleDelayMillis)
+        this.scaleFactor = scaleFactor
+        this.onBitmapBytesReady = onBitmapBytesReady
 
-        // Install monitoring to detect change changes
-        installViewMonitoring()
-        // Defines the scale factor in the utilitarian class
         screenDrawing.setGlobalScaleFactor(scaleFactor)
-        // Stop any previous task to avoid overlap
-        // configure references and handlers
         contextRef = WeakReference(context)
-        mainHandler = MainLooperHandler() // to return results to UI thread
-        // reset state flags
+        mainHandler = MainLooperHandler()
+
         isFirstCapture = true
-        isScreenContentChanged.set(true) // Forcing first capture
+        isScreenContentChanged.set(true)
 
-        scheduledFuture = scheduler.scheduleWithFixedDelay({
-            try {
-                val currentContext = contextRef?.get()
-                if (currentContext == null) {
-                    Log.w("LightSession", "Context became null, stopping capture task")
-                    return@scheduleWithFixedDelay
-                }
+        installViewMonitoring()
 
-                // Clean dead views periodically (maintenance)
-                cleanupDeadViews()
-
-                // decide if you need to capture new image
-                if (isFirstCapture || isScreenContentChanged.getAndSet(false)) {
-                    // screen changed or is first capture - capture new image
-                    isFirstCapture = false
-                    Log.d("LightSession", "Capturing new frame (content changed or first capture)")
-
-                    mainHandler?.post {
-                        val composedBitmapBytes = screenDrawing.captureCurrentScreenOptimized(scaleFactor)
-                        onBitmapBytesReady(composedBitmapBytes)
-                    }
-                } else {
-                    // Screen has not changed - Send repeated frame signal
-                    Log.d("LightSession", "Repeated frame detected, sending signal")
-                    mainHandler?.post {
-                        onBitmapBytesReady(REPEATED_FRAME_SIGNAL)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("LightSession", "Unexpected error in capture task", e)
-                // Continue execution instead of crashing the scheduler
-            }
-        }, 100L, delayMillis, TimeUnit.MILLISECONDS)
+        Log.d(
+            "LightSessionCore",
+            "capture started: idle ${this.idleDelayMillis}ms, burst ${this.burstDelayMillis}ms"
+        )
+        scheduleNext(100L)
     }
 
-    /**
-     * Factory Method to create a specific Draw listener for a View.
-     *
-     * Each view needs your own listener because:
-     * - Allows you to identify which specific View has changed (useful for debug)
-     * - Avoid conflicts when multiple views are modified simultaneously
-     * - Facilitates selective removal of listeners
-     *
-     * @param viewId ID from View to Logging and Debug
-     * @return Listener that marks content change when view is redesigned
-     */
-    private fun createDrawListener(viewId: Int): ViewTreeObserver.OnDrawListener {
-        return ViewTreeObserver.OnDrawListener {
-            // mark that the content has changed using atomicboolean to thread-safety
-            isScreenContentChanged.set(true)
-            Log.d("LightSessionCore", "Screen content changed detected from view: $viewId")
+    /** True while the burst interval applies. */
+    private fun isBursting(now: Long): Boolean {
+        val until = burstUntil.get()
+        if (until <= now) return false
+        val ceiling = burstStartedAt.get() + BURST_MAX_MS
+        return now < ceiling
+    }
+
+    private fun currentDelay(now: Long): Long =
+        if (isBursting(now)) burstDelayMillis else idleDelayMillis
+
+    /** Extends, or opens, the burst window. */
+    private fun onInteraction() {
+        val now = System.currentTimeMillis()
+        if (!isBursting(now)) {
+            burstStartedAt.set(now)
+        }
+        burstUntil.set(now + BURST_QUIET_MS)
+    }
+
+    private fun scheduleNext(delayMillis: Long) {
+        scheduledFuture = scheduler.schedule(
+            { tick() },
+            delayMillis,
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
+    private fun tick() {
+        try {
+            if (contextRef?.get() == null) {
+                Log.w("LightSession", "context gone; capture stopped")
+                return
+            }
+
+            cleanupDeadViews()
+
+            if (isFirstCapture || isScreenContentChanged.getAndSet(false)) {
+                isFirstCapture = false
+                captureFrame()
+            } else {
+                onBitmapBytesReady?.invoke(REPEATED_FRAME_SIGNAL)
+            }
+        } catch (e: Throwable) {
+            Log.e("LightSession", "capture tick failed", e)
+        } finally {
+            // Self-rescheduling rather than a fixed period: the interval has to
+            // change when a burst starts, and scheduleWithFixedDelay cannot.
+            // Measuring from the end of the tick also means a slow capture
+            // stretches the interval instead of queueing work behind itself.
+            val now = System.currentTimeMillis()
+            scheduleNext(currentDelay(now))
         }
     }
 
     /**
-     * Install the views monitoring system in the application.
+     * Draws on the main thread, encodes off it.
      *
-     * This method is responsible for:
-     * 1. Clean any previous monitoring (avoids duplication)
-     * 2. Record all existing views at the moment
-     * 3. Configure listener to detect new views that appear
-     *
-     * It is called automatically when capture() is started.
-     *
-     * Why do we need this:
-     * - Android creates/destroys dynamically views (activities, fragments, dialogs)
-     * - We need to detect changes in any visible view on the screen
-     * - views may appear/disappear without warning (pop-ups, keyboard, etc.)
+     * The split is the point. `view.draw()` needs the UI thread; JPEG
+     * compression does not, and it is the larger half.
      */
+    private fun captureFrame() {
+        val handler = mainHandler ?: return
+        val scale = scaleFactor
+        handler.post {
+            val bitmap = screenDrawing.captureToBitmap(scale)
+            if (bitmap == null) {
+                onBitmapBytesReady?.invoke(null)
+                return@post
+            }
+            encoder.execute {
+                // Delivered from the encoder thread. Everything downstream is
+                // thread-safe: SessionDataManager buffers into a
+                // ConcurrentLinkedQueue and ReplayIntegration counts atomically.
+                val bytes = screenDrawing.encodeToJpeg(bitmap, scale)
+                onBitmapBytesReady?.invoke(bytes)
+            }
+        }
+    }
+
     private fun installViewMonitoring() {
         try {
-            // Clear previous monitoring to avoid duplicate listeners
             cleanupViewMonitoring()
-
-            // Add all views that already exist at the moment
-            Curtains.rootViews.forEach { view ->
-                addViewToMonitoring(view, true)
-            }
-
+            Curtains.rootViews.forEach { view -> addViewToMonitoring(view, true) }
             Curtains.onRootViewsChangedListeners += onRootViewsChangedListener
-            Log.d("LightSessionCore", "View monitoring installed with ${monitoredViews.size} views")
+            Log.d("LightSessionCore", "monitoring ${drawListeners.size} window root(s)")
         } catch (e: Throwable) {
-            Log.e("LightSessionCore", "View monitoring setup failed: $e")
+            Log.e("LightSessionCore", "view monitoring setup failed: $e")
         }
     }
 
-    /**
-     * Fully removes the views monitoring system.
-     *
-     * Cleaning process:
-     * 1. Removes Listener from future changes
-     * 2. Removes all Draw listeners from monitored views
-     * 3. Cleans all data collections
-     * 4. Reset state flags
-     *
-     * Critical to avoid memory leaks and indefinite behavior.
-     */
     fun uninstallViewMonitoring() {
         try {
-            // Remove listener from future changes
             Curtains.onRootViewsChangedListeners -= onRootViewsChangedListener
-
-            // Clean all existing monitoring
             cleanupViewMonitoring()
-
-            // reset states for next execution
             isScreenContentChanged.set(false)
             isFirstCapture = true
-
-            // Limpa pools da classe utilitária
+            burstUntil.set(0)
             screenDrawing.clearObjectPools()
-
-            Log.d("LightSessionCore", "View monitoring uninstalled")
+            Log.d("LightSessionCore", "view monitoring uninstalled")
         } catch (e: Throwable) {
-            Log.e("LightSessionCore", "View monitoring uninstall failed: $e")
+            Log.e("LightSessionCore", "view monitoring uninstall failed: $e")
         }
     }
 
-    /**
-     * Cleans all listeners and references of monitored views.
-     *
-     * Why is it necessary:
-     * - Viewtreeobserver.andrawlistener is not automatically removed
-     * - Orphaned listeners can cause significant memory leaks
-     * - views may continue to try to notify nonexistent listeners
-     *
-     * Process:
-     * 1. For each monitored view, remove your specific draw listener
-     * 2. Treats exceptions individually (a view failure not for the process)
-     * 3. Cleans all data collections
-     */
-    private fun cleanupViewMonitoring() {
-        // Remove all listeners from monitored views
-        monitoredViews.values.forEach { viewInfo ->
-            viewInfo.viewRef.get()?.let { view ->
-                try {
-                    // Remove the specific listener from this view
-                    view.viewTreeObserver.removeOnDrawListener(viewInfo.drawListener)
-                } catch (e: Exception) {
-                    // view may have been destroyed, but continue with other
-                    Log.w("LightSessionCore", "Failed to remove draw listener: $e")
-                }
-            }
-        }
-
-        // Clean all collections
-        monitoredViews.clear()
-        rootViews.clear()
+    fun shutdown() {
+        scheduledFuture?.cancel(false)
+        scheduledFuture = null
+        uninstallViewMonitoring()
+        scheduler.shutdown()
+        encoder.shutdown()
     }
 
-    /**
-     * Listener that is notified when views are added/removed from the hierarchy.
-     *
-     * This is the heart of the dynamic monitoring system:
-     * - Detects when new views appear (dialogs, fragments, keyboards, etc.)
-     * - Detects when views are removed (automatic cleanup)
-     * - Maintains monitoring always updated without manual intervention
-     */
     private val onRootViewsChangedListener = OnRootViewsChangedListener { view, added ->
         addViewToMonitoring(view, added)
     }
 
-    /**
-     * Add or remove a view from the monitoring system.
-     *
-     * @param view the view that was added/removed from the hierarchy
-     * @param added True if the view has been added, false if it was removed
-     *
-     * Addition logic:
-     * - Records View as Root View
-     * - Checks if you have PhoneWindow (Activity/Dialog views)
-     * - If there is no window attach count, wait for me to be ready
-     * - Otherwise, it constitutes monitoring immediately
-     *
-     * Why WindowAttachCount matters:
-     * - views can be created before they are attached to the window
-     * - Monitoring unproked views can cause crashes
-     * - DecorView is the real root of an Android window
-     */
     private fun addViewToMonitoring(view: View, added: Boolean = true) {
         try {
-            if (added) {
-                // Add to root views list for tracking
-                rootViews.add(WeakReference(view))
-
-                view.phoneWindow?.let { window ->
-                    // View belongs to a window (Activity, Dialog, etc.)
-                    if (view.windowAttachCount == 0) {
-                        // view has not yet been attached, wait for decorview
-                        window.onDecorViewReady {
-                            setupViewMonitoring(view)
-                        }
-                    } else {
-                        // view already attached, you can monitor immediately
-                        setupViewMonitoring(view)
-                    }
-                } ?: run {
-                    // view without phonewindow (can be custom view), try to monitor directly
-                    setupViewMonitoring(view)
-                }
-            } else {
-                // view has been removed, clean monitoring
+            if (!added) {
                 removeViewFromMonitoring(view)
-            }
-        } catch (e: Throwable) {
-            Log.e("LightSessionCore", "Failed to add view to monitoring: $e")
-        }
-    }
-
-    /**
-     * Configures full monitoring for a specific view.
-     *
-     * @param view the view to be monitored
-     *
-     * Process:
-     * 1. Generates unique ID for View (identity-based, not equals)
-     * 2. Verifies if it is already being monitored (avoids duplication)
-     * 3. Creates DrawListener specific for this view
-     * 4. Record the listener on ViewTreeobserver
-     * 5. stores information for later cleanup
-     * 6. If it is viewgroup, recursively monitors the children
-     * 7. Brand that there was change (first force capture)
-     *
-     * Why system.identityhashcode:
-     * - View.hashcode() can be overlooked and cause collisions
-     * - Identityhashcode guarantees uniqueness based on the identity of the object
-     * - Consistent throughout the life of the object
-     */
-    private fun setupViewMonitoring(view: View) {
-        try {
-            val viewId = System.identityHashCode(view)
-
-            // Check if it is already being monitored (avoid duplication)
-            if (monitoredViews.containsKey(viewId)) {
-                Log.d("LightSessionCore", "View $viewId already monitored")
                 return
             }
 
-            // Create specific listener for this view
-            val drawListener = createDrawListener(viewId)
+            rootViews.add(WeakReference(view))
 
-            // Registrar listener no ViewTreeObserver da view
-            view.viewTreeObserver.addOnDrawListener(drawListener)
-
-            // Store information for Cleanup and Control
-            monitoredViews[viewId] = ViewInfo(
-                viewRef = WeakReference(view),
-                drawListener = drawListener
-            )
-
-            // If you are viewgroup, also monitor your children recursively
-            if (view is android.view.ViewGroup) {
-                setupChildViewsMonitoring(view)
+            val window = view.phoneWindow
+            if (window != null && view.windowAttachCount == 0) {
+                // Not attached yet; the observer would be a floating one.
+                window.onDecorViewReady { setupWindowMonitoring(view) }
+            } else {
+                setupWindowMonitoring(view)
             }
-
-            Log.d("LightSessionCore", "View monitoring setup for view: $viewId")
-
-            // Mark that there was a change to force initial capture
-            isScreenContentChanged.set(true)
         } catch (e: Throwable) {
-            Log.e("LightSessionCore", "Failed to setup view monitoring: $e")
+            Log.e("LightSessionCore", "failed to monitor view: $e")
         }
     }
 
-    /**
-     * Recursively monitors all Views of a viewgroup.
-     *
-     * @param viewGroup the viewgroup whose children will be monitored
-     *
-     * Why is it necessary:
-     * - OnDraw listener at View father does not detect specific changes from children
-     * - Children can be modified (color, text, visibility) without redesigning the father
-     * - Changes in deeply nested views can be lost
-     * - Elements such as TextView, ImageView, etc. Only shoot draw in themselves
-     *
-     * Process:
-     * 1. Iterate for all the children of Viewgroup
-     * 2. For each child, check if it is already being monitored
-     * 3. If it is not, creates and records a specific draw listener
-     * 4. If the child is also Viewgroup, he recursively calls
-     *
-     * Optimization:
-     * - Avoid duplication by checking if it is already monitored
-     * - USA SYSTEM.IDENTITYHASHCODE FOR SINGLE IDENTIFICATION
-     * - Treats exceptions individually (a failed child not for the process)
-     */
-    private fun setupChildViewsMonitoring(viewGroup: android.view.ViewGroup) {
+    /** One draw listener and one touch interceptor per window root. */
+    private fun setupWindowMonitoring(view: View) {
         try {
-            for (i in 0 until viewGroup.childCount) {
-                val child = viewGroup.getChildAt(i)
-                if (child != null) {
-                    val childId = System.identityHashCode(child)
+            val id = System.identityHashCode(view)
+            if (drawListeners.containsKey(id)) return
 
-                    // Check if it is already being monitored
-                    if (!monitoredViews.containsKey(childId)) {
-                        // Create specific listener for this child
-                        val childDrawListener = createDrawListener(childId)
-                        child.viewTreeObserver.addOnDrawListener(childDrawListener)
+            val listener = ViewTreeObserver.OnDrawListener {
+                // Deliberately bare. This runs on every draw pass of the whole
+                // window; the previous version also built and emitted a log line
+                // here, per view, per frame.
+                isScreenContentChanged.set(true)
 
-                        // Store child information
-                        monitoredViews[childId] = ViewInfo(
-                            viewRef = WeakReference(child),
-                            drawListener = childDrawListener
-                        )
-
-                        // If the child is also Viewgroup, monitor his children
-                        if (child is android.view.ViewGroup) {
-                            setupChildViewsMonitoring(child)
-                        }
-                    }
+                // A burst already open extends while the screen keeps changing —
+                // this is what carries a fling past ACTION_UP. It does not open
+                // one, or any animation would trigger dense capture on its own.
+                val now = System.currentTimeMillis()
+                if (isBursting(now)) {
+                    burstUntil.set(now + BURST_QUIET_MS)
                 }
             }
+            view.viewTreeObserver.addOnDrawListener(listener)
+            drawListeners[id] = DrawRegistration(WeakReference(view), listener)
+
+            view.phoneWindow?.let { window ->
+                window.touchEventInterceptors -= touchListener
+                window.touchEventInterceptors += touchListener
+            }
+
+            isScreenContentChanged.set(true)
         } catch (e: Throwable) {
-            Log.e("LightSessionCore", "Failed to setup child views monitoring: $e")
+            Log.e("LightSessionCore", "failed to set up window monitoring: $e")
         }
     }
 
-    /**
-     * Removes a specific View from the monitoring system.
-     *
-     * @param view the view to be removed from monitoring
-     *
-     * Removal process:
-     * 1. Locates View on the Monitoring Map
-     * 2. Removes the specific draw of this view
-     * 3. Removes Entry from the Monitoring Map
-     * 4. Remove from root views if applicable
-     *
-     * Why is it important:
-     * - Views removed but still monitored cause memory leaks
-     * - Orphaned listeners may try to access destroyed views
-     * - Maintain clean map improves iteration performance
-     *
-     * NOTE: This method removes only specific View, not your children.
-     * Children are automatically removed by the system or periodic cleaning.
-     */
     private fun removeViewFromMonitoring(view: View) {
         try {
-            val viewId = System.identityHashCode(view)
-            monitoredViews[viewId]?.let { viewInfo ->
-                // Remover o draw listener da view
-                view.viewTreeObserver.removeOnDrawListener(viewInfo.drawListener)
-
-                // Remove from monitoring map
-                monitoredViews.remove(viewId)
-                Log.d("LightSessionCore", "View $viewId removed from monitoring")
+            val id = System.identityHashCode(view)
+            drawListeners.remove(id)?.let { registration ->
+                view.viewTreeObserver.removeOnDrawListener(registration.listener)
             }
-
-            // Remove from root views (clean dead references too)
+            view.phoneWindow?.let { it.touchEventInterceptors -= touchListener }
             rootViews.removeAll { it.get() == view || it.get() == null }
         } catch (e: Throwable) {
-            Log.e("LightSessionCore", "Failed to remove view from monitoring: $e")
+            Log.e("LightSessionCore", "failed to unmonitor view: $e")
         }
     }
 
-    /**
-     * Periodically clean views that have been destroyed but are still being monitored.
-     *
-     * Why is it necessary:
-     * - views can be destroyed without notifying the monitoring system
-     * - Weakreference.get() returns null when object was collected by GC
-     * - Keeping dead references on the map reduces performance and consumes memory
-     *
-     * Process:
-     * 1. Iterate for all monitored views
-     * 2. *
-     * 3. Collect IDS of the dead views
-     * 4. Removes all the dead views from the map
-     * 5. report how many were clean (useful for debug)
-     *
-     * Automatically called during the capture cycle to keep the system clean.
-     */
-    private fun cleanupDeadViews() {
-        val deadViews = mutableListOf<Int>()
-
-        // Identify views that were collected by the Garbage Collector
-        monitoredViews.forEach { (viewId, viewInfo) ->
-            if (viewInfo.viewRef.get() == null) {
-                deadViews.add(viewId)
+    private fun cleanupViewMonitoring() {
+        drawListeners.values.forEach { registration ->
+            registration.viewRef.get()?.let { view ->
+                try {
+                    view.viewTreeObserver.removeOnDrawListener(registration.listener)
+                    view.phoneWindow?.let { it.touchEventInterceptors -= touchListener }
+                } catch (e: Exception) {
+                    Log.w("LightSessionCore", "failed to remove draw listener: $e")
+                }
             }
         }
+        drawListeners.clear()
+        rootViews.clear()
+    }
 
-        // Remove dead views from the map
-        deadViews.forEach { viewId ->
-            monitoredViews.remove(viewId)
-        }
-
-        if (deadViews.isNotEmpty()) {
-            Log.d("LightSessionCore", "Cleaned up ${deadViews.size} dead views")
+    /** Drops registrations whose view has been collected. */
+    private fun cleanupDeadViews() {
+        val dead = drawListeners.entries
+            .filter { it.value.viewRef.get() == null }
+            .map { it.key }
+        dead.forEach { drawListeners.remove(it) }
+        if (dead.isNotEmpty()) {
+            Log.d("LightSessionCore", "cleaned up ${dead.size} dead window root(s)")
         }
     }
 }

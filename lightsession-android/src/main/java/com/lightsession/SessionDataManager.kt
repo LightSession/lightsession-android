@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -36,12 +37,62 @@ class SessionDataManager(
     private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     // Session identification
-    private val sessionId = System.currentTimeMillis().toString()
+    /**
+     * Mutable, and that is the fix.
+     *
+     * This used to be a `val` set once per process, so an app backgrounded for an
+     * hour resumed into a session the server's reaper had already finalised and
+     * forgotten — a second life landing on a row that described the first. See
+     * [rotateIfIdle].
+     *
+     * `@Volatile` because it is read on the capture thread and written on the main
+     * thread when the app returns to the foreground.
+     */
+    @Volatile
+    private var sessionId = newSessionId()
+
     private var sessionStartTime = System.currentTimeMillis()
 
+    /** When the app last went to background, for [rotateIfIdle]. */
+    private val backgroundedAt = java.util.concurrent.atomic.AtomicLong(0)
+
+    /**
+     * Bytes of frame data sitting in [frameBuffer].
+     *
+     * Tracked rather than measured because measuring means walking the queue and
+     * summing `imageData.size` on every push, from the capture thread.
+     */
+    private val bufferedBytes = java.util.concurrent.atomic.AtomicLong(0)
+
+    /** Frames discarded because the buffer hit its ceiling. */
+    private val framesShed = AtomicInteger(0)
+
     // Batch configuration
-    private val BATCH_INTERVAL_MS = 5000L // 5 s    econds
-    private val MAX_BATCH_SIZE_MB = 50
+    private val BATCH_INTERVAL_MS = 5000L // 5 seconds
+
+    /**
+     * Batches on their way out, on disk.
+     *
+     * A batch is written here before any upload is attempted and removed only on a
+     * 2xx. Before this, `processBatch` drained the in-memory queues and then fired
+     * an upload; a failed request logged a line and the data was already gone, and
+     * a killed process took everything buffered with it. See [BatchSpool].
+     *
+     * The size cap lives there too. There used to be a `MAX_BATCH_SIZE_MB = 50`
+     * constant here that nothing read.
+     */
+    private val spool = BatchSpool(context.filesDir)
+
+    /**
+     * Guards the uploader. Without it the 5-second tick, a lifecycle flush and a
+     * low-memory flush can each start a drain, and three drains would upload the
+     * same spooled entries concurrently.
+     */
+    private val draining = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Serialises [processBatch]: two concurrent callers would each take half of
+     *  every queue and produce two batches with interleaved sequence holes. */
+    private val batchLock = Any()
 
     // HTTP client
     private val okHttpClient by lazy {
@@ -60,14 +111,18 @@ class SessionDataManager(
     // Sequence tracking
     private val globalSequenceCounter = AtomicInteger(0)
     private val frameSequenceCounter = AtomicInteger(0)
-    private var baseUrl: String = "http://192.168.0.114:5000" // Default para emulador
+    private val baseUrl: String = config.normalizedIngestUrl
 
 
     // Statistics
-    private var totalBatchesSent = 0
-    private var totalFramesSent = 0
-    private var totalNavigationsSent = 0
-    private var totalInteractionsSent = 0
+    /** Atomic because `processBatch` runs from the ticker, from a lifecycle
+     *  callback and from a low-memory callback. `++` on an Int gave two batches the
+     *  same number. */
+    private val batchCounter = AtomicInteger(0)
+    private val totalFramesSent = AtomicInteger(0)
+    private val totalNavigationsSent = AtomicInteger(0)
+    private val totalInteractionsSent = AtomicInteger(0)
+    private val totalBatchesDropped = AtomicInteger(0)
 
     /**
      * Base class for all session events with timestamp and sequence
@@ -258,6 +313,19 @@ class SessionDataManager(
 
         startBatchProcessor()
 
+        // Anything the previous process left pending. This is the reason the spool
+        // exists: a session that ended with the app being swiped away used to lose
+        // its last batch entirely.
+        coroutineScope.launch {
+            spool.prune()
+            val pending = spool.pendingCount()
+            if (pending > 0) {
+                Log.i("SessionDataManager",
+                    "recovered $pending batch(es) from the previous run (${spool.sizeBytes() / 1024} KB)")
+            }
+            drainSpool()
+        }
+
         Log.d("SessionDataManager",
             "Initialized session: $sessionId for user: ${this.userId} (type: ${this.userType})")
     }
@@ -280,12 +348,133 @@ class SessionDataManager(
         )
 
         frameBuffer.offer(frame)
+        val buffered = bufferedBytes.addAndGet(imageData.size.toLong())
 
         Log.d("SessionDataManager",
             "Frame added: seq=${frame.sequenceNumber}, " +
                     "frameSeq=${frame.frameSequenceNumber}, " +
                     "repeated=$isRepeatedFrame, screen=$currentScreen")
+
+        if (buffered > config.maxBufferedBytes) {
+            shedOldestFrames()
+        } else if (frameBuffer.size >= config.flushAtFrameCount || buffered >= config.flushAtBytes) {
+            // Off the capture thread: spooling writes files, and the capture thread
+            // is the one that has to be ready for the next frame.
+            requestFlush(if (buffered >= config.flushAtBytes) "size" else "count")
+        }
     }
+
+    /**
+     * Discards the oldest buffered frames until the buffer is back under its
+     * ceiling.
+     *
+     * Only reachable when the disk write itself is stalling — the count and size
+     * triggers normally keep the buffer far below this. Something has to go at that
+     * point, and the choice is deliberate: dropping the *oldest* leaves a gap in the
+     * middle of the replay but lets it reach the end, and the end is where the
+     * question "why did they give up" is answered. Dropping the newest would give a
+     * continuous replay that stops before the interesting part.
+     *
+     * Interactions and navigations are never shed. A tap is a few hundred bytes and
+     * is the only record that it happened; a frame is tens of kilobytes and the one
+     * beside it looks almost identical.
+     */
+    private fun shedOldestFrames() {
+        val shed = shedToFit(frameBuffer, bufferedBytes, config.flushAtBytes)
+        if (shed > 0) {
+            val total = framesShed.addAndGet(shed)
+            // Loud, because silent truncation reads as "the recording was always
+            // like that" rather than "frames were discarded here".
+            Log.w("SessionDataManager",
+                "in-memory buffer hit ${config.maxBufferedBytes / 1024} KB; " +
+                        "shed $shed oldest frame(s), $total this session — " +
+                        "the spool is not draining")
+        }
+        requestFlush("buffer_full")
+    }
+
+    internal companion object {
+        /**
+         * Drops from the head of `queue` until `bytes` is at or below `target`.
+         *
+         * Head-first is the decision worth pinning: the queue is FIFO, so this
+         * discards the *oldest* frames and leaves the newest. A replay then has a
+         * gap in the middle but reaches the end, and the end is where "why did they
+         * give up" is answered. Taking from the tail would give a continuous replay
+         * that stops before the interesting part.
+         *
+         * Returns how many were dropped.
+         */
+        internal fun shedToFit(
+            queue: ConcurrentLinkedQueue<FrameData>,
+            bytes: java.util.concurrent.atomic.AtomicLong,
+            target: Long
+        ): Int {
+            var shed = 0
+            while (bytes.get() > target) {
+                val frame = queue.poll() ?: break
+                bytes.addAndGet(-frame.imageData.size.toLong())
+                shed++
+            }
+            return shed
+        }
+    }
+
+    /** Spools on the IO scope. For callers that must not block, which is all of
+     *  them except the lifecycle path. */
+    private fun requestFlush(reason: String) {
+        coroutineScope.launch {
+            processBatch(reason)
+            drainSpool()
+        }
+    }
+
+    /**
+     * Starts a new session if the app was away longer than the server keeps one
+     * open.
+     *
+     * Called when the app returns to the foreground. The buffers are flushed first
+     * so nothing recorded under the old id is attributed to the new one — spooled
+     * batches carry their session id in the payload, so anything already on disk is
+     * unaffected either way.
+     */
+    fun rotateIfIdle() {
+        val away = backgroundedAt.get()
+        if (away == 0L) return
+        val idleFor = System.currentTimeMillis() - away
+        if (idleFor < config.sessionTimeoutMs) return
+
+        processBatch("session_end")
+
+        val previous = sessionId
+        sessionId = newSessionId()
+        sessionStartTime = System.currentTimeMillis()
+        // Restarted so each session's events are numbered from one. Safe because
+        // the buffers were just drained, and because anything already spooled
+        // carries the old id.
+        globalSequenceCounter.set(0)
+        frameSequenceCounter.set(0)
+        batchCounter.set(0)
+        backgroundedAt.set(0)
+
+        Log.i("SessionDataManager",
+            "idle ${idleFor / 1000}s exceeded the ${config.sessionTimeoutMs / 1000}s session " +
+                    "timeout; rotated $previous -> $sessionId")
+    }
+
+    /** Records the moment the app went away, for [rotateIfIdle]. */
+    fun markBackgrounded() {
+        backgroundedAt.set(System.currentTimeMillis())
+    }
+
+    /**
+     * Random, not the wall clock.
+     *
+     * The clock version collided whenever two processes started in the same
+     * millisecond, and — worse — was predictable, so one installation could guess
+     * another's session ids.
+     */
+    private fun newSessionId(): String = UUID.randomUUID().toString()
 
     /**
      * Add a navigation event
@@ -378,266 +567,346 @@ class SessionDataManager(
             while (isActive) {
                 delay(BATCH_INTERVAL_MS)
                 processBatch("scheduled")
+                // Every tick also retries whatever is still on disk, so a batch
+                // that failed during a dead spot goes out as soon as there is
+                // signal again rather than waiting for new data to push it.
+                drainSpool()
             }
         }
     }
 
     /**
-     * Process and send a batch of all accumulated events
+     * Drains the in-memory buffers onto disk. Does no network work.
+     *
+     * That split is the whole point. Whoever calls this — the ticker, a lifecycle
+     * callback, `onDestroy` — only has to survive long enough to write a file, and
+     * the upload becomes somebody else's problem. Before, a flush was only as good
+     * as the request it fired: `onDestroy` called `forceFlush()` and then
+     * `coroutineScope.cancel()`, which cancelled the upload it had just started.
      */
-    private fun processBatch(reason: String) {
-        // Collect all events from buffers
-        val allEvents = mutableListOf<SessionEvent>()
+    private fun processBatch(reason: String) = synchronized(batchLock) {
+        val frames = drain(frameBuffer)
+        bufferedBytes.addAndGet(-frames.sumOf { it.imageData.size.toLong() })
+        val navigations = drain(navigationBuffer)
+        val interactions = drain(interactionBuffer)
 
-        // Drain frame buffer
-        val frames = mutableListOf<FrameData>()
-        while (true) {
-            val frame = frameBuffer.poll() ?: break
-            frames.add(frame)
-            allEvents.add(frame)
+        if (frames.isEmpty() && navigations.isEmpty() && interactions.isEmpty()) {
+            return@synchronized
         }
 
-        // Drain navigation buffer
-        val navigations = mutableListOf<NavigationEvent>()
-        while (true) {
-            val nav = navigationBuffer.poll() ?: break
-            navigations.add(nav)
-            allEvents.add(nav)
+        val batchNumber = batchCounter.incrementAndGet()
+        val batchId = "${sessionId}_${System.currentTimeMillis()}"
+        // Once per batch. This was called twice — once for the batch metadata and
+        // once for the breadcrumb form — and each call could launch a location
+        // fetch.
+        val deviceInfo = getDeviceInfo()
+
+        if (frames.isNotEmpty()) {
+            spoolFrames(batchId, batchNumber, reason, frames)
         }
-
-        // Drain interaction buffer
-        val interactions = mutableListOf<InteractionEvent>()
-        while (true) {
-            val interaction = interactionBuffer.poll() ?: break
-            interactions.add(interaction)
-            allEvents.add(interaction)
+        if (navigations.isNotEmpty() || interactions.isNotEmpty()) {
+            spoolCrumbs(batchId, batchNumber, deviceInfo, navigations, interactions)
         }
-
-        if (allEvents.isEmpty()) {
-            Log.d("SessionDataManager", "No events to batch")
-            return
-        }
-
-        // Sort all events by sequence number to maintain order
-        allEvents.sortBy { it.sequenceNumber }
-
-        // Calculate batch size
-        val batchSizeBytes = frames.sumOf { it.imageData.size } +
-                (navigations.size * 200) + // Estimate for navigation events
-                (interactions.size * 300)   // Estimate for interaction events
-
-        val batch = SessionBatch(
-            batchId = "${sessionId}_${System.currentTimeMillis()}",
-            sessionId = sessionId,
-            batchNumber = ++totalBatchesSent,
-            timestamp = System.currentTimeMillis(),
-            events = allEvents,
-            metadata = BatchMetadata(
-                frameCount = frames.size,
-                navigationCount = navigations.size,
-                interactionCount = interactions.size,
-                batchSizeBytes = batchSizeBytes.toLong(),
-                timeSinceSessionStart = System.currentTimeMillis() - sessionStartTime,
-                deviceInfo = getDeviceInfo(),
-                userInfo = UserInfo(userId ?: "unknown", userType, sessionId, sessionStartTime),
-                appInfo = getAppInfo() // <-- ADD THIS
-            )
-        )
 
         Log.d("SessionDataManager",
-            "Processing batch #${batch.batchNumber}: " +
-                    "${frames.size} frames, ${navigations.size} navigations, " +
-                    "${interactions.size} interactions (reason: $reason)")
+            "Batch #$batchNumber spooled: ${frames.size} frames, ${navigations.size} navigations, " +
+                    "${interactions.size} interactions (reason: $reason); " +
+                    "${spool.pendingCount()} pending, ${spool.sizeBytes() / 1024} KB")
+    }
 
-        coroutineScope.launch {
-            sendBatch(batch, frames)
-        }
+    private fun <T> drain(queue: ConcurrentLinkedQueue<T>): List<T> {
+        val out = mutableListOf<T>()
+        while (true) out.add(queue.poll() ?: break)
+        return out
     }
 
     /**
-     * Send batch to server - keeping the video batch format intact
-     * and adding breadcrumb data separately
+     * Writes a frame batch to the spool in the exact shape `/upload_batch` expects.
+     *
+     * The metadata is serialised here rather than at upload time so a batch
+     * recovered from a previous run still describes itself — including its
+     * `flush_reason`, which used to be hardcoded to `"scheduled"` even when the
+     * flush was forced.
      */
-    private fun sendBatch(batch: SessionBatch, frames: List<FrameData>) {
-        try {
-            val multipartBuilder = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
+    private fun spoolFrames(
+        batchId: String,
+        batchNumber: Int,
+        reason: String,
+        frames: List<FrameData>
+    ) {
+        val batchMetadata = mapOf(
+            "batch_id" to batchId,
+            "session_id" to sessionId,
+            "user_id" to (userId ?: "unknown"),
+            "user_type" to userType,
+            "app_version" to appVersion,
+            "total_frame_count" to frames.size.toString(),
+            "real_frame_count" to frames.count { !it.isRepeatedFrame }.toString(),
+            "repeated_signal_count" to frames.count { it.isRepeatedFrame }.toString(),
+            "flush_reason" to reason,
+            "total_batches_sent" to batchNumber.toString(),
+            "first_frame_timestamp" to frames.first().timestamp.toString(),
+            "last_frame_timestamp" to frames.last().timestamp.toString(),
+            "sequence_range" to
+                "${frames.first().frameSequenceNumber}-${frames.last().frameSequenceNumber}"
+        )
 
-            val frameEvents = batch.events.filterIsInstance<FrameData>()
-            val navigationEvents = batch.events.filterIsInstance<NavigationEvent>()
-            val interactionEvents = batch.events.filterIsInstance<InteractionEvent>()
+        val spooled = mutableListOf<BatchSpool.SpooledFrame>()
+        val perFrameMetadata = mutableListOf<String>()
 
-            if (frames.isNotEmpty()) {
-                multipartBuilder.addFormDataPart("type", "frame_batch")
-
-                val batchMetadata = mapOf(
-                    "batch_id" to batch.batchId,
-                    "session_id" to batch.sessionId,
-                    "user_id" to (userId ?: "unknown"),
-                    "user_type" to userType,
-                    "app_version" to appVersion,
-                    "total_frame_count" to frames.size.toString(),
-                    "real_frame_count" to frames.count { !it.isRepeatedFrame }.toString(),
-                    "repeated_signal_count" to frames.count { it.isRepeatedFrame }.toString(),
-                    "flush_reason" to "scheduled",
-                    "total_batches_sent" to batch.batchNumber.toString(),
-                    "first_frame_timestamp" to frames.first().timestamp.toString(),
-                    "last_frame_timestamp" to frames.last().timestamp.toString(),
-                    "sequence_range" to "${frames.first().frameSequenceNumber}-${frames.last().frameSequenceNumber}"
+        frames.forEachIndexed { index, frame ->
+            val fileName = if (frame.isRepeatedFrame) {
+                "repeated_signal_${frame.frameSequenceNumber}_${frame.timestamp}.signal"
+            } else {
+                "frame_${frame.frameSequenceNumber}_${frame.timestamp}.jpg"
+            }
+            spooled.add(
+                BatchSpool.SpooledFrame(
+                    fileName = fileName,
+                    bytes = frame.imageData,
+                    isRepeated = frame.isRepeatedFrame
                 )
-
-                multipartBuilder.addFormDataPart("metadata", Json.encodeToString(batchMetadata))
-
-                // Add frames (keeping original format)
-                frames.forEachIndexed { index, frame ->
-                    val frameMetadata = mapOf(
+            )
+            perFrameMetadata.add(
+                Json.encodeToString(
+                    mapOf(
                         "timestamp" to frame.timestamp.toString(),
                         "sequence_number" to frame.frameSequenceNumber.toString(),
                         "frame_index" to index.toString(),
                         "is_repeated_frame" to frame.isRepeatedFrame.toString(),
-                        "frame_type" to if (frame.isRepeatedFrame) "repeated_signal" else "real_frame",
+                        "frame_type" to
+                            if (frame.isRepeatedFrame) "repeated_signal" else "real_frame",
                         "data_size" to frame.imageData.size.toString()
                     )
-
-                    val fileName = if (frame.isRepeatedFrame) {
-                        "repeated_signal_${frame.frameSequenceNumber}_${frame.timestamp}.signal"
-                    } else {
-                        "frame_${frame.frameSequenceNumber}_${frame.timestamp}.jpg"
-                    }
-
-                    multipartBuilder.addFormDataPart(
-                        "frame_${index}",
-                        fileName,
-                        frame.imageData.toRequestBody(
-                            if (frame.isRepeatedFrame) "application/octet-stream".toMediaType()
-                            else "image/jpeg".toMediaType()
-                        )
-                    )
-
-                    multipartBuilder.addFormDataPart(
-                        "frame_${index}_metadata",
-                        Json.encodeToString(frameMetadata)
-                    )
-                }
-
-                val requestBody = multipartBuilder.build()
-                val request = Request.Builder()
-                    .url("${baseUrl}/upload_batch")
-                    .addHeader("X-API-Key", config.apiKey)
-                    .post(requestBody)
-                    .build()
-
-                val response = okHttpClient.newCall(request).execute()
-
-                if (response.isSuccessful) {
-                    totalFramesSent += frames.size
-                    Log.d("SessionDataManager",
-                        "Video batch sent successfully. Total frames sent: $totalFramesSent")
-                } else {
-                    Log.e("SessionDataManager",
-                        "Failed to send video batch: ${response.code} - ${response.message}")
-                }
-
-                response.close()
-            }
-
-            if (navigationEvents.isNotEmpty() || interactionEvents.isNotEmpty()) {
-                val breadcrumbBuilder = MultipartBody.Builder()
-                    .setType(MultipartBody.FORM)
-                    .addFormDataPart("type", "breadcrumb_batch")
-                    .addFormDataPart("session_id", batch.sessionId)
-                    .addFormDataPart("user_id", userId ?: "unknown")
-                    .addFormDataPart("user_type", userType)
-                    .addFormDataPart("app_version", appVersion)
-                    .addFormDataPart("app_info", Json.encodeToString(getAppInfo()))
-                    .addFormDataPart("device_info", Json.encodeToString(getDeviceInfo()))
-                    .addFormDataPart("batch_number", batch.batchNumber.toString())
-                    .addFormDataPart("timestamp", batch.timestamp.toString())
-
-                // Create breadcrumb timeline
-                val breadcrumbs = mutableListOf<JsonElement>()
-
-                // Add navigation events with enhanced metadata
-                navigationEvents.forEach { nav ->
-                    breadcrumbs.add(buildJsonObject {
-                        put("type", JsonPrimitive("navigation"))
-                        put("timestamp", JsonPrimitive(nav.timestamp))
-                        put("sequence", JsonPrimitive(nav.sequenceNumber))
-                        put("user_id", JsonPrimitive(userId ?: "unknown"))
-                        put("user_type", JsonPrimitive(userType))
-                        put("app_version", JsonPrimitive(appVersion))
-                        put("data", buildJsonObject {
-                            put("from", JsonPrimitive(nav.fromScreen))
-                            put("to", JsonPrimitive(nav.toScreen))
-                            put("screenType", JsonPrimitive(nav.screenType))
-                            put("transitionType", JsonPrimitive(nav.transitionType))
-                        })
-                    })
-                }
-
-                // Add interaction events with enhanced metadata
-                interactionEvents.forEach { interaction ->
-                    breadcrumbs.add(buildJsonObject {
-                        put("type", "interaction")
-                        put("timestamp", interaction.timestamp)
-                        put("sequence", interaction.sequenceNumber)
-                        put("user_id", JsonPrimitive(userId ?: "unknown"))
-                        put("user_type", JsonPrimitive(userType))
-                        put("app_version", JsonPrimitive(appVersion))
-                        interaction.screenId?.let { sid -> put("screen_id", JsonPrimitive(sid)) }
-
-                        if (interaction.rawInteractionData != null) {
-                            val rawObject = Json.parseToJsonElement(interaction.rawInteractionData).jsonObject
-                            rawObject.forEach { key, value ->
-                                if (key == "type") {
-                                    put("interaction_type", value)
-                                } else {
-                                    put(key, value)
-                                }
-                            }
-                        } else {
-                            put("interaction_type", JsonPrimitive(interaction.interactionType))
-                            put("screen", JsonPrimitive(interaction.screen))
-                            put("x", JsonPrimitive(interaction.coordinates.x))
-                            put("y", JsonPrimitive(interaction.coordinates.y))
-                            put("duration", JsonPrimitive(interaction.duration))
-                        }
-                    })
-                }
-
-                // Sort by sequence number
-                breadcrumbs.sortBy { it.jsonObject["sequence"]?.jsonPrimitive?.int }
-
-                breadcrumbBuilder.addFormDataPart(
-                    "breadcrumbs",
-                    Json.encodeToString(breadcrumbs)
                 )
+            )
+        }
 
-                val breadcrumbBody = breadcrumbBuilder.build()
-                val breadcrumbRequest = Request.Builder()
-                    .url("${baseUrl}/breadcrumb_batch")
-                    .addHeader("X-API-Key", config.apiKey)
-                    .post(breadcrumbBody)
-                    .build()
+        if (spool.writeFrames(
+                batchId = batchId,
+                metadataJson = Json.encodeToString(batchMetadata),
+                frameMetadataJson = perFrameMetadata,
+                frames = spooled
+            ) == null
+        ) {
+            totalBatchesDropped.incrementAndGet()
+        }
+    }
 
-                val breadcrumbResponse = okHttpClient.newCall(breadcrumbRequest).execute()
+    /** Writes a breadcrumb batch to the spool in the shape `/breadcrumb_batch` expects. */
+    private fun spoolCrumbs(
+        batchId: String,
+        batchNumber: Int,
+        deviceInfo: DeviceInfo,
+        navigations: List<NavigationEvent>,
+        interactions: List<InteractionEvent>
+    ) {
+        val breadcrumbs = mutableListOf<JsonElement>()
 
-                if (breadcrumbResponse.isSuccessful) {
-                    totalNavigationsSent += navigationEvents.size
-                    totalInteractionsSent += interactionEvents.size
-                    Log.d("SessionDataManager",
-                        "Breadcrumb batch sent for user $userId. Navigations: $totalNavigationsSent, " +
-                                "Interactions: $totalInteractionsSent")
+        navigations.forEach { nav ->
+            breadcrumbs.add(buildJsonObject {
+                put("type", JsonPrimitive("navigation"))
+                put("timestamp", JsonPrimitive(nav.timestamp))
+                put("sequence", JsonPrimitive(nav.sequenceNumber))
+                put("user_id", JsonPrimitive(userId ?: "unknown"))
+                put("user_type", JsonPrimitive(userType))
+                put("app_version", JsonPrimitive(appVersion))
+                put("data", buildJsonObject {
+                    put("from", JsonPrimitive(nav.fromScreen))
+                    put("to", JsonPrimitive(nav.toScreen))
+                    put("screenType", JsonPrimitive(nav.screenType))
+                    put("transitionType", JsonPrimitive(nav.transitionType))
+                })
+            })
+        }
+
+        interactions.forEach { interaction ->
+            breadcrumbs.add(buildJsonObject {
+                put("type", "interaction")
+                put("timestamp", interaction.timestamp)
+                put("sequence", interaction.sequenceNumber)
+                put("user_id", JsonPrimitive(userId ?: "unknown"))
+                put("user_type", JsonPrimitive(userType))
+                put("app_version", JsonPrimitive(appVersion))
+                interaction.screenId?.let { sid -> put("screen_id", JsonPrimitive(sid)) }
+
+                if (interaction.rawInteractionData != null) {
+                    val rawObject = Json.parseToJsonElement(interaction.rawInteractionData).jsonObject
+                    rawObject.forEach { key, value ->
+                        if (key == "type") put("interaction_type", value) else put(key, value)
+                    }
                 } else {
-                    Log.e("SessionDataManager",
-                        "Failed to send breadcrumb batch: ${breadcrumbResponse.code}")
+                    put("interaction_type", JsonPrimitive(interaction.interactionType))
+                    put("screen", JsonPrimitive(interaction.screen))
+                    put("x", JsonPrimitive(interaction.coordinates.x))
+                    put("y", JsonPrimitive(interaction.coordinates.y))
+                    put("duration", JsonPrimitive(interaction.duration))
                 }
+            })
+        }
 
-                breadcrumbResponse.close()
+        breadcrumbs.sortBy { it.jsonObject["sequence"]?.jsonPrimitive?.int }
+
+        val fields = mapOf(
+            "type" to "breadcrumb_batch",
+            "session_id" to sessionId,
+            "user_id" to (userId ?: "unknown"),
+            "user_type" to userType,
+            "app_version" to appVersion,
+            "app_info" to Json.encodeToString(getAppInfo()),
+            "device_info" to Json.encodeToString(deviceInfo),
+            "batch_number" to batchNumber.toString(),
+            "timestamp" to System.currentTimeMillis().toString(),
+            "breadcrumbs" to Json.encodeToString(breadcrumbs)
+        )
+
+        if (spool.writeCrumbs(batchId, fields) == null) {
+            totalBatchesDropped.incrementAndGet()
+        }
+    }
+
+    /**
+     * Uploads everything on disk, oldest first, removing each entry only once the
+     * server has accepted it.
+     *
+     * Breadcrumbs go before frames. They are two orders of magnitude smaller and
+     * they are the only record that an interaction happened, so a slow or timing-out
+     * frame upload must not sit in front of them.
+     *
+     * Single-flight: the ticker, a background flush and a low-memory flush can all
+     * ask for a drain, and three of them running at once would upload the same
+     * entries three times.
+     */
+    private fun drainSpool() {
+        if (!draining.compareAndSet(false, true)) return
+        try {
+            for (entry in spool.pendingCrumbs()) {
+                if (!uploadCrumbs(entry)) break
             }
-
+            for (entry in spool.pendingFrames()) {
+                if (!uploadFrames(entry)) break
+            }
         } catch (e: Exception) {
-            Log.e("SessionDataManager", "Error sending batch", e)
+            Log.e("SessionDataManager", "spool drain failed", e)
+        } finally {
+            draining.set(false)
+        }
+    }
+
+    /**
+     * Returns false when the drain should stop for now — a network failure means
+     * the next entry would fail too, and hammering a dead connection wastes battery
+     * and radio.
+     */
+    private fun uploadCrumbs(entry: BatchSpool.CrumbEntry): Boolean {
+        val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
+        entry.fields.forEach { (name, value) -> builder.addFormDataPart(name, value) }
+
+        val request = Request.Builder()
+            .url("${baseUrl}/breadcrumb_batch")
+            .addHeader("X-API-Key", config.apiKey)
+            .post(builder.build())
+            .build()
+
+        return send(request, entry.file, "breadcrumb ${entry.file.name}") {
+            // Counted by reading the payload back rather than by carrying extra
+            // form fields the server would have to ignore.
+            val crumbs = entry.fields["breadcrumbs"]
+                ?.let { runCatching { Json.parseToJsonElement(it).jsonArray }.getOrNull() }
+                ?: return@send
+            var navigations = 0
+            var interactions = 0
+            for (crumb in crumbs) {
+                when (crumb.jsonObject["type"]?.jsonPrimitive?.content) {
+                    "navigation" -> navigations++
+                    "interaction" -> interactions++
+                }
+            }
+            totalNavigationsSent.addAndGet(navigations)
+            totalInteractionsSent.addAndGet(interactions)
+        }
+    }
+
+    private fun uploadFrames(entry: BatchSpool.FrameEntry): Boolean {
+        val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("type", "frame_batch")
+            .addFormDataPart("metadata", entry.metadataJson)
+
+        entry.frames.forEachIndexed { index, frame ->
+            builder.addFormDataPart(
+                "frame_${index}",
+                frame.fileName,
+                frame.bytes.toRequestBody(
+                    if (frame.isRepeated) "application/octet-stream".toMediaType()
+                    else "image/jpeg".toMediaType()
+                )
+            )
+            // Recovered from disk beside the frame, so a batch written by an older
+            // run still uploads with the metadata it was created with.
+            spool.frameMetadata(entry.dir, frame.fileName)?.let { meta ->
+                builder.addFormDataPart("frame_${index}_metadata", meta)
+            }
+        }
+
+        val request = Request.Builder()
+            .url("${baseUrl}/upload_batch")
+            .addHeader("X-API-Key", config.apiKey)
+            .post(builder.build())
+            .build()
+
+        return send(request, entry.dir, "frames ${entry.dir.name} (${entry.frames.size})") {
+            totalFramesSent.addAndGet(entry.frames.size)
+        }
+    }
+
+    /**
+     * Sends one request and settles the spool entry by the answer.
+     *
+     * The three outcomes are deliberately different. 2xx removes the entry. A 4xx
+     * other than 408/429 means the server will never accept it, so retrying is
+     * pointless and the entry is dropped with a loud log — otherwise it would sit in
+     * the spool forever, taking budget from data that *can* be delivered. Anything
+     * else counts as a failure and is retried, up to the spool's attempt cap.
+     *
+     * Returns false to stop the drain: a transport exception means the network is
+     * gone, not that this particular entry is bad.
+     */
+    private fun send(
+        request: Request,
+        entry: java.io.File,
+        label: String,
+        onAccepted: () -> Unit
+    ): Boolean {
+        return try {
+            okHttpClient.newCall(request).execute().use { response ->
+                when {
+                    response.isSuccessful -> {
+                        spool.acknowledge(entry)
+                        onAccepted()
+                        Log.d("SessionDataManager", "sent $label")
+                        true
+                    }
+                    response.code in 400..499 && response.code != 408 && response.code != 429 -> {
+                        Log.e("SessionDataManager",
+                            "server rejected $label with ${response.code}; dropping it")
+                        spool.acknowledge(entry)
+                        totalBatchesDropped.incrementAndGet()
+                        true
+                    }
+                    else -> {
+                        Log.w("SessionDataManager",
+                            "retrying $label after ${response.code}")
+                        spool.recordFailure(entry)
+                        false
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Offline. The entry stays on disk; this is the case the spool exists
+            // for, so it is a debug line rather than an error.
+            Log.d("SessionDataManager", "no connectivity for $label: ${e.message}")
+            spool.recordFailure(entry)
+            false
         }
     }
 
@@ -654,7 +923,7 @@ class SessionDataManager(
 
         return try {
             val request = Request.Builder()
-                .url("http://192.168.0.114:3001/api/v1/ipinfo")
+                .url("${config.normalizedApiUrl}/api/v1/ipinfo")
                 .get()
                 .build()
 
@@ -754,17 +1023,55 @@ class SessionDataManager(
         }
     }
     /**
-     * Force flush all buffers
+     * Writes whatever is buffered to disk, then asks for an upload.
+     *
+     * The spooling part is synchronous and does no network work, so it completes
+     * before this returns. That is what makes it safe to call from a lifecycle
+     * callback or from `onDestroy`: even if the process dies immediately afterwards,
+     * the data is on disk and the next run will send it.
      */
-    fun forceFlush() {
-        processBatch("force_flush")
+    fun forceFlush(reason: String = "force_flush") {
+        processBatch(reason)
+        coroutineScope.launch { drainSpool() }
     }
 
     /**
-     * Clean up resources
+     * Clean up resources.
+     *
+     * The order used to be the bug: `forceFlush()` launched an upload and
+     * `coroutineScope.cancel()` on the next line cancelled it, so the final batch —
+     * the one holding the user's last actions before closing the app — was
+     * guaranteed to be lost. Now the flush has already put it on disk by the time
+     * the scope is cancelled, and cancelling only abandons the *attempt*.
      */
     fun onDestroy() {
-        forceFlush()
+        forceFlush("destroy")
         coroutineScope.cancel()
+        Log.d("SessionDataManager",
+            "destroyed; ${spool.pendingCount()} batch(es) left on disk for the next run")
     }
+
+    /**
+     * Tries the spool again without touching the in-memory buffers.
+     *
+     * For coming back to the foreground: there is nothing new to flush, but there
+     * may well be entries that failed while the app was away or in a previous
+     * process.
+     */
+    fun retryPending() {
+        if (spool.pendingCount() == 0) return
+        coroutineScope.launch { drainSpool() }
+    }
+
+    /** Counters, for the sample app and for debugging a device in hand. */
+    fun getStats(): Map<String, Any> = mapOf(
+        "sessionId" to sessionId,
+        "batchesSpooled" to batchCounter.get(),
+        "framesSent" to totalFramesSent.get(),
+        "interactionsSent" to totalInteractionsSent.get(),
+        "navigationsSent" to totalNavigationsSent.get(),
+        "batchesDropped" to totalBatchesDropped.get(),
+        "spoolPending" to spool.pendingCount(),
+        "spoolBytes" to spool.sizeBytes()
+    )
 }
