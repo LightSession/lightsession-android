@@ -63,7 +63,13 @@ class LightSession private constructor() {
         networkDataSender.setBaseUrl("${config.normalizedApiUrl}/api/v1/screenmap")
 
         // Passar o networkDataSender configurado para o ScreenMapperIntegration
-        ScreenMapperIntegration.getInstance().init(application, networkDataSender, sessionDataManager)
+        ScreenMapperIntegration.getInstance().init(
+            application = application,
+            dataSender = networkDataSender,
+            sessionDataManager = sessionDataManager,
+            wireframeMode = config.wireframeMode,
+            captureRealScreens = config.captureRealScreens,
+        )
     }
 
     private fun initializeUserId(context: Context) {

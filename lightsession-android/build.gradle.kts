@@ -85,8 +85,16 @@ dependencies {
 
     // Compose UI Tooling Data for skeleton generation (required for accessing Compose hierarchy)
     implementation("androidx.compose.ui:ui-tooling-data")
-    implementation("com.squareup.radiography:radiography:2.7")
+
+    // Radiography was here. Its only call site was `Radiography.scan()` assigned to an
+    // unused local inside the capture path — a full view-hierarchy walk whose result
+    // was discarded, on every screen, in a library that competes on being cheap. The
+    // parts of it this SDK actually uses (`ComposeLayoutInfo`, `CompositionContexts`)
+    // are adapted source with attribution, not calls into the artifact.
     testImplementation(libs.junit)
+    // A real org.json on the JVM test classpath: android.jar's is a stub that throws,
+    // so without this the wire format could only be tested on a device.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
 }

@@ -56,7 +56,8 @@ class NetworkDataSender : DataSender {
         screenId: String,
         screenName: String,
         screenType: ScreenMapperIntegration.ScreenType,
-        bitmapBase64: String,
+        bitmapBase64: String?,
+        skeleton: SkeletonFrame?,
         width: Int,
         height: Int,
         appVersionCode: Int,
@@ -72,7 +73,12 @@ class NetworkDataSender : DataSender {
                 put("screenId", screenId)
                 put("screenName", screenName)
                 put("screenType", screenType.name)
-                put("bitmapBase64", bitmapBase64)
+                // The key is left out entirely when absent, rather than relying on
+                // `put(name, null)` to remove it. Both fields are optional on the
+                // server, and "absent" is the state it reads — this way the payload
+                // does not depend on a null-handling rule in `JSONObject`.
+                bitmapBase64?.let { put("bitmapBase64", it) }
+                skeleton?.let { put("skeleton", it.toJson()) }
                 put("width", width)
                 put("height", height)
                 put("appVersionCode", appVersionCode)
@@ -104,6 +110,7 @@ class NetworkDataSender : DataSender {
 
     override suspend fun updateScreenshot(
         screenId: String,
+        screenName: String,
         bitmapBase64: String,
         width: Int,
         height: Int,
@@ -118,6 +125,9 @@ class NetworkDataSender : DataSender {
 
             val json = JSONObject().apply {
                 put("screenId", screenId)
+                // Required by the server, and its absence here made this route return
+                // 422 on every call.
+                put("screenName", screenName)
                 put("bitmapBase64", bitmapBase64)
                 put("width", width)
                 put("height", height)

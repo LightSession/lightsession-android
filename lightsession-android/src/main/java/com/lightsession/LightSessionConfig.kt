@@ -29,6 +29,38 @@ data class LightSessionConfig(
     val captureQuality: CaptureQuality = CaptureQuality.LOW,
 
     /**
+     * How the screen map's wireframes are produced.
+     *
+     * Scoped to the wireframe shown on the screen graph — *not* to replay frames,
+     * which are captured separately and are real screenshots either way.
+     *
+     * When [captureRealScreens] is on, this is what the graph shows for the first
+     * couple of seconds and whenever the real capture does not happen.
+     */
+    val wireframeMode: WireframeMode = WireframeMode.RECTS,
+
+    /**
+     * Whether the screen map upgrades a screen's wireframe to a real screenshot.
+     *
+     * The wireframe goes out at navigation time. Two and a half seconds later, if the
+     * user has neither navigated away nor touched the screen, the SDK captures the
+     * screen for real at full resolution and replaces the wireframe with it. The
+     * settle delay is the point: it waits for animations, images and network content,
+     * so what lands is the screen as the user actually saw it. One capture per screen
+     * per install — `CacheManager.isScreenFullyCaptured` stops it repeating.
+     *
+     * **This stores an unmasked picture of every screen in the app.** Unlike a replay
+     * frame, a screen-map capture is permanent and per-screen: it is kept for as long
+     * as the project exists, so anything visible when the capture fires — a balance, a
+     * document number, a recovery phrase — is in the bucket indefinitely. There is no
+     * on-device masking yet; the planned design sends the sensitive rectangles to the
+     * server to draw over, which is not built.
+     *
+     * Turn it off per project if that trade is not the one you want.
+     */
+    val captureRealScreens: Boolean = true,
+
+    /**
      * Interval between captures while nothing is happening, milliseconds.
      *
      * One second is the realistic production setting. It was hardcoded to 300ms,
@@ -95,6 +127,38 @@ data class LightSessionConfig(
 ) {
     enum class CaptureQuality {
         LOW, MEDIUM, HIGH
+    }
+
+    /**
+     * Where the screen-map wireframe gets drawn.
+     *
+     * Note what is *not* here: an option to send the real screenshot. The screen map
+     * is a permanent, per-screen artefact — one image per screen, kept for as long as
+     * the project exists — and there is no on-device masking yet, so offering it would
+     * mean offering to store an unmasked picture of every screen in the app forever.
+     * That is a decision to make deliberately with masking in hand, not a config flag
+     * to leave lying around.
+     */
+    enum class WireframeMode {
+        /**
+         * Send the widget rectangles; the server draws the wireframe. The default.
+         *
+         * Costs the host app a hierarchy walk and about 3 KB, against the 8.25 ms
+         * encode and 80 KB that [BITMAP] pays for the same picture (measured on a
+         * 1080×2400 frame — see `MaskingCostTest`). It also cannot carry screen
+         * content, because there is none in it.
+         */
+        RECTS,
+
+        /**
+         * Draw the wireframe on the device and upload it as a JPEG.
+         *
+         * What the SDK did before, kept for a backend that does not yet accept
+         * `skeleton` in the screen payload — against one of those, [RECTS] would
+         * silently produce screens with no image. There is no other reason to
+         * choose it.
+         */
+        BITMAP,
     }
 
     init {

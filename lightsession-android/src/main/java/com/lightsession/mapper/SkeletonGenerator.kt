@@ -35,7 +35,6 @@ import androidx.compose.ui.tooling.data.asTree
 import androidx.core.view.children
 import java.io.ByteArrayOutputStream
 import androidx.core.graphics.createBitmap
-import radiography.Radiography
 
 class SkeletonGenerator {
 
@@ -114,7 +113,7 @@ class SkeletonGenerator {
     }
 
     /**
-     * Gera o skeleton assim que a tela estiver pronta.
+     * Espera a tela ficar desenhável e então produz algo a partir dela.
      *
      * Para uma Activity clássica, a hierarquia já está medida quando chegamos
      * aqui e a captura é imediata.
@@ -126,16 +125,24 @@ class SkeletonGenerator {
      * Agora [ComposeSettleDetector] espera a composição *parar de mudar*, o que
      * é rápido quando dá e paciente quando precisa.
      *
+     * A espera vive aqui, e não em cada modo de captura, porque é a única parte
+     * difícil: [generateSkeletonFrame] e [generateSkeletonBitmap] diferem só no
+     * que fazem com a hierarquia depois que ela existe.
+     *
      * @param onComplete recebe null quando não houve o que capturar. Melhor
      *   nenhum skeleton do que um em branco marcado como válido.
      */
-    fun generateSkeletonBitmap(activity: Activity, onComplete: (Bitmap?) -> Unit) {
+    private fun <T> awaitDrawableRoot(
+        activity: Activity,
+        produce: (Activity, View) -> T?,
+        onComplete: (T?) -> Unit,
+    ) {
         val rootView = activity.window.decorView.rootView
 
         if (!containsComposeView(rootView)) {
             // View clássica: já está desenhável.
             if (rootView.width > 0 && rootView.height > 0) {
-                onComplete(generateSkeletonBitmapSync(activity, rootView))
+                onComplete(produce(activity, rootView))
                 return
             }
             rootView.viewTreeObserver.addOnGlobalLayoutListener(
@@ -144,7 +151,7 @@ class SkeletonGenerator {
                         rootView.viewTreeObserver.removeOnGlobalLayoutListener(this)
                         onComplete(
                             if (rootView.width > 0 && rootView.height > 0) {
-                                generateSkeletonBitmapSync(activity, rootView)
+                                produce(activity, rootView)
                             } else {
                                 null
                             }
@@ -163,9 +170,31 @@ class SkeletonGenerator {
             },
             onSettled = { settled ->
                 val root = settled.window?.decorView?.rootView
-                onComplete(root?.let { generateSkeletonBitmapSync(settled, it) })
+                onComplete(root?.let { produce(settled, it) })
             },
         )
+    }
+
+    /**
+     * Descreve a tela como retângulos, para o servidor desenhar.
+     *
+     * O caminho normal. Não aloca bitmap, não codifica JPEG: percorre a
+     * hierarquia — que é o custo irredutível de saber o que tem na tela — e
+     * devolve uns poucos KB de geometria. Ver [SkeletonFrame].
+     */
+    fun generateSkeletonFrame(activity: Activity, onComplete: (SkeletonFrame?) -> Unit) {
+        awaitDrawableRoot(activity, ::generateSkeletonFrameSync, onComplete)
+    }
+
+    /**
+     * Desenha o wireframe aqui e devolve o bitmap.
+     *
+     * Mantido para um backend que ainda não entenda `skeleton` no payload de
+     * tela. Produz a mesma imagem que [generateSkeletonFrame] produz no
+     * servidor, pagando o encode que aquele caminho não paga.
+     */
+    fun generateSkeletonBitmap(activity: Activity, onComplete: (Bitmap?) -> Unit) {
+        awaitDrawableRoot(activity, ::generateSkeletonBitmapSync, onComplete)
     }
 
     /** Aborta uma espera em andamento (nova navegação, ou o usuário tocou a tela). */
@@ -173,21 +202,80 @@ class SkeletonGenerator {
         settleDetector.cancel()
     }
 
-    private fun generateSkeletonBitmapSync(activity: Activity, rootView: View): Bitmap? {
+    private fun generateSkeletonFrameSync(activity: Activity, rootView: View): SkeletonFrame? =
+        frameFrom(rootView, getWindowBackgroundColor(activity))
+
+    /**
+     * A varredura e a serialização, sem a Activity.
+     *
+     * A Activity só servia para uma consulta de tema, e exigi-la tornava o caminho
+     * caro impossível de medir sem subir uma tela inteira. Separar as duas coisas é o
+     * que permite `SkeletonCostTest` cronometrar este caminho contra [bitmapFrom]
+     * sobre a *mesma* hierarquia — que é a única comparação honesta entre eles.
+     */
+    internal fun frameFrom(rootView: View, backgroundColor: Int): SkeletonFrame? {
         if (rootView.width == 0 || rootView.height == 0) return null
 
         val skeletonTree = scanViewHierarchy(rootView) ?: return null
-        val skeletonTreeTexto = renderHierarchyAsText()
+        val rects = ArrayList<SkeletonRect>(64)
+        flattenForWire(skeletonTree, rects)
+
+        return SkeletonFrame(
+            width = rootView.width,
+            height = rootView.height,
+            background = backgroundColor,
+            rects = rects,
+        )
+    }
+
+    /**
+     * Achata a árvore na ordem de pintura, do jeito que [renderTreeToCanvas] pinta.
+     *
+     * Pré-ordem, pai antes dos filhos — é o que faz o filho cair em cima. E pula
+     * o nó transparente mantendo os filhos, que é como `COMPOSE_HOST` se marca:
+     * ele existe para dizer onde o Compose começa, o que um wireframe não mostra.
+     * Divergir daqui mudaria a imagem sem que nada avisasse.
+     */
+    private fun flattenForWire(node: SkeletonNode, into: MutableList<SkeletonRect>) {
+        if (node.color != Color.TRANSPARENT) {
+            into.add(
+                SkeletonRect(
+                    left = node.rect.left,
+                    top = node.rect.top,
+                    right = node.rect.right,
+                    bottom = node.rect.bottom,
+                    kind = node.type.name,
+                    color = node.color,
+                    stroke = node.style == Paint.Style.STROKE,
+                )
+            )
+        }
+        node.children.forEach { flattenForWire(it, into) }
+    }
+
+    private fun generateSkeletonBitmapSync(activity: Activity, rootView: View): Bitmap? =
+        bitmapFrom(rootView, getWindowBackgroundColor(activity))
+
+    /** A mesma varredura de [frameFrom], mas desenhando aqui. Ver o kdoc de lá. */
+    internal fun bitmapFrom(rootView: View, backgroundColor: Int): Bitmap? {
+        if (rootView.width == 0 || rootView.height == 0) return null
+
+        val skeletonTree = scanViewHierarchy(rootView) ?: return null
         val bitmap = createBitmap(rootView.width, rootView.height)
         val canvas = Canvas(bitmap)
 
-        val a = Radiography.scan()
-
-        val windowBackground = getWindowBackgroundColor(activity)
-        canvas.drawColor(windowBackground)
+        canvas.drawColor(backgroundColor)
 
         renderTreeToCanvas(skeletonTree, canvas)
         return bitmap
+    }
+
+    /** Só a varredura, para separar o custo irredutível do que cada modo acrescenta. */
+    internal fun scanOnly(rootView: View): Int {
+        val tree = scanViewHierarchy(rootView) ?: return 0
+        val rects = ArrayList<SkeletonRect>(64)
+        flattenForWire(tree, rects)
+        return rects.size
     }
 
     fun bitmapToBase64(bitmap: Bitmap): String {

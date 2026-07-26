@@ -24,13 +24,13 @@ import androidx.navigation.NavController
 import androidx.navigation.NavDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.fragment.NavHostFragment
+import com.lightsession.LightSessionConfig
 import com.lightsession.interaction.InteractionAwareCallback
 import com.lightsession.replay.ScreenDrawing
 import curtains.OnTouchEventListener
 import curtains.touchEventInterceptors
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
@@ -60,6 +60,79 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     private var sessionDataManager: SessionDataManager? = null
 
     private val skeletonGenerator = SkeletonGenerator()
+
+    /**
+     * Set from `LightSessionConfig.wireframeMode` at [init].
+     *
+     * Defaults to [LightSessionConfig.WireframeMode.RECTS] so a caller that reaches
+     * this singleton without going through `LightSession.init` still gets the cheap
+     * path rather than the one that encodes a JPEG per screen.
+     */
+    private var wireframeMode = LightSessionConfig.WireframeMode.RECTS
+
+    /**
+     * Set from `LightSessionConfig.captureRealScreens` at [init].
+     *
+     * Defaults to false here, unlike the config, so a caller that reaches this
+     * singleton without going through `LightSession.init` never starts capturing real
+     * screens by accident. The config's default is the product decision; this one is
+     * the safe fallback when there is no config at all.
+     */
+    private var captureRealScreens = false
+
+    /**
+     * A wireframe, however it was produced. Exactly one field is set.
+     *
+     * The two modes disagree about *where* the drawing happens, not about anything
+     * the caller does afterwards — so the call sites branch once, here, instead of
+     * duplicating the send.
+     */
+    private class Wireframe(
+        val bitmapBase64: String? = null,
+        val skeleton: SkeletonFrame? = null,
+    )
+
+    /**
+     * Captures the current screen's wireframe in whichever mode is configured.
+     *
+     * @param onComplete receives null when there was nothing to capture — a screen
+     *   that never laid out, or a composition that never settled.
+     */
+    private fun captureWireframe(activity: Activity, onComplete: (Wireframe?) -> Unit) {
+        when (wireframeMode) {
+            LightSessionConfig.WireframeMode.RECTS ->
+                skeletonGenerator.generateSkeletonFrame(activity) { frame ->
+                    onComplete(frame?.let { Wireframe(skeleton = it) })
+                }
+
+            LightSessionConfig.WireframeMode.BITMAP ->
+                skeletonGenerator.generateSkeletonBitmap(activity) { bitmap ->
+                    onComplete(
+                        bitmap?.let {
+                            Wireframe(bitmapBase64 = skeletonGenerator.bitmapToBase64(it))
+                        }
+                    )
+                }
+        }
+    }
+
+    /**
+     * Whether sending this wireframe would replace a better image.
+     *
+     * The two captures race, and the wireframe can lose. Its capture waits for the
+     * composition to *settle*, which is unbounded, while the real screenshot waits a
+     * fixed [SCREENSHOT_SETTLE_MS] from navigation. On Phoenix's home screen the
+     * screenshot landed at +2.6s and the wireframe only finished settling at +5.2s —
+     * so the wireframe arrived last and overwrote the real screen, and the server's
+     * supersede-delete then removed the screenshot from the bucket.
+     *
+     * The guard at the top of the send is checked *before* the capture starts, so it
+     * cannot see this. This is the same question asked again after the wait, which is
+     * the only point where the answer is current. It also saves an upload that was
+     * always going to be discarded.
+     */
+    private fun wireframeWouldDowngrade(screenCacheKey: String): Boolean =
+        captureRealScreens && cacheManager.isScreenFullyCaptured(screenCacheKey)
 
     fun getCurrentScreen(): String? {
         return lastScreen
@@ -131,6 +204,15 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
          */
         private const val COMPOSE_INTEGRATION_GRACE_MS = 3_000L
 
+        /**
+         * How long a screen must sit untouched before it is captured for real.
+         *
+         * Long enough for animations, image loads and a network round trip to land, so
+         * the capture is the arrived screen rather than one mid-build. Short enough
+         * that an ordinary reader of the screen is still on it.
+         */
+        private const val SCREENSHOT_SETTLE_MS = 2_500L
+
         @Volatile
         private var instance: ScreenMapperIntegration? = null
 
@@ -141,13 +223,21 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         }
     }
 
-    fun init(application: Application, dataSender: DataSender, sessionDataManager: SessionDataManager) {
+    fun init(
+        application: Application,
+        dataSender: DataSender,
+        sessionDataManager: SessionDataManager,
+        wireframeMode: LightSessionConfig.WireframeMode = LightSessionConfig.WireframeMode.RECTS,
+        captureRealScreens: Boolean = false,
+    ) {
         if (this.application != null) {
             return
         }
         this.application = application
         this.dataSender = dataSender
         this.sessionDataManager = sessionDataManager
+        this.wireframeMode = wireframeMode
+        this.captureRealScreens = captureRealScreens
 
 
         // Initialize cache manager
@@ -650,18 +740,17 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
             if (!cacheManager.isScreenSent(screenCacheKey)) {
                 screenNodes[to]?.let { toNode ->
-                    skeletonGenerator.generateSkeletonBitmap(activity) { skeletonBitmap ->
-                        val skeletonScreenBase64 = skeletonBitmap?.let {
-                            skeletonGenerator.bitmapToBase64(it)
-                        }
-
-                        if (skeletonScreenBase64 != null) {
+                    captureWireframe(activity) { wireframe ->
+                        if (wireframeWouldDowngrade(screenCacheKey)) {
+                            Log.d("ScreenMapper", "Real screenshot already stored for $to; wireframe dropped.")
+                        } else if (wireframe != null) {
                             (activity as? ComponentActivity)?.lifecycleScope?.launch {
                                 val result = dataSender?.sendScreenData(
                                     screenId = screenId,
                                     screenName = to,
                                     screenType = toNode.type,
-                                    bitmapBase64 = skeletonScreenBase64,
+                                    bitmapBase64 = wireframe.bitmapBase64,
+                                    skeleton = wireframe.skeleton,
                                     width = screenWidth,
                                     height = screenHeight,
                                     appVersionCode = appVersionCode,
@@ -764,18 +853,17 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                 val screenCacheKey = generateCacheKey(screenId)
 
                 if (!cacheManager.isScreenSent(screenCacheKey)) {
-                    skeletonGenerator.generateSkeletonBitmap(activity) { skeletonBitmap ->
-                        val skeletonScreenBase64 = skeletonBitmap?.let {
-                            skeletonGenerator.bitmapToBase64(it)
-                        }
-
-                        if (skeletonScreenBase64 != null) {
+                    captureWireframe(activity) { wireframe ->
+                        if (wireframeWouldDowngrade(screenCacheKey)) {
+                            Log.d("ScreenMapper", "Real screenshot already stored for $screenName; wireframe dropped.")
+                        } else if (wireframe != null) {
                             scope.launch {
                                 val result = dataSender?.sendScreenData(
                                     screenId = screenId,
                                     screenName = screenName,
                                     screenType = screenType,
-                                    bitmapBase64 = skeletonScreenBase64,
+                                    bitmapBase64 = wireframe.bitmapBase64,
+                                    skeleton = wireframe.skeleton,
                                     width = screenWidth,
                                     height = screenHeight,
                                     appVersionCode = appVersionCode,
@@ -817,36 +905,53 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         }
     }
 
+    /**
+     * Agenda o upgrade do wireframe para o print real da tela.
+     *
+     * Espera [SCREENSHOT_SETTLE_MS] antes de capturar, e é a espera que dá valor
+     * à captura: animação termina, imagem carrega, dado da rede chega. O que for
+     * capturado antes disso é uma tela em construção, não a tela.
+     *
+     * Qualquer toque ou nova navegação cancela via [cancelScreenshot] — se o
+     * usuário interagiu, a tela mudou, e capturar depois disso registraria um
+     * estado que não é o de chegada.
+     *
+     * Governado por `LightSessionConfig.captureRealScreens`, e vale reler o kdoc
+     * de lá: com isso ligado o bucket guarda um print sem máscara de cada tela do
+     * app, permanentemente, e não há masking no device.
+     */
     private fun scheduleScreenshot() {
         cancelScreenshot()
 
+        if (!captureRealScreens) return
+
         val activity = currentActivityWeakRef?.get()
         if (activity == null || activity.isFinishing || activity.isDestroyed) {
-            Log.d("ScreenMapper", "Cannot schedule screenshot: Invalid or finishing activity.")
-            isScreenshotScheduledForCurrentScreen = false
+            Log.d("ScreenMapper", "Cannot schedule screenshot: invalid or finishing activity.")
             return
         }
 
         val scope = (activity as? ComponentActivity)?.lifecycleScope ?: run {
-            Log.w("ScreenMapper", "Could not get lifecycleScope for Activity. Screenshot not scheduled.")
-            isScreenshotScheduledForCurrentScreen = false
+            Log.w("ScreenMapper", "No lifecycleScope for this Activity; screenshot not scheduled.")
             return
         }
 
+        isScreenshotScheduledForCurrentScreen = true
         currentScreenshotJob = scope.launch {
             try {
-                Log.d("ScreenMapper", "Scheduling screenshot for 2.5 seconds on screen: ${activity.javaClass.simpleName}")
-                delay(2500)
-
-                if (isActive) {
-
-                } else {
-                    Log.d("ScreenMapper", "Screenshot action was canceled before execution for ${activity.javaClass.simpleName}.")
+                delay(SCREENSHOT_SETTLE_MS)
+                // `lifecycleScope` já cancela na destruição, mas a Activity pode
+                // estar terminando sem que o escopo tenha sido cancelado ainda.
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    takeScreenshot(activity)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                Log.d("ScreenMapper", "Scheduled screenshot canceled for ${activity.javaClass.simpleName} (user interaction or new navigation).")
+                Log.d("ScreenMapper", "Screenshot canceled for ${activity.javaClass.simpleName} (touch or navigation).")
+                // Repropagado: engolir um cancelamento faz a corrotina parecer ter
+                // completado, e o escopo do lifecycle deixa de conseguir encerrá-la.
+                throw e
             } catch (e: Exception) {
-                Log.e("ScreenMapper", "Unexpected error scheduling screenshot for ${activity.javaClass.simpleName}: ${e.message}", e)
+                Log.e("ScreenMapper", "Error capturing screen for ${activity.javaClass.simpleName}", e)
             } finally {
                 isScreenshotScheduledForCurrentScreen = false
             }
@@ -904,6 +1009,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
                             val result = dataSender?.updateScreenshot(
                                 screenId,
+                                screenName,
                                 bitmapBase64,
                                 screenWidth,
                                 screenHeight,

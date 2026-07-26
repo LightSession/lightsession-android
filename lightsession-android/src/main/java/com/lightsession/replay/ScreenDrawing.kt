@@ -239,12 +239,20 @@ internal class ScreenDrawing {
         return try {
             val byteArray = captureCurrentScreenOptimized(ScalePresets.ORIGINAL)
             byteArray?.let {
-                // Decodificar para obter as dimensões
-                val bitmap = BitmapFactory.decodeByteArray(it, 0, it.size)
-                val dimensions = Pair(bitmap.width, bitmap.height)
-                val base64 = Base64.encodeToString(it, Base64.NO_WRAP)
-                bitmap.recycle() // Liberar memória do bitmap temporário
-                Pair(base64, dimensions)
+                // Só o cabeçalho. Isto lia as dimensões decodificando o JPEG inteiro —
+                // alocar ~10 MB e descomprimir uma tela cheia para ler dois inteiros que
+                // estão nos primeiros bytes do arquivo, e que o único chamador
+                // (`ScreenMapperIntegration.takeScreenshot`) descarta, porque prefere as
+                // do `displayMetrics`. `inJustDecodeBounds` mantém o contrato da função
+                // sem tocar em pixel nenhum.
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(it, 0, it.size, bounds)
+                val dimensions = if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                    Pair(bounds.outWidth, bounds.outHeight)
+                } else {
+                    null
+                }
+                Pair(Base64.encodeToString(it, Base64.NO_WRAP), dimensions)
             } ?: Pair(null, null)
         } catch (e: Exception) {
             Log.e("ScreenCaptureUtils", "Failed to capture screen with dimensions", e)
