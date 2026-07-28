@@ -538,6 +538,13 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                     }
                 }
 
+                // Also here, not only in `onActivityPaused`. This map holds Activities by
+                // strong reference from a singleton that lives as long as the process, so
+                // an entry that is never removed is a leaked Activity and every View in
+                // it. Pause normally precedes destroy, but "normally" is not a lifetime
+                // guarantee, and the cost of asking twice is a hash lookup.
+                originalCallbacks.remove(activity)
+
                 if (activity is FragmentActivity) {
                     val fragmentManager = activity.supportFragmentManager
                     val fragments = fragmentManager.fragments
