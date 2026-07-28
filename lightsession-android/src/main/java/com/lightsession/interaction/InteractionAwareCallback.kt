@@ -27,10 +27,19 @@ class InteractionAwareCallback(
 
     companion object {
         private const val MIN_DISTANCE = 10.0f // Minimum distance for a touch movement to be considered a swipe point
+
+        /**
+         * One tag for the file.
+         *
+         * It used to log under six — `UICallback`, `CoordinateScale`, `ActionRegistered`,
+         * `LightSession`, `InteractionCallback`, `interactionData` — which meant no single
+         * logcat filter showed what this class was doing, and none of them identified the
+         * SDK to whoever was reading a host app's log.
+         */
+        private const val TAG = "LightSession.Touch"
     }
 
     private val gestureDetector: GestureDetector = GestureDetector(activity, this)
-    private val interactionHistory: MutableList<UserInteraction> = mutableListOf()
     private val currentInteractionPoints: MutableList<UserInteraction.InteractionPoint> = mutableListOf()
 
     private var gestureStartTime: Long = 0
@@ -67,7 +76,33 @@ class InteractionAwareCallback(
      * Intercepts all touch events dispatched to the window.
      * This is the core method for tracking user interactions.
      */
+    /**
+     * Tracks the gesture, then hands the event on — and never lets the tracking stop the
+     * hand-off.
+     *
+     * Everything in [track] is the SDK's own business, and it all used to run unguarded on
+     * the way to `originalCallback.dispatchTouchEvent`. Two consequences, both bad and
+     * neither obvious: an exception went straight into the host app's touch dispatch and
+     * crashed it, and because the delegation is the last line, the app never received the
+     * touch at all — so a bug here presented as an unresponsive screen a moment before the
+     * crash.
+     *
+     * It is reachable. `JSONObject.put(String, Double)` throws on NaN or infinity, and a
+     * `MotionEvent` can carry either; a view hierarchy that misbehaves during
+     * [findViewAtCoordinates] would do it too. An SDK sitting in the touch path has to be
+     * inert on failure, so the whole of it is caught and logged, once, and the event goes
+     * on regardless.
+     */
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        try {
+            track(event)
+        } catch (error: Throwable) {
+            Log.e(TAG, "interaction tracking failed; the touch is unaffected", error)
+        }
+        return originalCallback.dispatchTouchEvent(event)
+    }
+
+    private fun track(event: MotionEvent) {
         gestureDetector.onTouchEvent(event)
 
         when (event.actionMasked) {
@@ -133,14 +168,6 @@ class InteractionAwareCallback(
                         UserInteraction.InteractionType.SWIPE
                     }
 
-                    val interaction = UserInteraction(
-                        type,
-                        currentInteractionPoints, // ← Agora contém coordenadas escaladas
-                        gestureStartTime,
-                        gestureEndTime,
-                    )
-
-                    interactionHistory.add(interaction)
 
                     // IMPORTANTE: Para findViewAtCoordinates, ainda usar coordenadas originais
                     // porque estamos procurando elementos na tela real, não na screenshot
@@ -210,7 +237,6 @@ class InteractionAwareCallback(
                 currentInteractionPoints.clear()
             }
         }
-        return originalCallback.dispatchTouchEvent(event)
     }
 
     /**
@@ -362,7 +388,7 @@ class InteractionAwareCallback(
     }
 
     override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
-        if (isTrackingGesture && e2 != null) {
+        if (isTrackingGesture) {
             if (currentInteractionPoints.isEmpty() ||
                 distance(e2.x, e2.y, currentInteractionPoints.last()) > MIN_DISTANCE
             ) {
