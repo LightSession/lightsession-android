@@ -1,39 +1,63 @@
 package com.lightsession.mapper
 
 import android.app.Activity
-import android.util.Log
 import androidx.navigation.NavDestination
+import androidx.navigation.fragment.DialogFragmentNavigator
 import androidx.navigation.fragment.FragmentNavigator
 
 class Utils {
 
     /**
-     * Extracts the Fragment class name from a NavDestination using reflection.
-     * Note: This uses a private field and might break in future Navigation library versions.
-     * A more robust way is to use `destination.className` if available (from `FragmentNavigator.Destination`).
+     * A name for a destination in a fragment graph, from public API only.
      *
-     * @param destination The NavDestination to inspect
-     * @return The Fragment class name, or empty string if extraction fails
+     * The previous version reached for a private field whenever the destination was not a
+     * `FragmentNavigator.Destination`:
+     *
+     * ```
+     * val explicitClassName = destination.javaClass.getDeclaredField("_className")
+     * try { ... } catch (e: Exception) { ... }
+     * ```
+     *
+     * The `getDeclaredField` call sits *outside* the try that was meant to protect it, so
+     * `NoSuchFieldException` escaped — and this runs inside a
+     * `NavController.OnDestinationChangedListener`, which had no handler either, so the
+     * exception went up through `dispatchOnDestinationChanged` and took the host app down.
+     * Not hypothetical: `ActivityNavigator.Destination` declares no `_className` (checked
+     * against navigation-runtime 2.8.4 and 2.8.5), so any app with an `<activity>`
+     * destination in a fragment graph crashed on navigating to it. A `NavGraph` or a
+     * custom navigator's destination does the same.
+     *
+     * Reflection was never needed for it. `className` is public on both fragment
+     * destination types, and everything else has a `route` or a `displayName`.
+     *
+     * ## Why not `label`
+     *
+     * `label` is the obvious-looking fallback and it is the wrong one. It exists to be
+     * displayed, so apps set it from a string resource and it changes with the device
+     * language — while a screen name here is an identity, keyed on by the server and
+     * hashed into the on-device cache. Taking the label would file one screen under a
+     * different name in every locale the app ships.
      */
-    fun getFragmentClassNameSafely(destination: NavDestination): String {
-        return if (destination is FragmentNavigator.Destination) {
+    fun getFragmentClassNameSafely(destination: NavDestination): String = when {
+        destination is FragmentNavigator.Destination ->
             destination.className.substringAfterLast('.')
-        } else {
-            // Fallback for non-fragment destinations or if you need a generic name
-            Log.w("ScreenMapper", "Destination is not a FragmentNavigator.Destination. Type: ${destination.javaClass.simpleName}. Using label or display name.")
-            // You might want to use destination.label or destination.displayName here if available and more suitable
-            // For now, falling back to the destination's own class simple name as a generic identifier
-            val explicitClassName = destination.javaClass.getDeclaredField("_className") // Your original reflection
-            try {
-                explicitClassName.isAccessible = true
-                val fullClassName = explicitClassName.get(destination) as String
-                fullClassName.substringAfterLast('.')
-            } catch (e: Exception) {
-                Log.w("ScreenMapper", "Could not get _className from NavDestination: ${destination.javaClass.simpleName}. Error: ${e.message}")
-                destination.javaClass.simpleName // Or destination.route or another property
-            }
 
-        }
+        // A `<dialog>` destination. Its own class, not that of whatever is behind it.
+        destination is DialogFragmentNavigator.Destination ->
+            destination.className.substringAfterLast('.')
+
+        // Declared in the graph, so identical across builds and languages — which is what
+        // an identity has to be. Arguments are dropped; they are per-visit, not per-screen.
+        //
+        // Only a null check is needed. `NavDestination.setRoute` rejects a blank route with
+        // "Cannot have an empty route", so a route that exists is never blank — a guard
+        // against that would be a branch no test could reach.
+        destination.route != null ->
+            destination.route!!.substringBefore('?').substringAfterLast('.')
+
+        // The id as a resource name, or its hex value when the id has no name. Last
+        // resort, and still stable within a build.
+        else -> destination.displayName
     }
 
     /**
