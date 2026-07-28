@@ -47,6 +47,46 @@ internal object SubScreenReader {
         selectedTab(root)?.let { SubScreen(SubScreen.Kind.TAB, it) }
 
     /**
+     * Every selected tab in this window, in traversal order.
+     *
+     * Plural, and that is the point. A screen can hold more than one thing that reports
+     * `Role.Tab`, and the commonest case is the one that broke: a bottom navigation bar has
+     * it too, so a screen with `NavigationBar` plus `ScrollableTabRow` reports two. Taking
+     * the first — whichever the composition emitted earliest — meant that on a bottom-nav
+     * screen the reader saw the nav item, which does not change when the user switches the
+     * screen's own tabs, so switching them was invisible.
+     *
+     * Which of these is the sub-screen is not decidable from here. Semantics does not
+     * distinguish a nav bar from a tab row, and the labels do not either. What does
+     * distinguish them is that the nav item is a function of the destination and so does not
+     * move without a navigation — so the caller diffs this against what was selected on
+     * arrival, and whatever is new is the tab the reader chose.
+     */
+    fun selectedTabs(root: View): List<String> {
+        val labels = mutableListOf<String>()
+        forEachComposeHost(root) { host ->
+            collectSelectedTabs(
+                (host as RootForTest).semanticsOwner.unmergedRootSemanticsNode,
+                labels,
+            )
+        }
+        return labels
+    }
+
+    private fun collectSelectedTabs(node: SemanticsNode, into: MutableList<String>) {
+        val config = node.config
+        if (config.getOrNull(SemanticsProperties.Role) == Role.Tab &&
+            config.getOrNull(SemanticsProperties.Selected) == true
+        ) {
+            SubScreens.sanitize(firstText(node))?.let { into.add(it) }
+            // No descent. A tab's own label is inside it, and a nested selectable would be
+            // part of that tab rather than a sibling tab group.
+            return
+        }
+        for (child in node.children) collectSelectedTabs(child, into)
+    }
+
+    /**
      * The label of the currently selected tab in this window, or null.
      *
      * A tab's label is safe to build a screen name out of, which is what separates this

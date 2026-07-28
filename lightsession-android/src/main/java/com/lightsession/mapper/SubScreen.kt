@@ -81,22 +81,16 @@ internal object SubScreens {
     /**
      * The full screen name for a destination and the part of it in view.
      *
-     * `default` is the sub-screen that was already showing when the destination was
-     * entered, and matching it yields the bare destination. That is not an optimisation —
-     * it is what keeps one screen from acquiring two names. A destination is reported by
-     * the NavController before its tabs exist, so arriving at `dashboard` names the screen
-     * `dashboard` while the Overview tab is what is actually on display. Without this,
-     * switching to History and back would name that same view `dashboard › Overview`, and
-     * the map would carry both.
+     * The suffix is dropped when it merely repeats the destination — see [isRedundant].
      *
-     * It also removes the need to recognise a bottom navigation bar. `NavigationBarItem`
-     * carries the same `Role.Tab` semantics a tab row does, so the press that navigates to
-     * `home` also reports a selected tab — but that tab is the destination's default by
-     * construction, whatever it happens to be called. The name-based check below is the
-     * belt to this one's braces, for a reading that arrives before the default is known.
+     * Which tab counts as a sub-screen at all is settled before this, by diffing what is
+     * selected now against what was selected on arrival: the tab a screen opens on *is* that
+     * screen rather than a part of it, and a bottom navigation item never differs from
+     * arrival. This is the belt to that brace — a reading taken before the arrival state was
+     * known can still produce `home › Home`, and that is noise.
      */
-    fun compose(base: String, sub: SubScreen?, default: SubScreen? = null): String {
-        if (sub == null || sub == default) return base
+    fun compose(base: String, sub: SubScreen?): String {
+        if (sub == null) return base
         if (isRedundant(base, sub.label)) return base
         return base + SEPARATOR + sub.label
     }

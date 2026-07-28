@@ -78,34 +78,14 @@ class SubScreensTest {
     }
 
     @Test
-    fun `the tab a destination arrived on is the destination itself`() {
-        // The duplicate-node bug this parameter exists for. Arriving at `dashboard` names
-        // the screen `dashboard`, because the NavController reports the destination before
-        // its tabs have composed. Coming back to that same tab later must produce the same
-        // name — otherwise one view is filed under both `dashboard` and
-        // `dashboard › Overview`, and the map shows a screen the app does not have.
-        val overview = SubScreen(SubScreen.Kind.TAB, "Overview")
+    fun `the tab a screen arrived on is filtered out before this`() {
+        // Which tab is a sub-screen is settled by diffing against what was selected on
+        // arrival, in `ScreenMapperIntegration` — the tab a screen opens on is that screen,
+        // and a bottom navigation item never differs from arrival at all. So by the time a
+        // tab reaches here it is already known to be the reader's choice, and this only has
+        // to name it.
         val history = SubScreen(SubScreen.Kind.TAB, "History")
-
-        assertEquals("dashboard", SubScreens.compose("dashboard", overview, default = overview))
-        assertEquals("dashboard › History", SubScreens.compose("dashboard", history, default = overview))
-    }
-
-    @Test
-    fun `a localised bottom-nav label is absorbed by the default, not by its name`() {
-        // Route `home`, nav item "Início". Nothing about the two strings matches, so the
-        // name check cannot help — but the tab is whatever was selected on arrival, which
-        // is what makes it the default whatever it is called.
-        val inicio = SubScreen(SubScreen.Kind.TAB, "Início")
-        assertEquals("home › Início", SubScreens.compose("home", inicio))
-        assertEquals("home", SubScreens.compose("home", inicio, default = inicio))
-    }
-
-    @Test
-    fun `a modal is never absorbed by a tab default`() {
-        val tab = SubScreen(SubScreen.Kind.TAB, "Filter")
-        val modal = SubScreen(SubScreen.Kind.MODAL, "Filter")
-        assertEquals("doctors › Filter", SubScreens.compose("doctors", modal, default = tab))
+        assertEquals("dashboard › History", SubScreens.compose("dashboard", history))
     }
 
     @Test

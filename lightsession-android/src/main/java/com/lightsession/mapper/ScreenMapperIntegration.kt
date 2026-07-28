@@ -73,12 +73,19 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     private var currentSubScreen: SubScreen? = null
 
     /**
-     * The sub-screen already showing when this destination was entered.
+     * Every tab that was already selected when this destination was entered.
      *
-     * A destination's default tab is not a sub-screen of it — it *is* it. See
-     * [SubScreens.compose].
+     * A list, and the diff against it is what identifies the reader's choice. A screen can
+     * hold several things reporting `Role.Tab` — a bottom navigation bar has it as well as a
+     * tab row — and semantics cannot tell them apart. What tells them apart is that the nav
+     * item is a function of the destination and does not move without a navigation, so
+     * whatever is selected now and was not selected on arrival is the tab that was tapped.
+     *
+     * This replaced taking the first selected tab found, which depended on the order the
+     * composition happened to emit them in: get the nav bar first and the screen's own tabs
+     * became invisible, because the value never changed as the reader switched them.
      */
-    private var defaultSubScreen: SubScreen? = null
+    private var defaultTabs: List<String> = emptyList()
 
     /** Whether the pending read establishes the default rather than reporting a change. */
     private var pendingReadIsBaseline = false
@@ -724,7 +731,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     private fun enterDestination(screenName: String) {
         baseScreen = screenName
         currentSubScreen = null
-        defaultSubScreen = null
+        defaultTabs = emptyList()
         modalRootView = null
         subScreenBeneathModal = null
         // A panel does not survive the destination it was declared on. Its `onDispose` will
@@ -752,7 +759,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         if (!SubScreens.shouldReport(currentSubScreen, next)) return
 
         val from = lastScreen ?: base
-        val to = SubScreens.compose(base, next, defaultSubScreen)
+        val to = SubScreens.compose(base, next)
         currentSubScreen = next
         if (to == from) {
             // The suffix resolved back to the bare destination — the reader returned to
@@ -863,27 +870,32 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         if (currentSubScreen?.kind == SubScreen.Kind.MODAL) return@Runnable
         val activity = currentActivityWeakRef?.get() ?: return@Runnable
         val root = activity.window?.decorView ?: return@Runnable
-        val read = try {
-            SubScreenReader.readSubScreen(root)
+        val tabs = try {
+            SubScreenReader.selectedTabs(root)
         } catch (error: Throwable) {
             // A failed read is not worth taking the host app down for, and it is not worth
             // reporting either: the previous sub-screen stays current, which is the same
             // answer this would have given on a screen with neither tabs nor a sheet.
-            Log.d("ScreenMapper", "Sub-screen read failed", error)
-            null
+            Log.d("ScreenMapper", "sub-screen read failed", error)
+            emptyList()
         }
 
-        // An in-composition sheet is a modal even though it shares the window, so it is
-        // governed by `trackModals` and not by the flag that happens to run this read.
-        // What the app declared wins over what was read: it is the more specific claim,
-        // and the sheet it names is drawn over the tab the read found.
-        val next = declaredSubScreen ?: read?.takeIf { trackTabs }
         if (pendingReadIsBaseline) {
-            defaultSubScreen = next
-            currentSubScreen = next
-        } else {
-            applySubScreen(next)
+            defaultTabs = tabs
+            Log.d("ScreenMapper", "arrived on $baseScreen; tabs selected: $tabs")
+            return@Runnable
         }
+
+        // What is selected now and was not on arrival. A nav bar's item is in `defaultTabs`
+        // and stays there, so it drops out without having to be recognised.
+        val chosen = tabs.firstOrNull { it !in defaultTabs }
+        Log.d("ScreenMapper", "tabs now $tabs, arrived with $defaultTabs, chose $chosen")
+
+        // What the app declared wins over what was read: it is the more specific claim, and
+        // the panel it names is drawn over the tab the read found.
+        val next = declaredSubScreen
+            ?: chosen?.takeIf { trackTabs }?.let { SubScreen(SubScreen.Kind.TAB, it) }
+        applySubScreen(next)
     }
 
     private fun getOrCreateScreenNode(name: String, type: ScreenType): ScreenNode {

@@ -6,12 +6,16 @@ import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.BottomSheetScaffold
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -42,6 +46,7 @@ import curtains.Curtains
 import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -172,6 +177,11 @@ class SubScreenReaderTest {
         assertNotNull(modal)
         assertEquals(SubScreen.Kind.MODAL, modal!!.kind)
         assertEquals("confirm-delete", modal.label)
+        // Closed before returning. A window left attached outlives the rule's Activity and
+        // breaks the launch of whichever test runs next, which showed up as a different
+        // failure on every run rather than as this one.
+        open = false
+        compose.waitForIdle()
     }
 
     /**
@@ -196,6 +206,11 @@ class SubScreenReaderTest {
 
         assertEquals("the dropdown should have opened a window", before + 1, Curtains.rootViews.size)
         assertNull("but it is not a screen", SubScreenReader.identifyModal(newestWindow()))
+        // Closed before returning. A window left attached outlives the rule's Activity and
+        // breaks the launch of whichever test runs next, which showed up as a different
+        // failure on every run rather than as this one.
+        open = false
+        compose.waitForIdle()
     }
 
     /**
@@ -310,5 +325,59 @@ class SubScreenReaderTest {
         val withInput = name(true)
         Log.i(TAG, "different dialogs: '$plain' vs '$withInput'")
         assertTrue(plain != withInput)
+    }
+
+    /**
+     * A bottom navigation bar and a tab row in the same screen.
+     *
+     * `NavigationBarItem` carries `Role.Tab` exactly as `Tab` does — established in
+     * `ComposeOverlayProbeTest` — so a reader that stops at the first selected one it finds
+     * reports whichever the composition happens to emit first. If that is the nav bar, the
+     * screen's real tabs are invisible: the value never changes as the reader switches
+     * them, so nothing is ever reported.
+     *
+     * This is the shape pharm-manager has, and the shape that failed on it.
+     */
+    @Test
+    fun a_bottom_bar_does_not_hide_the_screens_own_tabs() {
+        compose.setContent {
+            var tab by remember { mutableStateOf(0) }
+            Scaffold(
+                bottomBar = {
+                    NavigationBar {
+                        NavigationBarItem(
+                            selected = true,
+                            onClick = {},
+                            icon = { Text("D") },
+                            label = { Text("Doctors") },
+                        )
+                    }
+                },
+            ) { padding ->
+                Column(Modifier.padding(padding)) {
+                    TabRow(selectedTabIndex = tab) {
+                        listOf("All", "Pending").forEachIndexed { index, label ->
+                            Tab(
+                                selected = tab == index,
+                                onClick = { tab = index },
+                                text = { Text(label) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        val onArrival = SubScreenReader.selectedTabs(decor())
+        Log.i(TAG, "selected on arrival: $onArrival")
+        assertTrue("the screen's own tab has to be in there", onArrival.contains("All"))
+
+        compose.onNodeWithText("Pending").performClick()
+        compose.waitForIdle()
+        val afterTap = SubScreenReader.selectedTabs(decor())
+        Log.i(TAG, "selected after tapping Pending: $afterTap")
+        assertTrue("switching tabs has to be visible", afterTap.contains("Pending"))
+        assertFalse("and the old one gone", afterTap.contains("All"))
     }
 }
