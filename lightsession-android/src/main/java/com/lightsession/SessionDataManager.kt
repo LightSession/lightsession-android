@@ -81,8 +81,6 @@ class SessionDataManager(
      */
     private val bufferedFrames = AtomicInteger(0)
 
-    // Batch configuration
-    private val BATCH_INTERVAL_MS = 5000L // 5 seconds
 
     /**
      * Batches on their way out, on disk.
@@ -210,41 +208,11 @@ class SessionDataManager(
     @Serializable
     data class Coordinates(val x: Float, val y: Float)
 
-    /**
-     * Complete batch containing all types of events
-     */
-    @Serializable
-    data class SessionBatch(
-        val batchId: String,
-        val sessionId: String,
-        val batchNumber: Int,
-        val timestamp: Long,
-        val events: List<SessionEvent>,
-        val metadata: BatchMetadata
-    )
-
-    /**
-     * User information for session tracking
-     */
-    @Serializable
-    data class UserInfo(
-        val userId: String,
-        val userType: String, // "anonymous" or "identified"
-        val sessionId: String,
-        val sessionStartTime: Long
-    )
-
-    @Serializable
-    data class BatchMetadata(
-        val frameCount: Int,
-        val navigationCount: Int,
-        val interactionCount: Int,
-        val batchSizeBytes: Long,
-        val timeSinceSessionStart: Long,
-        val deviceInfo: DeviceInfo,
-        val userInfo: UserInfo,
-        val appInfo: AppInfo
-    )
+    // `SessionBatch`, `BatchMetadata` and `UserInfo` lived here and were never
+    // constructed anywhere in the SDK. The wire format is built by `spoolFrames` and
+    // `spoolCrumbs` out of plain maps, so these described a payload that had stopped
+    // existing — including a `timeSinceSessionStart` nothing computed and a `batchSizeBytes`
+    // nothing measured.
 
     @Serializable
     data class DeviceInfo(
@@ -288,10 +256,28 @@ class SessionDataManager(
     private var userType: String = "anonymous" // "anonymous" or "identified"
     private var appVersion: String = getAppVersion(context)
 
-    // Add cache for location info to avoid repeated API calls
+    /**
+     * The last location lookup, and when it happened.
+     *
+     * `@Volatile` because the write happens on an IO coroutine and the read happens
+     * wherever `getDeviceInfo` is called from — the batch ticker, a lifecycle callback, a
+     * low-memory callback. Without it a reader could see the timestamp updated but not the
+     * value, and refetch on every batch forever.
+     */
+    @Volatile
     private var cachedLocationInfo: LocationInfo? = null
+
+    @Volatile
     private var locationInfoTimestamp: Long = 0
-    private val LOCATION_CACHE_DURATION_MS = 30 * 60 * 1000L // 30 minutes
+
+    /**
+     * Guards against piling up lookups.
+     *
+     * `getDeviceInfo` launched a fetch whenever the cache looked stale, and it runs once
+     * per batch — so against a slow or unreachable endpoint a new request went out every
+     * five seconds while none of them had come back yet. One in flight at a time.
+     */
+    private val locationFetchInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
      * Generate anonymous user ID
@@ -410,6 +396,12 @@ class SessionDataManager(
     }
 
     internal companion object {
+        /** How often the buffers are drained to disk when nothing else forces it. */
+        private const val BATCH_INTERVAL_MS = 5_000L
+
+        /** How long a location lookup is reused before it is worth asking again. */
+        private const val LOCATION_CACHE_DURATION_MS = 30 * 60 * 1000L
+
         /**
          * Drops from the head of `queue` until `bytes` is at or below `target`.
          *
@@ -528,7 +520,13 @@ class SessionDataManager(
             val startTime = jsonObject.getLong("start_time")
             val endTime = jsonObject.getLong("end_time")
             val pointsArray = jsonObject.getJSONArray("points")
-            val screenId = jsonObject.optString("screen_id", null)
+            // Not `optString`. Android's version returns the *string* "null" when the key
+            // is present with a JSON null — the fallback only applies to a missing key — so
+            // a screen id of "null" was reaching the server and being stored as one.
+            val screenId = jsonObject.opt("screen_id")
+                ?.takeUnless { it === JSONObject.NULL }
+                ?.toString()
+                ?.takeIf { it.isNotBlank() }
 
             // Extract screen and coordinates from the first point
             var screen = ""
@@ -943,6 +941,8 @@ class SessionDataManager(
             return cachedLocationInfo
         }
 
+        if (!locationFetchInFlight.compareAndSet(false, true)) return cachedLocationInfo
+
         return try {
             val request = Request.Builder()
                 .url("${config.normalizedApiUrl}/api/v1/ipinfo")
@@ -975,6 +975,8 @@ class SessionDataManager(
         } catch (e: Exception) {
             Log.e("SessionDataManager", "Error fetching location info", e)
             null
+        } finally {
+            locationFetchInFlight.set(false)
         }
     }
 
@@ -1020,7 +1022,13 @@ class SessionDataManager(
                     packageInfo.versionCode
                 },
                 packageName = context.packageName,
-                buildType = "release",
+                // Read from the app rather than asserted. This was the literal "release",
+                // so a debug build reported itself as a release one and the field could
+                // never be used to tell test traffic from real.
+                buildType = if (isDebuggable()) "debug" else "release",
+                // The device's API level, which is what this actually is. It was labelled
+                // `compileSdkVersion`, a build-time constant the SDK cannot see from here
+                // and which has nothing to do with the phone the session came from.
                 compileSdkVersion = Build.VERSION.SDK_INT
             )
         } catch (e: Exception) {
@@ -1034,6 +1042,9 @@ class SessionDataManager(
             )
         }
     }
+
+    private fun isDebuggable(): Boolean =
+        (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     private fun getAppVersion(context: Context): String {
         return try {
