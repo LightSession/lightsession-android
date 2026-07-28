@@ -1,16 +1,10 @@
 package com.lightsession.interaction
 
 import android.app.Activity
-import android.graphics.Rect
 import android.util.Log
 import android.view.*
 import android.view.accessibility.AccessibilityEvent
-import android.widget.Button
-import android.widget.EditText
-import android.widget.TextView
 import com.lightsession.mapper.ScreenMapperIntegration
-import com.lightsession.replay.ScreenDrawing
-import com.lightsession.replay.ScreenDrawing.Companion.ScalePresets
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.pow
@@ -23,7 +17,7 @@ import kotlin.math.sqrt
 class InteractionAwareCallback(
     private val originalCallback: Window.Callback,
     private val activity: Activity,
-) : GestureDetector.SimpleOnGestureListener(), Window.Callback {
+) : Window.Callback {
 
     companion object {
         private const val MIN_DISTANCE = 10.0f // Minimum distance for a touch movement to be considered a swipe point
@@ -39,38 +33,14 @@ class InteractionAwareCallback(
         private const val TAG = "LightSession.Touch"
     }
 
-    private val gestureDetector: GestureDetector = GestureDetector(activity, this)
     private val currentInteractionPoints: MutableList<UserInteraction.InteractionPoint> = mutableListOf()
 
     private var gestureStartTime: Long = 0
     private var isTrackingGesture: Boolean = false
 
     init {
-        val activityName = activity.javaClass.simpleName
-        Log.d("UICallback", "Initialized for activity: $activityName")
+        Log.d(TAG, "tracking touches in ${activity.javaClass.simpleName}")
     }
-
-    private fun getScaledCoordinates(originalX: Float, originalY: Float): Pair<Float, Float> {
-        return try {
-            // Pega o scale factor atual do ScreenDrawing
-            val screenDrawing = ScreenDrawing()
-            val scaleFactor = ScalePresets.ORIGINAL
-
-            Log.d("CoordinateScale", "Scale factor: $scaleFactor | Original: ($originalX, $originalY)")
-
-            val scaledX = originalX * scaleFactor
-            val scaledY = originalY * scaleFactor
-
-            Log.d("CoordinateScale", "Scaled: ($scaledX, $scaledY)")
-
-            Pair(scaledX, scaledY)
-        } catch (e: Exception) {
-            Log.e("InteractionCallback", "Error scaling coordinates", e)
-            // Fallback para coordenadas originais em caso de erro
-            Pair(originalX, originalY)
-        }
-    }
-
 
     /**
      * Intercepts all touch events dispatched to the window.
@@ -88,10 +58,9 @@ class InteractionAwareCallback(
      * crash.
      *
      * It is reachable. `JSONObject.put(String, Double)` throws on NaN or infinity, and a
-     * `MotionEvent` can carry either; a view hierarchy that misbehaves during
-     * [findViewAtCoordinates] would do it too. An SDK sitting in the touch path has to be
-     * inert on failure, so the whole of it is caught and logged, once, and the event goes
-     * on regardless.
+     * `MotionEvent` can carry either. An SDK sitting in the touch path has to be inert on
+     * failure, so the whole of it is caught and logged, once, and the event goes on
+     * regardless.
      */
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         try {
@@ -103,62 +72,37 @@ class InteractionAwareCallback(
     }
 
     private fun track(event: MotionEvent) {
-        gestureDetector.onTouchEvent(event)
-
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                Log.d("ActionRegistered", "Gesture: BOTAO PRESSIONADO")
                 currentInteractionPoints.clear()
                 isTrackingGesture = true
                 gestureStartTime = System.currentTimeMillis()
 
-                val (scaledX, scaledY) = getScaledCoordinates(event.x, event.y)
                 currentInteractionPoints.add(
-                    UserInteraction.InteractionPoint(
-                        scaledX, // ← Agora usa coordenadas escaladas
-                        scaledY, // ← Agora usa coordenadas escaladas
-                        System.currentTimeMillis()
-                    )
+                    UserInteraction.InteractionPoint(event.x, event.y, System.currentTimeMillis()),
                 )
-                Log.d("ActionRegistered", "Original: ${event.x} ${event.y} | Scaled: $scaledX $scaledY")
             }
 
             MotionEvent.ACTION_MOVE -> {
-                if (isTrackingGesture) {
-                    val (scaledX, scaledY) = getScaledCoordinates(event.x, event.y)
-
-                    if (currentInteractionPoints.isEmpty() ||
-                        distance(scaledX, scaledY, currentInteractionPoints.last()) > MIN_DISTANCE
-                    ) {
-                        currentInteractionPoints.add(
-                            UserInteraction.InteractionPoint(
-                                scaledX, // ← Coordenadas escaladas
-                                scaledY, // ← Coordenadas escaladas
-                                System.currentTimeMillis()
-                            )
-                        )
-                        Log.d("ActionRegistered", "Move - Original: ${event.x} ${event.y} | Scaled: $scaledX $scaledY")
-                    }
+                if (isTrackingGesture && farEnoughFromLast(event)) {
+                    currentInteractionPoints.add(
+                        UserInteraction.InteractionPoint(event.x, event.y, System.currentTimeMillis()),
+                    )
                 }
             }
 
             MotionEvent.ACTION_UP -> {
-                Log.d("ActionRegistered", "Gesture: BOTAO DESPRESSIONADO")
                 if (isTrackingGesture) {
                     isTrackingGesture = false
                     val gestureEndTime = System.currentTimeMillis()
 
-                    val (scaledX, scaledY) = getScaledCoordinates(event.x, event.y)
-
-                    if (currentInteractionPoints.isEmpty() ||
-                        distance(scaledX, scaledY, currentInteractionPoints.last()) > MIN_DISTANCE
-                    ) {
+                    if (farEnoughFromLast(event)) {
                         currentInteractionPoints.add(
                             UserInteraction.InteractionPoint(
-                                scaledX, // ← Coordenadas escaladas
-                                scaledY, // ← Coordenadas escaladas
-                                System.currentTimeMillis()
-                            )
+                                event.x,
+                                event.y,
+                                System.currentTimeMillis(),
+                            ),
                         )
                     }
 
@@ -169,43 +113,6 @@ class InteractionAwareCallback(
                     }
 
 
-                    // IMPORTANTE: Para findViewAtCoordinates, ainda usar coordenadas originais
-                    // porque estamos procurando elementos na tela real, não na screenshot
-                    if (type == UserInteraction.InteractionType.TAP) {
-                        val touchX = event.x.toInt() // ← Coordenadas originais para encontrar a view
-                        val touchY = event.y.toInt() // ← Coordenadas originais para encontrar a view
-
-                        val clickedView = findViewAtCoordinates(activity.window.decorView, touchX, touchY)
-
-                        if (clickedView != null) {
-                            val viewDescription = getViewDescription(clickedView)
-                            Log.d("LightSession", "Detected TAP on View: $viewDescription")
-
-                            val eventProperties = mutableMapOf<String, Any>(
-                                "ui_element" to viewDescription,
-                                "type" to clickedView.javaClass.simpleName,
-                                "resourceId" to (getResourceId(clickedView) ?: ""),
-                                "screen" to activity.javaClass.simpleName,
-                                "x" to touchX,
-                                "y" to touchY,
-                                "x_scaled" to scaledX,
-                                "y_scaled" to scaledY
-                            )
-
-                            when (clickedView) {
-                                is EditText -> {
-                                    eventProperties["interaction_type"] = "input_focus"
-                                }
-                                else -> {
-                                    eventProperties["interaction_type"] = "click"
-                                }
-                            }
-                        } else {
-                            Log.d("LightSession", "Detected TAP, but no specific View found at coordinates.")
-                        }
-                    }
-
-                    // Enviar dados de interação (com coordenadas escaladas para o replay visual)
                     val interactionData = JSONObject().apply {
                         put("type", type.name)
                         put("points", interactionPointsToJson(currentInteractionPoints)) // ← Coordenadas escaladas
@@ -217,7 +124,7 @@ class InteractionAwareCallback(
                                 put("screen_id", screenId)
                             }
                         } catch (e: Exception) {
-                            Log.e("InteractionCallback", "Error obtaining screen_id", e)
+                            Log.w(TAG, "could not read the current screen id", e)
                         }
                     }.toString()
 
@@ -226,9 +133,8 @@ class InteractionAwareCallback(
                             .getSessionDataManager()
                         sessionDataManager?.addInteractionFromJson(interactionData)
                     } catch (e: Exception) {
-                        Log.e("InteractionCallback", "Error sending interaction to SessionDataManager", e)
+                        Log.w(TAG, "could not hand the interaction to the session", e)
                     }
-                    Log.d("interactionData", "Sending USER_INTERACTION breadcrumb: $interactionData")
                 }
             }
 
@@ -238,111 +144,6 @@ class InteractionAwareCallback(
             }
         }
     }
-
-    /**
-     * Recursively finds the deepest visible View at the given screen coordinates.
-     * This is crucial for identifying which specific UI element was interacted with.
-     */
-    private fun findViewAtCoordinates(parent: View?, x: Int, y: Int): View? {
-        if (parent == null) return null
-
-        val hitRect = Rect()
-        parent.getGlobalVisibleRect(hitRect) // Get the global visible rectangle of the parent view
-
-        // Check if the parent itself contains the coordinates
-        if (hitRect.contains(x, y)) {
-            // If the parent is a ViewGroup, recursively search its children
-            if (parent is ViewGroup) {
-                // Iterate children in reverse order (from last drawn to first)
-                // to find the topmost view at the coordinates.
-                for (i in parent.childCount - 1 downTo 0) {
-                    val child = parent.getChildAt(i)
-                    // Check if the child is visible and potentially contains the coordinates
-                    if (child.visibility == View.VISIBLE) {
-                        val found = findViewAtCoordinates(child, x, y) // Recursive call
-                        if (found != null) {
-                            return found // Return the innermost view found
-                        }
-                    }
-                }
-            }
-            // If no child was found at the coordinates, or if it's not a ViewGroup,
-            // check if the parent itself is interactive (e.g., clickable, has listeners, or an ID).
-            // This heuristic helps identify elements the user would typically interact with.
-            if (parent.isClickable || parent.hasOnClickListeners() || parent.id != View.NO_ID) {
-                return parent
-            }
-        }
-        return null // No interactive View found at the coordinates
-    }
-
-    /**
-     * Generates a descriptive string for a given View, useful for logging and analysis.
-     * It includes the View type, text content (for Button/TextView), and resource ID.
-     */
-    private fun getViewDescription(view: View): String {
-        val description = StringBuilder()
-
-        when (view) {
-            is Button -> {
-                description.append("Button: ")
-                when {
-                    !view.text.isNullOrEmpty() -> {
-                        description.append("'${view.text}'")
-                    }
-                    view.contentDescription != null -> {
-                        description.append("'${view.contentDescription}'")
-                    }
-                    else -> {
-                        description.append("no_text")
-                    }
-                }
-            }
-            is TextView -> { // Catches general TextViews, including EditText
-                description.append("TextView: ")
-                when {
-                    !view.text.isNullOrEmpty() -> {
-                        // For EditTexts, you might want to mask actual text for privacy
-                        description.append("text_present")
-                    }
-                    !view.hint.isNullOrEmpty() -> {
-                        description.append("hint: '${view.hint}'")
-                    }
-                    else -> {
-                        description.append("no_text")
-                    }
-                }
-            }
-            is ViewGroup -> {
-                description.append("ViewGroup (${view.javaClass.simpleName})")
-            }
-            else -> {
-                description.append("View (${view.javaClass.simpleName})")
-            }
-        }
-
-        getResourceId(view)?.let { resourceId ->
-            description.append(" [ID: $resourceId]")
-        }
-
-        return description.toString()
-    }
-
-    /**
-     * Retrieves the resource entry name (e.g., "my_button_id") for a given View's ID.
-     */
-    private fun getResourceId(view: View): String? {
-        return try {
-            if (view.id != View.NO_ID) {
-                view.resources.getResourceEntryName(view.id)
-            } else null
-        } catch (e: Exception) {
-            // Ignore, the ID might not be a public resource or invalid
-            Log.e("LightSession", "Error getting resource ID: ${e.message}")
-            null
-        }
-    }
-
 
     /**
      * Converts a list of UserInteraction.InteractionPoint objects into a JSON string
@@ -355,7 +156,7 @@ class InteractionAwareCallback(
         val currentScreen = try {
             ScreenMapperIntegration.getInstance().getCurrentScreen()
         } catch (e: Exception) {
-            Log.e("InteractionCallback", "Error getting current screen", e)
+            Log.w(TAG, "could not read the current screen name", e)
             null
         }
 
@@ -376,37 +177,16 @@ class InteractionAwareCallback(
         return jsonArray
     }
 
-    // --- GestureDetector.SimpleOnGestureListener Callbacks ---
-
-    override fun onSingleTapUp(e: MotionEvent): Boolean {
-        // Log coordinates similar to the Java version's extracted method
-        Log.d("ActionRegistered", "Gesture: ${e.x} ${e.y}")
-        // This callback is triggered by GestureDetector for single taps.
-        // Our logic in dispatchTouchEvent already handles TAP detection based on ACTION_UP.
-        // Returning true here indicates the event was consumed by the GestureDetector.
-        return true
-    }
-
-    override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
-        if (isTrackingGesture) {
-            if (currentInteractionPoints.isEmpty() ||
-                distance(e2.x, e2.y, currentInteractionPoints.last()) > MIN_DISTANCE
-            ) {
-                // Log coordinates for scroll events
-                Log.d("ActionRegistered", "Gesture: ${e2.x} ${e2.y}")
-            }
-        }
-        // This callback is triggered by GestureDetector for scroll events.
-        // Our logic in ACTION_MOVE within dispatchTouchEvent already adds points for SWIPEs.
-        // Keeping this method returning true ensures GestureDetector correctly recognizes scrolls.
-        return true
-    }
-
     /**
-     * Calculates the Euclidean distance between two points.
+     * Whether this event is far enough from the last recorded point to be worth keeping.
+     *
+     * A drag delivers a MOVE for every pixel the finger travels, and a replay does not need
+     * them: [MIN_DISTANCE] apart is enough to draw the path, and the points are what the
+     * interaction payload is made of.
      */
-    private fun distance(x1: Float, y1: Float, point: UserInteraction.InteractionPoint): Float {
-        return sqrt((x1 - point.x).pow(2) + (y1 - point.y).pow(2))
+    private fun farEnoughFromLast(event: MotionEvent): Boolean {
+        val last = currentInteractionPoints.lastOrNull() ?: return true
+        return sqrt((event.x - last.x).pow(2) + (event.y - last.y).pow(2)) > MIN_DISTANCE
     }
 
     // --- Window.Callback Delegation Methods ---
