@@ -67,6 +67,20 @@ class SessionDataManager(
     /** Frames discarded because the buffer hit its ceiling. */
     private val framesShed = AtomicInteger(0)
 
+    /**
+     * Frames sitting in [frameBuffer].
+     *
+     * Counted rather than asked for. `ConcurrentLinkedQueue.size` is O(n) — it walks the
+     * whole queue — and it was being read on every single frame, which is the exact cost
+     * [bufferedBytes] exists to avoid and says so a few lines up. With a full buffer that
+     * walk ran on the capture thread thousands of times a second's worth of frames.
+     *
+     * A shadow counter can drift from the thing it counts, so it is maintained at exactly
+     * the three places [bufferedBytes] is and nowhere else — the offer, the shed, and the
+     * drain are the only operations that change the queue's contents.
+     */
+    private val bufferedFrames = AtomicInteger(0)
+
     // Batch configuration
     private val BATCH_INTERVAL_MS = 5000L // 5 seconds
 
@@ -349,6 +363,7 @@ class SessionDataManager(
 
         frameBuffer.offer(frame)
         val buffered = bufferedBytes.addAndGet(imageData.size.toLong())
+        val frames = bufferedFrames.incrementAndGet()
 
         Log.d("SessionDataManager",
             "Frame added: seq=${frame.sequenceNumber}, " +
@@ -357,7 +372,7 @@ class SessionDataManager(
 
         if (buffered > config.maxBufferedBytes) {
             shedOldestFrames()
-        } else if (frameBuffer.size >= config.flushAtFrameCount || buffered >= config.flushAtBytes) {
+        } else if (frames >= config.flushAtFrameCount || buffered >= config.flushAtBytes) {
             // Off the capture thread: spooling writes files, and the capture thread
             // is the one that has to be ready for the next frame.
             requestFlush(if (buffered >= config.flushAtBytes) "size" else "count")
@@ -382,6 +397,7 @@ class SessionDataManager(
     private fun shedOldestFrames() {
         val shed = shedToFit(frameBuffer, bufferedBytes, config.flushAtBytes)
         if (shed > 0) {
+            bufferedFrames.addAndGet(-shed)
             val total = framesShed.addAndGet(shed)
             // Loud, because silent truncation reads as "the recording was always
             // like that" rather than "frames were discarded here".
@@ -587,6 +603,7 @@ class SessionDataManager(
     private fun processBatch(reason: String) = synchronized(batchLock) {
         val frames = drain(frameBuffer)
         bufferedBytes.addAndGet(-frames.sumOf { it.imageData.size.toLong() })
+        bufferedFrames.addAndGet(-frames.size)
         val navigations = drain(navigationBuffer)
         val interactions = drain(interactionBuffer)
 
@@ -608,10 +625,15 @@ class SessionDataManager(
             spoolCrumbs(batchId, batchNumber, deviceInfo, navigations, interactions)
         }
 
+        // The spool's own totals are deliberately not in here. `pendingCount()` lists two
+        // directories and `sizeBytes()` walks the whole tree recursively, and a `Log.d`
+        // argument list is evaluated whether or not the line is ever printed — so every
+        // batch paid for two directory walks to build a string that release builds discard.
+        // This can also run on the main thread, through `forceFlush` from a lifecycle
+        // callback. `getStats()` reports those numbers when something actually asks.
         Log.d("SessionDataManager",
             "Batch #$batchNumber spooled: ${frames.size} frames, ${navigations.size} navigations, " +
-                    "${interactions.size} interactions (reason: $reason); " +
-                    "${spool.pendingCount()} pending, ${spool.sizeBytes() / 1024} KB")
+                    "${interactions.size} interactions (reason: $reason)")
     }
 
     private fun <T> drain(queue: ConcurrentLinkedQueue<T>): List<T> {
