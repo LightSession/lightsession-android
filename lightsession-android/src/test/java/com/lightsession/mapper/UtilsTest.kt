@@ -56,4 +56,42 @@ class UtilsTest {
             assertTrue("expected a rejection for '${'$'}bad'", failure is IllegalArgumentException)
         }
     }
+
+    // ------------------------------------------------ route to screen name
+
+    @Test
+    fun `a route becomes one consistently cased name`() {
+        // The old rule capitalised each segment but only when the route had a `/`, so a
+        // single-segment route kept the app's own casing and a multi-segment one was
+        // retitled. That is why one map held `login` and `doctors` beside `Home/Manager`.
+        assertEquals("home", utils.extractScreenNameFromRoute("home"))
+        assertEquals("home/manager", utils.extractScreenNameFromRoute("home/manager"))
+        assertEquals("home/manager", utils.extractScreenNameFromRoute("Home/Manager"))
+        assertEquals("about", utils.extractScreenNameFromRoute("About"))
+    }
+
+    @Test
+    fun `arguments are not part of a screen name`() {
+        assertEquals("profile/about", utils.extractScreenNameFromRoute("profile/about?id=123"))
+        assertEquals("settings", utils.extractScreenNameFromRoute("settings?theme=dark"))
+    }
+
+    @Test
+    fun `a route parameter keeps the name the app declared`() {
+        // `{userId}` used to come out as `{UserId}`, which is not a name that appears
+        // anywhere in the app.
+        assertEquals(
+            "user/{userid}/details",
+            utils.extractScreenNameFromRoute("user/{userId}/details"),
+        )
+    }
+
+    @Test
+    fun `two routes differing only in case are one screen`() {
+        // The point of the rule. Before, these were two rows on the server.
+        assertEquals(
+            utils.extractScreenNameFromRoute("Doctor/Detail/{id}"),
+            utils.extractScreenNameFromRoute("doctor/detail/{id}"),
+        )
+    }
 }

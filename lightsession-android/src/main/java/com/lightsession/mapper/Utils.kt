@@ -71,41 +71,35 @@ class Utils {
     }
 
     /**
-     * Extracts and formats a screen name from a navigation route string.
+     * A screen name from a navigation route.
      *
-     * This function cleans a raw route, which may contain path separators (`/`) or
-     * query parameters (`?`), to produce a standardized screen name.
+     * Arguments go — they identify a visit, not a screen, so keeping them would file one
+     * screen under a new name for every set of values it was opened with. What is left is
+     * lower-cased, and that is the part that changed.
      *
-     * The processing logic is as follows:
-     * 1. It removes any query parameters (the substring after the first `?`).
-     * 2. If the cleaned route contains path separators (`/`), it then splits the route
-     * into segments. The first letter of each of these segments is capitalized,
-     * and they are joined back together using `/` as a separator.
-     * 3. If the cleaned route does not contain any path separators (`/`), it is returned as is,
-     * without any capitalization changes.
+     * ## Why the casing was wrong
      *
-     * Usage Examples:
-     * - "profile/about?id=123" returns "Profile/About"
-     * - "settings?theme=dark" returns "Settings"
-     * - "home" returns "home"
-     * - "user/{userId}/details" returns "User/{UserId}/Details"
-     * - "About" returns "About"
+     * It used to capitalise each segment, but only when the route contained a `/`:
      *
-     * @param route The navigation route string (e.g., "profile/settings", "dashboard?filter=all").
-     * @return A formatted string representing the screen name (e.g., "Profile/About", "home").
+     * ```
+     * "home"            -> "home"           // returned untouched
+     * "home/manager"    -> "Home/Manager"   // capitalised
+     * ```
+     *
+     * So a single-segment route kept whatever the app wrote and a multi-segment one was
+     * retitled, and the same map ended up holding `login`, `doctors` and `splash` beside
+     * `Home/Manager` and `Doctor/Detail/{id}`. It also capitalised inside route parameters,
+     * turning `{userId}` into `{UserId}` — a name the app never declares.
+     *
+     * One rule now, applied to every route: lower case. Lower rather than capitalised
+     * because it is what the app itself writes — routes are declared in lower case by
+     * convention — so the name in the map matches the name in the source.
+     *
+     * This renames screens. A screen already reported as `Home/Manager` will be reported as
+     * `home/manager` and the server, which keys on the name, will treat it as a new one and
+     * keep both. That is a one-off cleanup, not a migration: the old rows stop receiving
+     * data and can be deleted.
      */
-    fun extractScreenNameFromRoute(route: String): String {
-        val cleanRoute = when {
-            route.contains("?") -> route.split("?")[0] // Remove query parameters first
-            else -> route
-        }
-
-        // Only split and capitalize if there are path segments
-        return if (cleanRoute.contains("/")) {
-            cleanRoute.split("/")
-                .joinToString("/") { it.replaceFirstChar { char -> char.uppercase() } }
-        } else {
-            cleanRoute // Return as is if no path segments, respecting original casing
-        }
-    }
+    fun extractScreenNameFromRoute(route: String): String =
+        route.substringBefore('?').lowercase()
 }
