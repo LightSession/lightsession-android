@@ -162,6 +162,11 @@ internal class ScreenDrawing {
      */
     fun captureToBitmapAsync(
         scaleFactor: Float = globalScaleFactor,
+        /**
+         * The window everything else is stacked on, or null to use the foreground Activity
+         * the screen mapper is tracking. See [surfaceLayers] for why it cannot be derived.
+         */
+        baseWindow: android.view.Window? = null,
         onResult: (Bitmap?) -> Unit,
     ) {
         if (!surfaceCaptureRequired) {
@@ -174,7 +179,12 @@ internal class ScreenDrawing {
             // The draw set the flag: this app renders something a software canvas
             // cannot take. Fall through and never try the draw again.
         }
-        captureViaSurface(scaleFactor, onResult)
+        captureViaSurface(
+            scaleFactor,
+            baseWindow ?: com.lightsession.mapper.ScreenMapperIntegration.getInstance()
+                .currentActivity()?.window,
+            onResult,
+        )
     }
 
     /**
@@ -188,23 +198,87 @@ internal class ScreenDrawing {
     @Volatile
     private var surfaceCaptureRequired = false
 
+    /** One window to copy, and where on the screen its pixels belong. */
+    private class SurfaceLayer(val window: android.view.Window, val bounds: Rect)
+
     /**
-     * Copies the window's rendered surface.
+     * Every window that can be copied, furthest back first.
      *
-     * The fallback, because it is more expensive and captures less: it reads one window,
-     * so a dialog in its own window is not composited in the way [processViewsOptimized]
-     * composites them. What it does do is work — it takes the pixels the compositor
-     * already produced, so it neither knows nor cares that some of them came from a
-     * hardware bitmap.
+     * `PixelCopy` reads one window's surface, and a Compose `Dialog` or `ModalBottomSheet`
+     * is a window of its own — which is why the copy used to come back as the screen
+     * *behind* the dialog. Worse, silently: masking walks all the windows, so the dialog's
+     * text was covered on an image that did not contain the dialog, and the result looked
+     * like a correctly masked screen rather than a missing one.
+     *
+     * `WindowManagerGlobal.mViews` is in the order windows were added, which is their
+     * z-order, so drawing them in sequence stacks them the way the compositor did.
+     *
+     * A window is reached through `DialogWindowProvider`, a public Compose interface
+     * implemented by `DialogLayout`, `ModalBottomSheetDialogLayout` and the modal rail's
+     * layout. It is on a *child* of the dialog's decor view, hence the search.
+     *
+     * A `Popup` — a dropdown, a tooltip — has no `Window` at all: `PopupLayout` is added to
+     * the WindowManager directly. Those cannot be copied and are left out, which is the same
+     * answer as before for them.
+     */
+    private fun surfaceLayers(baseWindow: android.view.Window?): List<SurfaceLayer> {
+        val layers = mutableListOf<SurfaceLayer>()
+        val metrics = Resources.getSystem().displayMetrics
+
+        if (baseWindow != null) {
+            layers.add(
+                SurfaceLayer(baseWindow, Rect(0, 0, metrics.widthPixels, metrics.heightPixels)),
+            )
+        }
+
+        for (root in getWindowManagerViewsAndParams()?.views.orEmpty()) {
+            if (root.visibility != View.VISIBLE || root.width <= 0 || root.height <= 0) continue
+            if (root === baseWindow?.decorView) continue
+            val window = findDialogWindow(root) ?: continue
+            val location = IntArray(2)
+            root.getLocationOnScreen(location)
+            layers.add(
+                SurfaceLayer(
+                    window,
+                    Rect(
+                        location[0],
+                        location[1],
+                        location[0] + root.width,
+                        location[1] + root.height,
+                    ),
+                ),
+            )
+        }
+        return layers
+    }
+
+    private fun findDialogWindow(view: View): android.view.Window? {
+        if (view is androidx.compose.ui.window.DialogWindowProvider) return view.window
+        if (view !is android.view.ViewGroup) return null
+        for (index in 0 until view.childCount) {
+            findDialogWindow(view.getChildAt(index))?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * Copies the rendered surfaces of every window and stacks them.
+     *
+     * The fallback to the software draw, because it is more expensive — but it works, since
+     * it takes the pixels the compositor already produced and so neither knows nor cares
+     * that some of them came from a hardware bitmap.
      *
      * `PixelCopy` scales into the destination, so the frame is copied straight into a
      * pooled buffer at capture size rather than at full resolution and shrunk. At
      * CaptureQuality.LOW that is the difference between 0.6 MB and 10 MB per frame.
      */
-    private fun captureViaSurface(scaleFactor: Float, onResult: (Bitmap?) -> Unit) {
-        val window = com.lightsession.mapper.ScreenMapperIntegration.getInstance()
-            .currentActivity()?.window
-        if (window == null) {
+    private fun captureViaSurface(
+        scaleFactor: Float,
+        baseWindow: android.view.Window?,
+        onResult: (Bitmap?) -> Unit,
+    ) {
+        val layers = surfaceLayers(baseWindow)
+        if (layers.isEmpty()) {
             Log.w("ScreenCaptureUtils", "no foreground window to copy from")
             onResult(null)
             return
@@ -221,46 +295,114 @@ internal class ScreenDrawing {
 
         // ARGB_8888 regardless of scale. PixelCopy rejects destinations it cannot write,
         // and the software path's RGB_565-below-half-scale optimisation is one of them.
-        val bitmap = obtainBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val source = Rect(0, 0, metrics.widthPixels, metrics.heightPixels)
+        val target = obtainBitmap(width, height, Bitmap.Config.ARGB_8888)
 
-        try {
-            PixelCopy.request(window, source, bitmap, { status ->
+        copyLayers(layers, 0, target, effectiveScale) { copied ->
+            if (!copied) {
+                recycleBitmap(target)
+                mainHandler.post { onResult(null) }
+                return@copyLayers
+            }
+            // Masks are drawn after the copies rather than into them, because a copy is the
+            // screen exactly as rendered — unmasked. Same canvas transform as the software
+            // path, so the rectangles stay in screen coordinates.
+            mainHandler.post {
+                val canvas = getCanvasFromPool()
+                canvas.setBitmap(target)
+                if (effectiveScale != 1.0f) canvas.scale(effectiveScale, effectiveScale)
+                runCatching {
+                    maskScreen(canvas, getWindowManagerViewsAndParams()?.views.orEmpty())
+                }.onFailure {
+                    // A frame whose masks could not be computed must not ship: the copy is
+                    // the real screen, and unmasked is the one state it may never be in.
+                    Log.e("ScreenCaptureUtils", "masking failed; dropping frame", it)
+                    canvas.setBitmap(null)
+                    returnCanvasToPool(canvas)
+                    recycleBitmap(target)
+                    onResult(null)
+                    return@post
+                }
+                canvas.setBitmap(null)
+                returnCanvasToPool(canvas)
+                onResult(target)
+            }
+        }
+    }
+
+    /**
+     * Copies `layers[index]` and everything above it into `target`, then reports.
+     *
+     * Recursive rather than a loop because `PixelCopy` answers on a callback: the next
+     * window cannot be asked for until the previous one has arrived.
+     *
+     * The single-layer case — no dialog open, which is nearly every frame — copies straight
+     * into `target`, exactly as this did before there was any compositing. Only a screen
+     * that actually has a second window pays for the intermediate buffer and the blit.
+     */
+    private fun copyLayers(
+        layers: List<SurfaceLayer>,
+        index: Int,
+        target: Bitmap,
+        scale: Float,
+        onDone: (Boolean) -> Unit,
+    ) {
+        if (index >= layers.size) {
+            onDone(true)
+            return
+        }
+
+        val layer = layers[index]
+        val direct = layers.size == 1
+        val layerWidth = ((layer.bounds.width()) * scale).toInt().coerceAtLeast(1)
+        val layerHeight = ((layer.bounds.height()) * scale).toInt().coerceAtLeast(1)
+
+        val destination = if (direct) {
+            target
+        } else {
+            obtainBitmap(layerWidth, layerHeight, Bitmap.Config.ARGB_8888)
+        }
+
+        val request = {
+            PixelCopy.request(layer.window, null, destination, { status ->
                 if (status != PixelCopy.SUCCESS) {
                     Log.w("ScreenCaptureUtils", "PixelCopy failed with status $status")
-                    recycleBitmap(bitmap)
-                    mainHandler.post { onResult(null) }
+                    if (!direct) recycleBitmap(destination)
+                    onDone(false)
                     return@request
                 }
-                // Masks are drawn here rather than in the copy, because the copy is the
-                // screen exactly as rendered — unmasked. Same canvas transform as the
-                // software path, so the rectangles stay in screen coordinates.
-                mainHandler.post {
+                if (!direct) {
                     val canvas = getCanvasFromPool()
-                    canvas.setBitmap(bitmap)
-                    if (effectiveScale != 1.0f) canvas.scale(effectiveScale, effectiveScale)
+                    canvas.setBitmap(target)
                     runCatching {
-                        maskScreen(canvas, getWindowManagerViewsAndParams()?.views.orEmpty())
-                    }.onFailure {
-                        // A frame whose masks could not be computed must not ship: the
-                        // copy is the real screen, and unmasked is the one state it may
-                        // never be in.
-                        Log.e("ScreenCaptureUtils", "masking failed; dropping frame", it)
-                        canvas.setBitmap(null)
-                        returnCanvasToPool(canvas)
-                        recycleBitmap(bitmap)
-                        onResult(null)
-                        return@post
+                        canvas.drawBitmap(
+                            destination,
+                            null,
+                            Rect(
+                                (layer.bounds.left * scale).toInt(),
+                                (layer.bounds.top * scale).toInt(),
+                                (layer.bounds.right * scale).toInt(),
+                                (layer.bounds.bottom * scale).toInt(),
+                            ),
+                            null,
+                        )
                     }
                     canvas.setBitmap(null)
                     returnCanvasToPool(canvas)
-                    onResult(bitmap)
+                    recycleBitmap(destination)
                 }
+                copyLayers(layers, index + 1, target, scale, onDone)
             }, copyHandler())
+        }
+
+        try {
+            request()
         } catch (e: Throwable) {
-            Log.w("ScreenCaptureUtils", "PixelCopy request rejected", e)
-            recycleBitmap(bitmap)
-            onResult(null)
+            // A dialog can be dismissed between listing the windows and copying them, which
+            // makes its surface invalid. The layers already stacked are still a truthful
+            // picture of the screen, so the frame is kept rather than dropped.
+            Log.w("ScreenCaptureUtils", "PixelCopy request rejected for layer $index", e)
+            if (!direct) recycleBitmap(destination)
+            if (index == 0) onDone(false) else onDone(true)
         }
     }
 
