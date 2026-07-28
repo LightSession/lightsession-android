@@ -7,7 +7,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
-import android.graphics.RectF
 import android.graphics.drawable.*
 import android.os.Build
 import android.util.Base64
@@ -946,12 +945,18 @@ class SkeletonGenerator {
             isAntiAlias = true
         }
 
-        if (node.style == Paint.Style.FILL) {
-            val rectF = RectF(node.rect)
-            canvas.drawRoundRect(rectF, 12f, 12f, paint)
-        } else {
-            canvas.drawRect(node.rect, paint)
-        }
+        // Canto reto, e os preenchidos desenham igual aos contornados.
+        //
+        // Havia um `drawRoundRect(rect, 12f, 12f)` aqui, e o renderizador do servidor copiou
+        // o 12 para que mover o desenho para lá não mudasse o que o usuário vê. Mudou de todo
+        // jeito: este `Paint` tem `isAntiAlias`, o do servidor não tem antialiasing nenhum, e
+        // o mesmo arco que aqui sai suavizado sai de lá em degraus de um pixel. Copiar o raio
+        // sem poder copiar o antialiasing deixou o canto mais aparente do que o original.
+        //
+        // Reto é o que este desenho já parecia ser, e é a única versão que não depende de
+        // antialiasing para parecer certa — não há arco para amostrar mal. Retângulo fino é
+        // quem mais ganha: um divisor de 6px tinha o raio limitado a 3 e virava pílula.
+        canvas.drawRect(node.rect, paint)
 
         node.children.forEach { child ->
             renderTreeToCanvas(child, canvas)
