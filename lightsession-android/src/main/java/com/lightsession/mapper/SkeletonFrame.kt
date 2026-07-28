@@ -28,9 +28,23 @@ import org.json.JSONObject
  *    theme; a dark-mode screen drawn with a server's light-mode defaults is a
  *    wireframe of a screen that does not exist.
  *
- * It also cannot leak screen content, because there is none in it — no text, no
- * pixels, nothing rendered. That makes it safe by construction rather than safe by
- * policy, which is a different and stronger property than masking a real screenshot.
+ * ## What it can and cannot say
+ *
+ * There is no text in it, no glyph, nothing rendered — so it cannot reproduce what a screen
+ * said. What it does carry, when `LightSessionConfig.trueColourWireframes` is on, is one colour
+ * per widget, sampled from the screen. That is a real weakening of a claim this comment used to
+ * make unconditionally, and worth stating plainly rather than leaving for someone to discover:
+ *
+ *  * With colours off, the payload is pure geometry and can leak nothing at all.
+ *  * With colours on, a rectangle's thousands of pixels become three numbers. The reduction is
+ *    irreversible — no glyph survives an average, and the dominant colour of a text block is its
+ *    background, so text is discarded rather than smeared. But the guarantee now rests on the
+ *    rectangles being coarse: one colour for a paragraph says nothing, one colour per letter
+ *    would spell it out. `Recolour.glyphSizedRects` is the tripwire for that, and the sampling
+ *    refuses to run when it fires.
+ *
+ * "Safe because the rectangles describe widgets" is a weaker property than "safe because there
+ * is nothing in it", and it is the one that actually holds.
  *
  * The server-side counterpart is `ls_media::skeleton`.
  */

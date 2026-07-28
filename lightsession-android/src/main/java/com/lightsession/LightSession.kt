@@ -156,6 +156,7 @@ class LightSession private constructor() {
             captureRealScreens = config.captureRealScreens,
             trackTabs = config.trackTabs,
             trackModals = config.trackModals,
+            trueColourWireframes = config.trueColourWireframes,
         )
     }
 

@@ -135,6 +135,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     /** Set from `LightSessionConfig.trackModals` at [init]. */
     private var trackModals = true
 
+    /** Set from `LightSessionConfig.trueColourWireframes` at [init]. */
+    private var trueColourWireframes = true
+
     /**
      * A wireframe, however it was produced. Exactly one field is set.
      *
@@ -157,7 +160,13 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         when (wireframeMode) {
             LightSessionConfig.WireframeMode.RECTS ->
                 skeletonGenerator.generateSkeletonFrame(activity) { frame ->
-                    onComplete(frame?.let { Wireframe(skeleton = it) })
+                    if (frame == null || !trueColourWireframes) {
+                        onComplete(frame?.let { Wireframe(skeleton = it) })
+                        return@generateSkeletonFrame
+                    }
+                    recolourFromScreen(frame) { coloured ->
+                        onComplete(Wireframe(skeleton = coloured))
+                    }
                 }
 
             LightSessionConfig.WireframeMode.BITMAP ->
@@ -168,6 +177,60 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                         }
                     )
                 }
+        }
+    }
+
+    /**
+     * Reads each widget's real colour out of a capture of the screen.
+     *
+     * Taken *after* the skeleton, not before, and that ordering is the point: the skeleton waits
+     * for the composition to settle, so by the time it returns the screen is by definition no
+     * longer changing — which is what makes the geometry and the pixels describe the same
+     * moment. Capturing first would risk colouring a settled layout from an unsettled frame.
+     *
+     * Sampled from whatever the capture produces, masking included. A masked capture has grey
+     * over its text, so a text block comes back the mask's colour rather than the paper's —
+     * which is duller but needs no separate decision about reading unmasked pixels, and follows
+     * `Masking.enabled` without a second switch to keep in step with it.
+     *
+     * Degrades to the palette. A capture that fails is a wireframe in template colours, which is
+     * exactly what shipped before this existed.
+     */
+    private fun recolourFromScreen(frame: SkeletonFrame, onComplete: (SkeletonFrame) -> Unit) {
+        val glyphs = Recolour.glyphSizedRects(frame)
+        if (glyphs > 0) {
+            // The colours are only meaningless because the rectangles are coarse. If the scan
+            // ever starts emitting one per character, sampling would paint the text back — so
+            // this refuses rather than asks.
+            Log.w(
+                "ScreenMapper",
+                "$glyphs rect(s) are glyph-sized; keeping palette colours, since a colour per " +
+                    "character would reconstruct the text",
+            )
+            onComplete(frame)
+            return
+        }
+
+        screenDrawing.captureToBitmapAsync(ScreenDrawing.Companion.ScalePresets.ORIGINAL) { bitmap ->
+            if (bitmap == null) {
+                Log.d("ScreenMapper", "no capture to sample colours from; keeping the palette")
+                onComplete(frame)
+                return@captureToBitmapAsync
+            }
+            val coloured = try {
+                val pixels = IntArray(bitmap.width * bitmap.height)
+                // One crossing into native code for the whole frame. Per-pixel `getPixel`
+                // measured 173ms against 12ms for a screen's rectangles, all of it JNI.
+                bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+                Recolour.apply(frame, pixels, bitmap.width, bitmap.height)
+            } catch (error: Throwable) {
+                Log.w("ScreenMapper", "colour sampling failed; keeping the palette", error)
+                frame
+            } finally {
+                // Back to the pool either way, or the next capture allocates.
+                screenDrawing.recycleBitmap(bitmap)
+            }
+            onComplete(coloured)
         }
     }
 
@@ -317,6 +380,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         captureRealScreens: Boolean = false,
         trackTabs: Boolean = true,
         trackModals: Boolean = true,
+        trueColourWireframes: Boolean = true,
     ) {
         if (this.application != null) {
             return
@@ -328,6 +392,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         this.captureRealScreens = captureRealScreens
         this.trackTabs = trackTabs
         this.trackModals = trackModals
+        this.trueColourWireframes = trueColourWireframes
 
         if (trackModals) {
             Curtains.onRootViewsChangedListeners += rootViewsListener

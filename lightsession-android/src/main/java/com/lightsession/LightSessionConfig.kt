@@ -150,6 +150,29 @@ data class LightSessionConfig(
     val collectLocation: Boolean = true,
 
     /**
+     * Paint the wireframe in the screen's own colours.
+     *
+     * Off, a wireframe is drawn from a palette keyed on widget type — green for text, purple for
+     * buttons — so it reads as a diagram of some app rather than of yours, and a dark-mode screen
+     * comes back light.
+     *
+     * On, each rectangle takes the colour actually inside it, read from a capture the SDK already
+     * takes. That is exact by construction: theme, dark mode, photographs, gradients, WebViews and
+     * anything drawn by hand all come out right, with nothing to keep in step with Compose.
+     *
+     * **What it costs in privacy.** A wireframe with no colours cannot leak anything, because
+     * there is nothing rendered in it. With colours it carries three numbers per widget, derived
+     * from pixels — irreversibly, since no glyph survives being averaged, and the dominant colour
+     * of a text block is its background so the text is gone rather than blurred. But "safe by
+     * construction" becomes "safe because the rectangles are coarse", which is a weaker claim
+     * honestly stated. Sampling also follows [maskText]: a masked capture yields the mask's colour
+     * over text, not the paper's.
+     *
+     * Costs about 18ms per screen mapped — once per screen, not per frame.
+     */
+    val trueColourWireframes: Boolean = true,
+
+    /**
      * Interval between captures while nothing is happening, milliseconds.
      *
      * One second is the realistic production setting. It was hardcoded to 300ms,
