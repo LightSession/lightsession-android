@@ -351,10 +351,11 @@ class SessionDataManager(
         val buffered = bufferedBytes.addAndGet(imageData.size.toLong())
         val frames = bufferedFrames.incrementAndGet()
 
-        Log.d("SessionDataManager",
-            "Frame added: seq=${frame.sequenceNumber}, " +
-                    "frameSeq=${frame.frameSequenceNumber}, " +
-                    "repeated=$isRepeatedFrame, screen=$currentScreen")
+        // No per-frame line here. It ran three to ten times a second, and a `Log.d`
+        // argument list is built whether or not the line survives — so it was string
+        // concatenation on the capture thread, in release, for output nobody reads. The
+        // batch line reports the counts, which is the granularity anyone debugging this
+        // actually works at.
 
         if (buffered > config.maxBufferedBytes) {
             shedOldestFrames()
@@ -452,7 +453,7 @@ class SessionDataManager(
         val idleFor = System.currentTimeMillis() - away
         if (idleFor < config.sessionTimeoutMs) return
 
-        processBatch("session_end")
+        processBatch("session_end", deferFrames = true)
 
         val previous = sessionId
         sessionId = newSessionId()
@@ -598,7 +599,30 @@ class SessionDataManager(
      * as the request it fired: `onDestroy` called `forceFlush()` and then
      * `coroutineScope.cancel()`, which cancelled the upload it had just started.
      */
-    private fun processBatch(reason: String) = synchronized(batchLock) {
+    private fun processBatch(
+        reason: String,
+        /**
+         * Whether the frame files may be written after this returns.
+         *
+         * The draining is always synchronous and is what frees the memory; the writing is
+         * what costs. Set from a main-thread caller — a lifecycle or low-memory callback —
+         * because `spoolFrames` creates two files per frame, and a full buffer is 8MB of
+         * JPEG across a couple of hundred frames. That is hundreds of file creates on the
+         * thread drawing the UI, at the exact moment the app is being backgrounded.
+         *
+         * The cost of deferring is durability: if the process is killed between here and
+         * the write, those frames are gone. Two things make that the right trade. The
+         * coroutine scope is not cancelled until `onDestroy`, so a write launched at
+         * `onStop` has seconds in which the process is nearly always still alive. And
+         * frames are the data this class already discards on purpose when it has to — the
+         * buffer sheds them, the spool evicts them — precisely because the one beside a
+         * lost frame looks almost identical, while an interaction is the only record that
+         * it happened.
+         *
+         * Breadcrumbs are never deferred, for the same reason.
+         */
+        deferFrames: Boolean = false,
+    ) = synchronized(batchLock) {
         val frames = drain(frameBuffer)
         bufferedBytes.addAndGet(-frames.sumOf { it.imageData.size.toLong() })
         bufferedFrames.addAndGet(-frames.size)
@@ -617,7 +641,13 @@ class SessionDataManager(
         val deviceInfo = getDeviceInfo()
 
         if (frames.isNotEmpty()) {
-            spoolFrames(batchId, batchNumber, reason, frames)
+            // Outside `batchLock` when deferred, which is safe: the queues have already
+            // been drained into `frames`, and the spool has a lock of its own.
+            if (deferFrames) {
+                coroutineScope.launch { spoolFrames(batchId, batchNumber, reason, frames) }
+            } else {
+                spoolFrames(batchId, batchNumber, reason, frames)
+            }
         }
         if (navigations.isNotEmpty() || interactions.isNotEmpty()) {
             spoolCrumbs(batchId, batchNumber, deviceInfo, navigations, interactions)
@@ -962,7 +992,11 @@ class SessionDataManager(
                     cachedLocationInfo = locationInfo
                     locationInfoTimestamp = currentTime
 
-                    Log.d("SessionDataManager", "Location info fetched: ${locationInfo.city}, ${locationInfo.region}, ${locationInfo.country}")
+                    // Deliberately without the values. This is a host app's logcat, and
+                    // where its user is sitting is not something to print into it — a log
+                    // is readable by any app with the permission on older devices, and by
+                    // anyone holding the phone with adb.
+                    Log.d("SessionDataManager", "location resolved")
                     locationInfo
                 } else {
                     null
@@ -1058,24 +1092,32 @@ class SessionDataManager(
     /**
      * Writes whatever is buffered to disk, then asks for an upload.
      *
-     * The spooling part is synchronous and does no network work, so it completes
-     * before this returns. That is what makes it safe to call from a lifecycle
-     * callback or from `onDestroy`: even if the process dies immediately afterwards,
-     * the data is on disk and the next run will send it.
+     * No network work either way, so this never blocks on a request. What it does block
+     * on depends on [deferFrames]: with it unset the whole batch is on disk before this
+     * returns, which is what `onDestroy` needs, since the scope it would otherwise defer
+     * to is cancelled on the next line. With it set, only the breadcrumbs are — see
+     * [processBatch].
      */
-    fun forceFlush(reason: String = "force_flush") {
-        processBatch(reason)
+    fun forceFlush(reason: String = "force_flush", deferFrames: Boolean = false) {
+        processBatch(reason, deferFrames)
         coroutineScope.launch { drainSpool() }
     }
 
     /**
-     * Clean up resources.
+     * Clean up resources. Nothing calls this, and nothing reliably can.
      *
-     * The order used to be the bug: `forceFlush()` launched an upload and
-     * `coroutineScope.cancel()` on the next line cancelled it, so the final batch —
-     * the one holding the user's last actions before closing the app — was
-     * guaranteed to be lost. Now the flush has already put it on disk by the time
-     * the scope is cancelled, and cancelling only abandons the *attempt*.
+     * Android offers no "the process is about to die" callback: `Application.onTerminate`
+     * runs on emulators only, and a swipe-away or a low-memory kill gives no notice at all.
+     * That absence is the whole reason [BatchSpool] exists and the reason
+     * [FlushTriggers.onStop] is the flush that matters — it is the last moment the process
+     * is guaranteed to be alive.
+     *
+     * Kept because a host that does have a definite end — a test, a tool, an app tearing the
+     * SDK down deliberately — has somewhere to call. The ordering below is load-bearing for
+     * that case: the flush is synchronous by default, so the batch is on disk before the
+     * scope is cancelled, and cancelling then abandons only the upload *attempt*. It also
+     * means no deferred frame write can be cancelled out from under itself, since a
+     * deferring caller never passes through here.
      */
     fun onDestroy() {
         forceFlush("destroy")

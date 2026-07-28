@@ -60,7 +60,10 @@ internal class FlushTriggers(
      */
     override fun onStop(owner: LifecycleOwner) {
         Log.d(TAG, "app backgrounded; flushing")
-        sessionDataManager.forceFlush("background")
+        // Frames deferred: this is the main thread, and writing a full buffer here is
+        // hundreds of file creates while the app is being backgrounded. The breadcrumbs —
+        // the part that cannot be reconstructed — are on disk before this returns.
+        sessionDataManager.forceFlush("background", deferFrames = true)
         // Stamped *after* the flush, so the timestamp marks when the app actually
         // stopped producing data rather than when the callback happened to run.
         sessionDataManager.markBackgrounded()
@@ -105,14 +108,14 @@ internal class FlushTriggers(
 
         if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
             Log.d(TAG, "memory pressure (level $level); flushing")
-            sessionDataManager.forceFlush("trim_memory")
+            sessionDataManager.forceFlush("trim_memory", deferFrames = true)
         }
     }
 
     @Deprecated("Kept because ComponentCallbacks requires it; onTrimMemory carries the signal.")
     override fun onLowMemory() {
         Log.d(TAG, "low memory; flushing")
-        sessionDataManager.forceFlush("low_memory")
+        sessionDataManager.forceFlush("low_memory", deferFrames = true)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
