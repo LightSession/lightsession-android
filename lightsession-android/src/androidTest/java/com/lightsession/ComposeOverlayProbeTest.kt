@@ -182,6 +182,11 @@ class ComposeOverlayProbeTest {
             it.config.getOrNull(SemanticsProperties.IsDialog) != null
         }}")
         assertEquals("a modal bottom sheet should add a window", before + 1, after)
+        // Closed before returning. A window left attached outlives the rule's Activity and
+        // breaks the launch of whichever test runs next, which showed up as a different
+        // failure on every run rather than as this one.
+        open = false
+        compose.waitForIdle()
     }
 
     /**
@@ -214,6 +219,11 @@ class ComposeOverlayProbeTest {
         )
         // It is however visible in semantics, which is the fallback path.
         assertTrue(allNodes().any { texts(it.second).contains("Are you sure?") })
+        // Closed before returning. A window left attached outlives the rule's Activity and
+        // breaks the launch of whichever test runs next, which showed up as a different
+        // failure on every run rather than as this one.
+        open = false
+        compose.waitForIdle()
     }
 
     // ------------------------------------------------------------------ tabs
@@ -357,6 +367,11 @@ class ComposeOverlayProbeTest {
         assertEquals("a dropdown adds a window just like a dialog", before + 1, Curtains.rootViews.size)
         assertTrue("it is tagged IsPopup", popups > 0)
         assertEquals("and never IsDialog, which is what makes it filterable", 0, dialogs)
+        // Closed before returning. A window left attached outlives the rule's Activity and
+        // breaks the launch of whichever test runs next, which showed up as a different
+        // failure on every run rather than as this one.
+        open = false
+        compose.waitForIdle()
     }
 
     /**
@@ -399,6 +414,11 @@ class ComposeOverlayProbeTest {
         } finally {
             Curtains.onRootViewsChangedListeners -= listener
         }
+        // Closed before returning. A window left attached outlives the rule's Activity and
+        // breaks the launch of whichever test runs next, which showed up as a different
+        // failure on every run rather than as this one.
+        open = false
+        compose.waitForIdle()
     }
 
     /**
