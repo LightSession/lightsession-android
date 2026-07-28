@@ -119,11 +119,24 @@ publishing {
             // silently reports nowhere. 0.2.1 was the first that takes its endpoints
             // from `LightSessionConfig`, with no defaults to fall back to.
             //
-            // 0.3.0 adds sub-screens: a tab or a modal becomes a screen of its own,
+            // 0.3.0 added sub-screens: a tab or a modal becomes a screen of its own,
             // named `destination › part`. Minor rather than patch because it changes
             // what an existing consumer reports without any code change on their side —
             // screens appear in the map that were never there before.
-            version = "0.3.0"
+            //
+            // 0.4.0 is the review pass — two crashes that took the host app down, three
+            // leaks, the work that ran on every touch and was thrown away, the data that
+            // was not true — plus what testing it against a second app turned up: tabs
+            // read without depending on composition order, and a capture that contains the
+            // dialog on top of the screen instead of the screen behind it.
+            //
+            // Three of those force a minor rather than a patch. `InteractionAwareCallback`
+            // no longer extends `GestureDetector.SimpleOnGestureListener`, a supertype gone
+            // from a public class. `captureToBitmapAsync` takes a base window. And route
+            // names are lower-cased consistently, so a consumer upgrading reports
+            // `home/manager` where it used to report `Home/Manager` — the server keys on
+            // the name, so both rows exist until the old one is deleted.
+            version = "0.4.0"
 
             afterEvaluate {
                 from(components["release"])
