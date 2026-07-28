@@ -291,6 +291,9 @@ internal class Recorder {
         uninstallViewMonitoring()
         scheduler.shutdown()
         encoder.shutdown()
+        // After the executors, so nothing can still be waiting on a PixelCopy result when
+        // its looper goes away.
+        screenDrawing.release()
     }
 
     private val onRootViewsChangedListener = OnRootViewsChangedListener { view, added ->

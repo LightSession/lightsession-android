@@ -256,7 +256,7 @@ internal class ScreenDrawing {
                     returnCanvasToPool(canvas)
                     onResult(bitmap)
                 }
-            }, copyHandler)
+            }, copyHandler())
         } catch (e: Throwable) {
             Log.w("ScreenCaptureUtils", "PixelCopy request rejected", e)
             recycleBitmap(bitmap)
@@ -264,11 +264,26 @@ internal class ScreenDrawing {
         }
     }
 
-    /** Delivers PixelCopy results off the main thread; the work is reposted to it. */
-    private val copyThread by lazy {
-        android.os.HandlerThread("ls-pixelcopy").apply { start() }
+    /**
+     * Delivers PixelCopy results off the main thread; the work is reposted to it.
+     *
+     * Created on demand and torn down by [release], rather than a `by lazy` that started a
+     * thread nothing ever stopped. Nullable rather than lazy for exactly that reason: a
+     * `lazy` can be read but not un-read, so there was no way to quit the looper and no way
+     * to start a fresh one afterwards — and `release` is called on a path that can be
+     * followed by more capturing.
+     */
+    private val copyLock = Any()
+    private var copyThread: android.os.HandlerThread? = null
+    private var copyHandler: android.os.Handler? = null
+
+    private fun copyHandler(): android.os.Handler = synchronized(copyLock) {
+        copyHandler ?: android.os.HandlerThread("ls-pixelcopy").let { thread ->
+            thread.start()
+            copyThread = thread
+            android.os.Handler(thread.looper).also { copyHandler = it }
+        }
     }
-    private val copyHandler by lazy { android.os.Handler(copyThread.looper) }
     private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
 
     fun captureToBitmap(scaleFactor: Float = globalScaleFactor): Bitmap? {
@@ -937,6 +952,23 @@ internal class ScreenDrawing {
      * - Closes and clears ByteArrayOutputStream pool
      * - Helps prevent memory leaks in long-running applications
      */
+    /**
+     * Everything [clearObjectPools] frees, plus the PixelCopy thread.
+     *
+     * Split from `clearObjectPools` because that one runs whenever view monitoring is
+     * uninstalled and monitoring can be installed again afterwards, while this is for
+     * shutting the recorder down for good. Quitting the looper on the reinstallable path
+     * would leave the next capture posting to a dead thread.
+     */
+    fun release() {
+        clearObjectPools()
+        synchronized(copyLock) {
+            copyThread?.quitSafely()
+            copyThread = null
+            copyHandler = null
+        }
+    }
+
     fun clearObjectPools() {
         while (true) {
             val bitmap = bitmapPool.poll() ?: break
