@@ -269,7 +269,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
          * the capture is the arrived screen rather than one mid-build. Short enough
          * that an ordinary reader of the screen is still on it.
          */
-        private const val SCREENSHOT_SETTLE_MS = 2_500L
+        private const val SCREENSHOT_SETTLE_MS = 5_500L
 
         /**
          * How long after a touch ends before the sub-screen is re-read.
