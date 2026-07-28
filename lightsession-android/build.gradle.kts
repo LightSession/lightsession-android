@@ -97,6 +97,16 @@ dependencies {
     testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.ext.junit)
     androidTestImplementation(libs.espresso.core)
+
+    // Test-only, for the Compose overlay/tab investigation: these let a test compose a
+    // real Dialog, ModalBottomSheet or TabRow on device and read back what the framework
+    // actually publishes, instead of trusting a reading of the Compose source.
+    androidTestImplementation(platform("androidx.compose:compose-bom:2024.11.00"))
+    // Espresso 3.6.1 reflects on `InputManager.getInstance()`, removed in Android 16, so
+    // every instrumented test errors out on an API 36 device before reaching its body.
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
 publishing {
