@@ -307,8 +307,10 @@ class SessionDataManager(
         sessionStartTime = System.currentTimeMillis()
 
         // Fetch location info on initialization
-        coroutineScope.launch {
-            fetchLocationInfo()
+        if (config.collectLocation) {
+            coroutineScope.launch {
+                fetchLocationInfo()
+            }
         }
 
         startBatchProcessor()
@@ -964,6 +966,11 @@ class SessionDataManager(
      * Fetch IP location information from the API
      */
     private fun fetchLocationInfo(): LocationInfo? {
+        // Belt as well as braces. Both call sites check, and this is the one place the
+        // request is actually made — a future caller that forgot would otherwise be the
+        // whole of the failure.
+        if (!config.collectLocation) return null
+
         // Check cache first
         val currentTime = System.currentTimeMillis()
         if (cachedLocationInfo != null &&
@@ -1024,8 +1031,10 @@ class SessionDataManager(
         val locationInfo = cachedLocationInfo
 
         // If we don't have cached location info, fetch it asynchronously for next time
-        if (locationInfo == null ||
-            (System.currentTimeMillis() - locationInfoTimestamp) > LOCATION_CACHE_DURATION_MS) {
+        if (config.collectLocation &&
+            (locationInfo == null ||
+                (System.currentTimeMillis() - locationInfoTimestamp) > LOCATION_CACHE_DURATION_MS)
+        ) {
             coroutineScope.launch {
                 fetchLocationInfo()
             }

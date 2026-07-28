@@ -1,6 +1,7 @@
 package com.lightsession
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -96,5 +97,23 @@ class LightSessionConfigTest {
         )
         assertEquals("http://localhost:5055", c.normalizedIngestUrl)
         assertEquals("http://localhost:3002", c.normalizedApiUrl)
+    }
+
+    @Test
+    fun `location lookup is on by default and can be switched off`() {
+        // Pinned because the default is the whole of the decision. On, so that upgrading
+        // the SDK does not silently empty a dashboard map somebody is using — and a switch
+        // at all, because what the lookup returns (IP, city, coordinates, operator, postal
+        // code) is personal data the app is the controller for, collected with no permission
+        // and no dialog.
+        assertTrue(config().collectLocation)
+
+        val quiet = LightSessionConfig(
+            apiKey = "dev-key",
+            ingestUrl = "http://localhost:5055",
+            apiUrl = "http://localhost:3002",
+            collectLocation = false,
+        )
+        assertFalse(quiet.collectLocation)
     }
 }

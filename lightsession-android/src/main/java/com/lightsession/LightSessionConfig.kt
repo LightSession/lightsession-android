@@ -125,6 +125,31 @@ data class LightSessionConfig(
     val trackModals: Boolean = true,
 
     /**
+     * Look up approximate location from the device's IP address.
+     *
+     * When on, the SDK calls `/api/v1/ipinfo` once per session and attaches the answer to
+     * every batch's device info. What comes back and is stored is: the IP address itself,
+     * city, region, country, `loc` — latitude and longitude, city-accurate — the network
+     * operator, postal code and timezone.
+     *
+     * That is personal data under the GDPR and the LGPD, and it is collected without the
+     * person being asked, because an IP lookup needs no permission and shows no dialog. An
+     * app that ships this is the controller for it: it has to appear in the privacy policy,
+     * in the Play Store data-safety form, and in whatever consent flow the app already has.
+     * The SDK cannot do any of that on the app's behalf, which is why this is a switch
+     * rather than a detail.
+     *
+     * Turning it off stops the request, not just the field — there is no lookup and nothing
+     * to store. The cost is on the dashboard: sessions lose their country, and the map that
+     * plots them by coordinate goes empty, since both read out of this.
+     *
+     * Left on by default so that upgrading the SDK does not silently empty a map somebody is
+     * using. For an app shipping to people who are not the developer, off is the posture
+     * that needs no justification.
+     */
+    val collectLocation: Boolean = true,
+
+    /**
      * Interval between captures while nothing is happening, milliseconds.
      *
      * One second is the realistic production setting. It was hardcoded to 300ms,
