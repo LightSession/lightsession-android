@@ -91,7 +91,7 @@ internal class FlushTriggers(
      * the SDK's memory use is blamed on the host app.
      */
     // The TRIM_MEMORY_* levels are deprecated from API 34, but the callback is
-    // still delivered and minSdk here is 28 — so the threshold has to keep working
+    // still delivered and minSdk here is 26 — so the threshold has to keep working
     // on the devices that still report the older levels.
     @Suppress("DEPRECATION")
     override fun onTrimMemory(level: Int) {

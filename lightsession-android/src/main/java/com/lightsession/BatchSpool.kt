@@ -263,25 +263,27 @@ internal class BatchSpool(
     }
 
     /**
-     * The upload failed. Records the attempt and reports whether the entry is
-     * still worth retrying; when it is not, it has already been removed.
+     * The upload failed. Records the attempt, and drops the entry once it has had enough.
+     *
+     * Returns nothing on purpose. It used to hand back "still worth retrying", which no
+     * caller read and none could usefully act on: a failed upload stops the drain either
+     * way, because the next entry would meet the same dead network. Whether *this* entry
+     * survived is the spool's business and is already in the log.
      */
-    fun recordFailure(entry: File): Boolean = synchronized(lock) {
+    fun recordFailure(entry: File): Unit = synchronized(lock) {
         val counter = if (entry.isDirectory) File(entry, ATTEMPTS_FILE) else File("${entry.path}$ATTEMPTS_FILE")
         val attempts = (counter.takeIf { it.exists() }?.readText()?.trim()?.toIntOrNull() ?: 0) + 1
 
-        return if (attempts >= maxAttempts) {
+        if (attempts >= maxAttempts) {
             Log.e(TAG, "giving up on ${entry.name} after $attempts attempts")
             acknowledge(entry)
             counter.delete()
-            false
         } else {
             try {
                 counter.writeText(attempts.toString())
             } catch (e: IOException) {
                 Log.w(TAG, "could not record attempt for ${entry.name}", e)
             }
-            true
         }
     }
 

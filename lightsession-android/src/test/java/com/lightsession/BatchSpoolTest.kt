@@ -87,7 +87,7 @@ class BatchSpoolTest {
 
         // This is the case the whole design exists for: an upload failed and the
         // data is still there.
-        assertTrue(s.recordFailure(s.pendingFrames().single().dir))
+        s.recordFailure(s.pendingFrames().single().dir)
         assertEquals(1, s.pendingCount())
         assertEquals(1, s.pendingFrames().single().frames.size)
     }
@@ -98,12 +98,17 @@ class BatchSpoolTest {
         writeFrames(s, "doomed")
         val dir = s.pendingFrames().single().dir
 
-        assertTrue("first failure should retry", s.recordFailure(dir))
-        assertTrue("second failure should retry", s.recordFailure(dir))
+        // Asserted through the spool rather than through a return value: what matters is
+        // whether the entry is still there to be retried, and that is what a caller can
+        // actually see.
+        s.recordFailure(dir)
+        assertEquals("first failure should keep it", 1, s.pendingCount())
+        s.recordFailure(dir)
+        assertEquals("second failure should keep it", 1, s.pendingCount())
         // Retrying forever would mean the spool never drains and newer data gets
         // evicted to make room for a batch nobody will ever accept.
-        assertFalse("third failure should give up", s.recordFailure(dir))
-        assertEquals(0, s.pendingCount())
+        s.recordFailure(dir)
+        assertEquals("third failure should give up", 0, s.pendingCount())
     }
 
     @Test
