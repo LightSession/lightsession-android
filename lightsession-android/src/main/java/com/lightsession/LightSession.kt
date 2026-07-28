@@ -30,8 +30,8 @@ class LightSession private constructor() {
     private lateinit var config: LightSessionConfig
     private lateinit var sessionDataManager: SessionDataManager
 
-    private var distinctId: String? = null
-    private var userIdentifiedExplicitly = false
+    /** Who the session belongs to. See [Identity]. */
+    private lateinit var identity: Identity
 
     private var replayIntegration: ReplayIntegration? = null
     private var flushTriggers: FlushTriggers? = null
@@ -71,6 +71,53 @@ class LightSession private constructor() {
         ScreenMapperIntegration.getInstance().clearDeclaredSubScreen(name)
     }
 
+    /**
+     * Says who is using the app.
+     *
+     * `userId` is the app's own identifier for the person — whatever its database calls it.
+     * From here on their sessions are recorded under it, and the server is told that this
+     * install belonged to them, so everything this device did *before* this call becomes
+     * theirs too. That is the part worth having: the sign-up screen somebody abandoned is
+     * recorded before there is anyone to attribute it to.
+     *
+     * `traits` is optional and nothing is collected automatically. Send an id alone and no
+     * personal data leaves the device, which is the setting that needs no justification.
+     * Whatever is sent is stored against the person and merged with what was sent before, so
+     * `identify(id, mapOf("plan" to "pro"))` after `identify(id, mapOf("email" to ...))` keeps
+     * both. Strings, numbers and booleans only — anything else is dropped with a warning
+     * rather than turned into `com.acme.User@3f2a1b`.
+     *
+     * Cheap to call repeatedly: an identify is only sent when the id actually changes, so
+     * calling this on every screen costs nothing. Call [reset] on sign-out.
+     */
+    fun identify(userId: String, traits: Map<String, Any?> = emptyMap()) {
+        if (!isInitialized) {
+            Log.w("LightSession", "identify before init; ignored")
+            return
+        }
+        val changed = identity.identify(userId)
+        // Sent when the traits alone changed as well, since the caller went to the trouble of
+        // passing them and the server merges rather than replaces.
+        if (changed || traits.isNotEmpty()) {
+            sessionDataManager.addIdentify(identity.effectiveId, identity.anonymousId, traits)
+        }
+    }
+
+    /**
+     * Forgets who was using the app. Call this on sign-out.
+     *
+     * The device gets a fresh anonymous id, which is the part that matters: keeping the old
+     * one would tie it to the person who just left, so whoever signs in next inherits their
+     * history and two people become one. A new session is started for the same reason — one
+     * session holding two people is a replay of nobody.
+     */
+    fun reset() {
+        if (!isInitialized) return
+        identity.reset()
+        sessionDataManager.startNewSession("identity_reset")
+        Log.d("LightSession", "reset")
+    }
+
     fun init(application: Application, config: LightSessionConfig) {
         if (isInitialized) {
             return
@@ -82,9 +129,9 @@ class LightSession private constructor() {
         Masking.configure(config)
         this.isInitialized = true
 
-        initializeUserId(application.applicationContext)
+        identity = Identity.from(application.applicationContext)
         sessionDataManager = SessionDataManager(application.applicationContext, config)
-        sessionDataManager.init()
+        sessionDataManager.init(identity)
 
         // Without this the only flush that ever runs is the five-second ticker:
         // `onTerminate`, `onLowMemory` and `onDestroy` were all written and none of
@@ -112,19 +159,4 @@ class LightSession private constructor() {
         )
     }
 
-    private fun initializeUserId(context: Context) {
-        val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val savedAnonymousId = prefs.getString(ANONYMOUS_ID_KEY, null)
-
-        if (!savedAnonymousId.isNullOrBlank()) {
-            this.distinctId = savedAnonymousId
-            this.userIdentifiedExplicitly = false
-            Log.d("LightSession", "Loaded existing anonymous user ID: ${this.distinctId}")
-        } else {
-            this.distinctId = UUID.randomUUID().toString()
-            prefs.edit().putString(ANONYMOUS_ID_KEY, this.distinctId).apply()
-            this.userIdentifiedExplicitly = false
-            Log.d("LightSession", "Generated and saved new anonymous user ID: ${this.distinctId}")
-        }
-    }
 }

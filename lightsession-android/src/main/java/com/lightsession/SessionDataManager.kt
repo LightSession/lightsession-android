@@ -120,6 +120,15 @@ class SessionDataManager(
     private val navigationBuffer = ConcurrentLinkedQueue<NavigationEvent>()
     private val interactionBuffer = ConcurrentLinkedQueue<InteractionEvent>()
 
+    /**
+     * Identify crumbs, already in wire form.
+     *
+     * Kept as built JSON rather than as a typed event because nothing here inspects it —
+     * `spoolCrumbs` merges it into the breadcrumb array untouched, so a data class would be a
+     * shape to maintain in two places for no reader.
+     */
+    private val identifyBuffer = ConcurrentLinkedQueue<JsonElement>()
+
     // Sequence tracking
     private val globalSequenceCounter = AtomicInteger(0)
     private val frameSequenceCounter = AtomicInteger(0)
@@ -252,8 +261,14 @@ class SessionDataManager(
         val compileSdkVersion: Int
     )
 
-    private var userId: String? = null // Store user ID
-    private var userType: String = "anonymous" // "anonymous" or "identified"
+    /**
+     * Set at [init]. Read on every batch rather than copied, so an `identify` partway through
+     * a session takes effect on the next batch instead of the next launch.
+     */
+    private lateinit var identity: Identity
+
+    private val userId: String get() = if (::identity.isInitialized) identity.effectiveId else "unknown"
+    private val userType: String get() = if (::identity.isInitialized) identity.userType else "anonymous"
     private var appVersion: String = getAppVersion(context)
 
     /**
@@ -280,28 +295,10 @@ class SessionDataManager(
     private val locationFetchInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
-     * Generate anonymous user ID
-     */
-    private fun generateAnonymousId(): String {
-        val prefs = context.getSharedPreferences("LightSessionPrefs", Context.MODE_PRIVATE)
-        val existingId = prefs.getString("anonymous_user_id", null)
-
-        return if (!existingId.isNullOrBlank()) {
-            existingId
-        } else {
-            val newId = "anon_${UUID.randomUUID().toString().take(8)}"
-            prefs.edit().putString("anonymous_user_id", newId).apply()
-            newId
-        }
-    }
-
-
-    /**
      * Initialize the session manager with user context
      */
-    fun init(userId: String? = null, userType: String = "anonymous") {
-        this.userId = userId ?: generateAnonymousId()
-        this.userType = userType
+    internal fun init(identity: Identity) {
+        this.identity = identity
         this.appVersion = getAppVersion(context)
 
         sessionStartTime = System.currentTimeMillis()
@@ -328,8 +325,7 @@ class SessionDataManager(
             drainSpool()
         }
 
-        Log.d("SessionDataManager",
-            "Initialized session: $sessionId for user: ${this.userId} (type: ${this.userType})")
+        Log.d("SessionDataManager", "Initialized session: $sessionId (${this.userType})")
     }
 
     /**
@@ -473,6 +469,31 @@ class SessionDataManager(
                     "timeout; rotated $previous -> $sessionId")
     }
 
+    /**
+     * Ends the current session and starts another, whatever the idle timer says.
+     *
+     * For sign-out. [rotateIfIdle] exists for the app coming back after long enough that the
+     * server has already closed the session; this is the other reason a session ends — the
+     * person changed. Keeping one session across that would produce a replay of two people
+     * taking turns.
+     *
+     * Buffers are flushed first, so nothing recorded under the old identity is attributed to
+     * the new one. Anything already spooled carries its own session id and is unaffected.
+     */
+    fun startNewSession(reason: String) {
+        processBatch(reason, deferFrames = true)
+
+        val previous = sessionId
+        sessionId = newSessionId()
+        sessionStartTime = System.currentTimeMillis()
+        globalSequenceCounter.set(0)
+        frameSequenceCounter.set(0)
+        batchCounter.set(0)
+        backgroundedAt.set(0)
+
+        Log.i("SessionDataManager", "session rotated ($reason): $previous -> $sessionId")
+    }
+
     /** Records the moment the app went away, for [rotateIfIdle]. */
     fun markBackgrounded() {
         backgroundedAt.set(System.currentTimeMillis())
@@ -486,6 +507,55 @@ class SessionDataManager(
      * another's session ids.
      */
     private fun newSessionId(): String = UUID.randomUUID().toString()
+
+    /**
+     * Records that the person said who they are.
+     *
+     * Queued as a breadcrumb rather than posted on its own, so it inherits the spool, the
+     * retry and the ordering that already exist. Identify is the crumb that can least afford
+     * to be lost — everything after it is attributed to the wrong person if it is — and a
+     * dedicated endpoint would have to reimplement all three.
+     *
+     * Carries both ids. The user id says who; the anonymous id says which device, which is
+     * what lets the server attribute what this install did *before* this moment.
+     */
+    fun addIdentify(userId: String, anonymousId: String, traits: Map<String, Any?>) {
+        val crumb = buildJsonObject {
+            put("type", JsonPrimitive("identify"))
+            put("timestamp", JsonPrimitive(System.currentTimeMillis()))
+            put("sequence", JsonPrimitive(globalSequenceCounter.incrementAndGet()))
+            put("user_id", JsonPrimitive(userId))
+            put("anonymous_id", JsonPrimitive(anonymousId))
+            put("app_version", JsonPrimitive(appVersion))
+            put("traits", encodeTraits(traits))
+        }
+        identifyBuffer.offer(crumb)
+        Log.d("SessionDataManager", "identify queued")
+        requestFlush("identify")
+    }
+
+    /**
+     * Traits as JSON, keeping only what JSON can carry.
+     *
+     * Anything else is dropped with a warning rather than stringified. `toString()` on a
+     * domain object produces `com.acme.User@3f2a1b`, which would be stored, indexed and
+     * displayed as if it meant something.
+     */
+    private fun encodeTraits(traits: Map<String, Any?>): JsonElement = buildJsonObject {
+        for ((key, value) in traits) {
+            when (value) {
+                null -> {}
+                is String -> put(key, JsonPrimitive(value))
+                is Number -> put(key, JsonPrimitive(value))
+                is Boolean -> put(key, JsonPrimitive(value))
+                else -> Log.w(
+                    "SessionDataManager",
+                    "trait '$key' is a ${value.javaClass.simpleName} and was dropped; " +
+                        "send a string, number or boolean",
+                )
+            }
+        }
+    }
 
     /**
      * Add a navigation event
@@ -630,8 +700,11 @@ class SessionDataManager(
         bufferedFrames.addAndGet(-frames.size)
         val navigations = drain(navigationBuffer)
         val interactions = drain(interactionBuffer)
+        val identifies = drain(identifyBuffer)
 
-        if (frames.isEmpty() && navigations.isEmpty() && interactions.isEmpty()) {
+        if (frames.isEmpty() && navigations.isEmpty() && interactions.isEmpty() &&
+            identifies.isEmpty()
+        ) {
             return@synchronized
         }
 
@@ -651,8 +724,8 @@ class SessionDataManager(
                 spoolFrames(batchId, batchNumber, reason, frames)
             }
         }
-        if (navigations.isNotEmpty() || interactions.isNotEmpty()) {
-            spoolCrumbs(batchId, batchNumber, deviceInfo, navigations, interactions)
+        if (navigations.isNotEmpty() || interactions.isNotEmpty() || identifies.isNotEmpty()) {
+            spoolCrumbs(batchId, batchNumber, deviceInfo, navigations, interactions, identifies)
         }
 
         // The spool's own totals are deliberately not in here. `pendingCount()` lists two
@@ -689,7 +762,7 @@ class SessionDataManager(
         val batchMetadata = mapOf(
             "batch_id" to batchId,
             "session_id" to sessionId,
-            "user_id" to (userId ?: "unknown"),
+            "user_id" to userId,
             "user_type" to userType,
             "app_version" to appVersion,
             "total_frame_count" to frames.size.toString(),
@@ -751,16 +824,18 @@ class SessionDataManager(
         batchNumber: Int,
         deviceInfo: DeviceInfo,
         navigations: List<NavigationEvent>,
-        interactions: List<InteractionEvent>
+        interactions: List<InteractionEvent>,
+        identifies: List<JsonElement>,
     ) {
         val breadcrumbs = mutableListOf<JsonElement>()
+        breadcrumbs.addAll(identifies)
 
         navigations.forEach { nav ->
             breadcrumbs.add(buildJsonObject {
                 put("type", JsonPrimitive("navigation"))
                 put("timestamp", JsonPrimitive(nav.timestamp))
                 put("sequence", JsonPrimitive(nav.sequenceNumber))
-                put("user_id", JsonPrimitive(userId ?: "unknown"))
+                put("user_id", JsonPrimitive(userId))
                 put("user_type", JsonPrimitive(userType))
                 put("app_version", JsonPrimitive(appVersion))
                 put("data", buildJsonObject {
@@ -777,7 +852,7 @@ class SessionDataManager(
                 put("type", "interaction")
                 put("timestamp", interaction.timestamp)
                 put("sequence", interaction.sequenceNumber)
-                put("user_id", JsonPrimitive(userId ?: "unknown"))
+                put("user_id", JsonPrimitive(userId))
                 put("user_type", JsonPrimitive(userType))
                 put("app_version", JsonPrimitive(appVersion))
                 interaction.screenId?.let { sid -> put("screen_id", JsonPrimitive(sid)) }
@@ -802,7 +877,7 @@ class SessionDataManager(
         val fields = mapOf(
             "type" to "breadcrumb_batch",
             "session_id" to sessionId,
-            "user_id" to (userId ?: "unknown"),
+            "user_id" to userId,
             "user_type" to userType,
             "app_version" to appVersion,
             "app_info" to Json.encodeToString(getAppInfo()),
