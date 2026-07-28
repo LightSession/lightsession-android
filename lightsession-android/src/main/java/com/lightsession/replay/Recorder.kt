@@ -241,10 +241,13 @@ internal class Recorder {
         val handler = mainHandler ?: return
         val scale = scaleFactor
         handler.post {
-            val bitmap = screenDrawing.captureToBitmap(scale)
+            // Async, because the fallback path is: on a screen holding a hardware bitmap
+            // the software draw cannot run at all, and PixelCopy answers on the
+            // compositor's schedule. See `ScreenDrawing.captureToBitmapAsync`.
+            screenDrawing.captureToBitmapAsync(scale) { bitmap ->
             if (bitmap == null) {
                 onBitmapBytesReady?.invoke(null)
-                return@post
+                return@captureToBitmapAsync
             }
             encoder.execute {
                 // Delivered from the encoder thread. Everything downstream is
@@ -252,6 +255,7 @@ internal class Recorder {
                 // ConcurrentLinkedQueue and ReplayIntegration counts atomically.
                 val bytes = screenDrawing.encodeToJpeg(bitmap, scale)
                 onBitmapBytesReady?.invoke(bytes)
+            }
             }
         }
     }

@@ -42,6 +42,9 @@ class LightSession private constructor() {
         }
         this.accessKey = config.apiKey
         this.config = config
+        // Set before anything can capture. `ScreenDrawing` consults this at capture
+        // time, so a recorder started later still masks.
+        Masking.configure(config)
         this.isInitialized = true
 
         initializeUserId(application.applicationContext)

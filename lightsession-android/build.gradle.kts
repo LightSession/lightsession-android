@@ -104,10 +104,11 @@ publishing {
         create<MavenPublication>("release") {
             groupId = "com.lightsession"
             artifactId = "lightsession-android"
-            // Distinct from the published 0.1.11-alpha on purpose: that artifact is
-            // the one hardcoded to a laptop's LAN address, and a consumer resolving
-            // it by accident would look like the SDK silently not working.
-            version = "0.2.0-local"
+            // 0.1.11-alpha is the artifact with a laptop's LAN address hardcoded into
+            // it, so a consumer resolving that one by accident sees an SDK that
+            // silently reports nowhere. This version is the first that takes its
+            // endpoints from `LightSessionConfig`, with no defaults to fall back to.
+            version = "0.2.1"
 
             afterEvaluate {
                 from(components["release"])

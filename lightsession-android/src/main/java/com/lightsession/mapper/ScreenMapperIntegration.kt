@@ -138,6 +138,16 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         return lastScreen
     }
 
+    /**
+     * The Activity in the foreground, or null.
+     *
+     * Exposed because `ScreenDrawing` needs a `Window` to capture from when the software
+     * draw cannot be used, and this class already tracks the foreground Activity through
+     * its lifecycle callbacks. A second tracker would be a second thing to keep correct.
+     */
+    fun currentActivity(): Activity? = currentActivityWeakRef?.get()
+        ?.takeUnless { it.isFinishing || it.isDestroyed }
+
     fun getCurrentScreenId(): String? {
         val screenName = lastScreen ?: return null
         val activity = currentActivityWeakRef?.get() ?: return null
@@ -972,7 +982,12 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         isScreenshotScheduledForCurrentScreen = false
     }
 
-    private fun takeScreenshot(activity: Activity) {
+    /**
+     * Suspending because the capture is: on a screen holding a hardware bitmap the
+     * software draw is impossible and PixelCopy answers asynchronously. Already called
+     * from inside a coroutine, so this costs nothing.
+     */
+    private suspend fun takeScreenshot(activity: Activity) {
         if (activity.isFinishing || activity.isDestroyed) {
             Log.d("ScreenMapper", "Invalid activity for screenshot. Finishing or destroyed.")
             return
@@ -988,7 +1003,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             val screenWidth = displayMetrics.widthPixels
             val screenHeight = displayMetrics.heightPixels
 
-            val (bitmapBase64, _) = screenDrawing.captureScreenAsBase64()
+            val (bitmapBase64, _) = screenDrawing.captureScreenAsBase64Async()
 
             if (bitmapBase64 != null) {
                 Log.d("ScreenMapper", "Screenshot of screen ${activity.javaClass.simpleName} taken successfully! Using dimensions: ${screenWidth}x${screenHeight}")

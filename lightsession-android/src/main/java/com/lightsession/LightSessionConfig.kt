@@ -40,6 +40,36 @@ data class LightSessionConfig(
     val wireframeMode: WireframeMode = WireframeMode.RECTS,
 
     /**
+     * Cover text and input fields before a captured screen leaves the device.
+     *
+     * Applies to **every** capture that contains real pixels: replay frames and, when
+     * [captureRealScreens] is on, the screen map's screenshots. Wireframes are
+     * unaffected — there is no content in a rectangle to cover.
+     *
+     * On by default. Text is where the sensitive content lives, and a privacy default
+     * should fail towards covering rather than towards leaking. See [Masking] for why
+     * this happens on the device rather than on the server, and what it costs.
+     */
+    val maskText: Boolean = true,
+
+    /**
+     * Cover images before a captured screen leaves the device.
+     *
+     * Off by default: this covers every icon and logo along with the photos, which
+     * leaves a replay saying very little about what the user did. Worth turning on for
+     * an app that displays documents, receipts or user uploads.
+     */
+    val maskImages: Boolean = false,
+
+    /**
+     * Draw masks translucent with a red border instead of opaque.
+     *
+     * For verifying *placement* during integration — a misplaced mask still looks like a
+     * mask while leaving the content readable beside it. Never ship this on.
+     */
+    val maskDebugHighlight: Boolean = false,
+
+    /**
      * Whether the screen map upgrades a screen's wireframe to a real screenshot.
      *
      * The wireframe goes out at navigation time. Two and a half seconds later, if the
@@ -49,14 +79,11 @@ data class LightSessionConfig(
      * so what lands is the screen as the user actually saw it. One capture per screen
      * per install — `CacheManager.isScreenFullyCaptured` stops it repeating.
      *
-     * **This stores an unmasked picture of every screen in the app.** Unlike a replay
-     * frame, a screen-map capture is permanent and per-screen: it is kept for as long
-     * as the project exists, so anything visible when the capture fires — a balance, a
-     * document number, a recovery phrase — is in the bucket indefinitely. There is no
-     * on-device masking yet; the planned design sends the sensitive rectangles to the
-     * server to draw over, which is not built.
-     *
-     * Turn it off per project if that trade is not the one you want.
+     * A screen-map capture is permanent and per-screen — kept for as long as the
+     * project exists — so it is the capture where masking matters most. [maskText] is
+     * on by default and applies here; what survives to the bucket is the screen with
+     * its text covered. Turning masking off while leaving this on means storing an
+     * unmasked picture of every screen in the app indefinitely.
      */
     val captureRealScreens: Boolean = true,
 
@@ -132,12 +159,9 @@ data class LightSessionConfig(
     /**
      * Where the screen-map wireframe gets drawn.
      *
-     * Note what is *not* here: an option to send the real screenshot. The screen map
-     * is a permanent, per-screen artefact — one image per screen, kept for as long as
-     * the project exists — and there is no on-device masking yet, so offering it would
-     * mean offering to store an unmasked picture of every screen in the app forever.
-     * That is a decision to make deliberately with masking in hand, not a config flag
-     * to leave lying around.
+     * Note what is *not* here: real screenshots. Those are [captureRealScreens], which
+     * is a separate switch because it is a separate decision — this one picks where a
+     * wireframe is drawn, that one decides whether real pixels are stored at all.
      */
     enum class WireframeMode {
         /**

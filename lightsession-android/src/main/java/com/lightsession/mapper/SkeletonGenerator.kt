@@ -392,13 +392,37 @@ class SkeletonGenerator {
 
             val layoutInfos = rootGroup.computeLayoutInfos(semantics = semantics)
 
-            // Converte ComposeLayoutInfo para SkeletonNode
-            return layoutInfos.map { convertLayoutInfoToSkeletonNode(it) }.toList()
+            // Traduz para coordenadas de tela.
+            //
+            // `Group.box` é relativo à raiz da composição; `scanViewHierarchy` usa
+            // `getLocationOnScreen` para as Views. Os dois iam para a mesma árvore sem
+            // conversão — o que só passava desapercebido porque um app edge-to-edge
+            // coloca o `AndroidComposeView` em (0,0) e o deslocamento é zero. Fora
+            // disso o wireframe sai deslocado, e uma máscara deslocada deixa o texto
+            // à vista: erro cosmético num caso, falha de privacidade no outro.
+            val hostLocation = IntArray(2)
+            composeView.getLocationOnScreen(hostLocation)
+
+            return layoutInfos
+                .map { convertLayoutInfoToSkeletonNode(it) }
+                .map { translate(it, hostLocation[0], hostLocation[1]) }
+                .toList()
 
         } catch (e: Exception) {
             Log.e("SkeletonGenerator", "Failed to scan Compose hierarchy using Tooling API", e)
             return emptyList()
         }
+    }
+
+    /** Move uma subárvore inteira, para levar a composição ao espaço de tela. */
+    private fun translate(node: SkeletonNode, dx: Int, dy: Int): SkeletonNode {
+        if (dx == 0 && dy == 0) return node
+        val moved = Rect(node.rect)
+        moved.offset(dx, dy)
+        return node.copy(
+            rect = moved,
+            children = node.children.map { translate(it, dx, dy) },
+        )
     }
 
     /**

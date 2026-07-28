@@ -7,13 +7,18 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.util.Base64
+import kotlin.coroutines.resume
 import android.util.Log
 import android.view.Gravity
+import android.view.PixelCopy
 import android.view.View
 import android.view.WindowManager
 import com.lightsession.mapper.SkeletonScreenGenerator
 import java.io.ByteArrayOutputStream
+import com.lightsession.Masking
+import com.lightsession.MaskScanner
 
 /**
  * Utility class for optimized screen capture and object pool management.
@@ -49,6 +54,15 @@ internal class ScreenDrawing {
     // almost nothing. Pooling the bitmap is also what lets the draw happen on
     // the main thread while the JPEG encode happens somewhere else: the encoder
     // hands the buffer back when it is done with it.
+    /**
+     * The traversal that finds what to cover.
+     *
+     * Purpose-built rather than reused from the wireframe generator: that one walks the
+     * whole composition group tree, which measured 6-27 ms per frame on a real Compose
+     * screen. See [MaskScanner].
+     */
+    private val masker = MaskScanner()
+
     private val paintPool = mutableListOf<Paint>()
     private val canvasPool = mutableListOf<Canvas>()
     private val byteArrayPool = mutableListOf<ByteArrayOutputStream>()
@@ -135,6 +149,128 @@ internal class ScreenDrawing {
      * [recycleBitmap] if you decide not to encode it, otherwise the pool starves
      * and every capture allocates again.
      */
+    /**
+     * Captures the screen, choosing whichever method this app's content allows.
+     *
+     * Asynchronous because one of the two methods is. `PixelCopy` reads the window's
+     * rendered surface, which the compositor hands over on its own schedule, and there
+     * is no synchronous form of it — blocking the main thread on its callback would
+     * trade dropped frames for an ANR.
+     *
+     * @param onResult always called, on the main thread, with null when nothing could
+     *   be captured.
+     */
+    fun captureToBitmapAsync(
+        scaleFactor: Float = globalScaleFactor,
+        onResult: (Bitmap?) -> Unit,
+    ) {
+        if (!surfaceCaptureRequired) {
+            val drawn = captureToBitmap(scaleFactor)
+            if (drawn != null || !surfaceCaptureRequired) {
+                // Either it worked, or it failed for a reason PixelCopy would not fix.
+                onResult(drawn)
+                return
+            }
+            // The draw set the flag: this app renders something a software canvas
+            // cannot take. Fall through and never try the draw again.
+        }
+        captureViaSurface(scaleFactor, onResult)
+    }
+
+    /**
+     * Whether the software draw has proven impossible for this app's content.
+     *
+     * Latched rather than retried per frame. The cause is a `Bitmap.Config.HARDWARE`
+     * somewhere in the hierarchy — what Coil and Glide decode into by default on API 26
+     * and above — and a screen that has one will have it again. Retrying would throw,
+     * log a stack trace and drop a frame, three times a second.
+     */
+    @Volatile
+    private var surfaceCaptureRequired = false
+
+    /**
+     * Copies the window's rendered surface.
+     *
+     * The fallback, because it is more expensive and captures less: it reads one window,
+     * so a dialog in its own window is not composited in the way [processViewsOptimized]
+     * composites them. What it does do is work — it takes the pixels the compositor
+     * already produced, so it neither knows nor cares that some of them came from a
+     * hardware bitmap.
+     *
+     * `PixelCopy` scales into the destination, so the frame is copied straight into a
+     * pooled buffer at capture size rather than at full resolution and shrunk. At
+     * CaptureQuality.LOW that is the difference between 0.6 MB and 10 MB per frame.
+     */
+    private fun captureViaSurface(scaleFactor: Float, onResult: (Bitmap?) -> Unit) {
+        val window = com.lightsession.mapper.ScreenMapperIntegration.getInstance()
+            .currentActivity()?.window
+        if (window == null) {
+            Log.w("ScreenCaptureUtils", "no foreground window to copy from")
+            onResult(null)
+            return
+        }
+
+        val metrics = Resources.getSystem().displayMetrics
+        val effectiveScale = scaleFactor.coerceIn(0.1f, 1.0f)
+        val width = (metrics.widthPixels * effectiveScale).toInt()
+        val height = (metrics.heightPixels * effectiveScale).toInt()
+        if (width <= 0 || height <= 0) {
+            onResult(null)
+            return
+        }
+
+        // ARGB_8888 regardless of scale. PixelCopy rejects destinations it cannot write,
+        // and the software path's RGB_565-below-half-scale optimisation is one of them.
+        val bitmap = obtainBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val source = Rect(0, 0, metrics.widthPixels, metrics.heightPixels)
+
+        try {
+            PixelCopy.request(window, source, bitmap, { status ->
+                if (status != PixelCopy.SUCCESS) {
+                    Log.w("ScreenCaptureUtils", "PixelCopy failed with status $status")
+                    recycleBitmap(bitmap)
+                    mainHandler.post { onResult(null) }
+                    return@request
+                }
+                // Masks are drawn here rather than in the copy, because the copy is the
+                // screen exactly as rendered — unmasked. Same canvas transform as the
+                // software path, so the rectangles stay in screen coordinates.
+                mainHandler.post {
+                    val canvas = getCanvasFromPool()
+                    canvas.setBitmap(bitmap)
+                    if (effectiveScale != 1.0f) canvas.scale(effectiveScale, effectiveScale)
+                    runCatching {
+                        maskScreen(canvas, getWindowManagerViewsAndParams()?.views.orEmpty())
+                    }.onFailure {
+                        // A frame whose masks could not be computed must not ship: the
+                        // copy is the real screen, and unmasked is the one state it may
+                        // never be in.
+                        Log.e("ScreenCaptureUtils", "masking failed; dropping frame", it)
+                        canvas.setBitmap(null)
+                        returnCanvasToPool(canvas)
+                        recycleBitmap(bitmap)
+                        onResult(null)
+                        return@post
+                    }
+                    canvas.setBitmap(null)
+                    returnCanvasToPool(canvas)
+                    onResult(bitmap)
+                }
+            }, copyHandler)
+        } catch (e: Throwable) {
+            Log.w("ScreenCaptureUtils", "PixelCopy request rejected", e)
+            recycleBitmap(bitmap)
+            onResult(null)
+        }
+    }
+
+    /** Delivers PixelCopy results off the main thread; the work is reposted to it. */
+    private val copyThread by lazy {
+        android.os.HandlerThread("ls-pixelcopy").apply { start() }
+    }
+    private val copyHandler by lazy { android.os.Handler(copyThread.looper) }
+    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+
     fun captureToBitmap(scaleFactor: Float = globalScaleFactor): Bitmap? {
         return try {
             val windowData = getWindowManagerViewsAndParams() ?: return null
@@ -158,15 +294,96 @@ internal class ScreenDrawing {
             }
 
             processViewsOptimized(views, params, canvas, effectiveScale, displayMetrics)
+
+            // Masking happens here, and the position is the point.
+            //
+            // The canvas still carries the single `scale(effectiveScale)` transform, and
+            // `processViewsOptimized` leaves it balanced, so this draws in *screen*
+            // coordinates — which is the space the rectangles are already in. No
+            // conversion against the scale factor, which is where a mask would silently
+            // land on the wrong pixels at anything other than full quality.
+            //
+            // And it is before the encode, which is what makes it a privacy control
+            // rather than a rendering choice: the unmasked pixels exist only in this
+            // bitmap, on this thread, and are overwritten before anything reads them.
+            //
+            // Every capture path goes through here — replay frames and the screen map's
+            // screenshots both — so none of them can be written without masking.
+            maskScreen(canvas, views)
+
             // Detach so the canvas can be reused without holding the bitmap.
             canvas.setBitmap(null)
             returnCanvasToPool(canvas)
 
             bitmap
         } catch (e: Throwable) {
-            Log.w("ScreenCaptureUtils", "Failed to draw screen", e)
+            // A hardware bitmap in the hierarchy — Coil and Glide decode into one by
+            // default on API 26+ — cannot be drawn onto a software canvas, and it takes
+            // the whole capture down rather than just its own pixels. Latch it so the
+            // next capture goes straight to PixelCopy instead of throwing again.
+            if (isHardwareBitmapFailure(e)) {
+                if (!surfaceCaptureRequired) {
+                    surfaceCaptureRequired = true
+                    Log.i(
+                        "ScreenCaptureUtils",
+                        "hierarchy contains a hardware bitmap; switching to surface capture"
+                    )
+                    metricsHardwareBitmapFallbacks++
+                }
+            } else {
+                Log.w("ScreenCaptureUtils", "Failed to draw screen", e)
+            }
             null
         }
+    }
+
+    /** How many times this process fell back. Read by tests. */
+    @Volatile
+    internal var metricsHardwareBitmapFallbacks: Int = 0
+        private set
+
+    /**
+     * Whether this is the hardware-bitmap case rather than an ordinary draw failure.
+     *
+     * Matched on the message because the platform throws a plain `IllegalArgumentException`
+     * for it, with no distinguishing type. Checked against the cause chain too: the throw
+     * happens deep inside `View.draw` and is sometimes wrapped on the way out.
+     */
+    private fun isHardwareBitmapFailure(error: Throwable): Boolean {
+        var current: Throwable? = error
+        var depth = 0
+        while (current != null && depth < 8) {
+            val message = current.message.orEmpty()
+            if (current is IllegalArgumentException && message.contains("hardware bitmap", true)) {
+                return true
+            }
+            current = current.cause
+            depth++
+        }
+        return false
+    }
+
+    /**
+     * Covers whatever [Masking] says to cover, across every window.
+     *
+     * One traversal per window, because a dialog is a separate window with its own
+     * hierarchy and the text inside it is no less sensitive than the text behind it.
+     *
+     * Failures are swallowed on purpose, with one exception: if the *scan* throws, the
+     * frame is dropped rather than shipped unmasked. A traversal that fails is a
+     * traversal that found nothing, and "found nothing" is indistinguishable from "there
+     * was nothing to mask" — shipping the frame would be treating an error as an
+     * all-clear. Losing one frame of a replay is cheap; leaking a screen is not.
+     */
+    private fun maskScreen(canvas: Canvas, views: List<View>) {
+        if (!Masking.enabled) return
+
+        val rects = ArrayList<Rect>(32)
+        for (view in views) {
+            if (view.visibility != View.VISIBLE || view.width <= 0 || view.height <= 0) continue
+            rects.addAll(masker.scan(view, Masking.text, Masking.images))
+        }
+        Masking.draw(canvas, rects)
     }
 
     /**
@@ -235,6 +452,31 @@ internal class ScreenDrawing {
      *
      * @return Pair<String?, Pair<Int, Int>?> - (Base64 string, (width, height)) or (null, null) on error
      */
+    /**
+     * The screen as base64, taking whichever capture path this app's content allows.
+     *
+     * A suspending twin of [captureScreenAsBase64] for the screen map, which already
+     * runs inside a coroutine. The blocking form cannot reach the PixelCopy fallback —
+     * it has nowhere to wait — so on a screen holding a hardware bitmap it returns null
+     * and the screen keeps its wireframe forever. That is exactly what happened to a
+     * doctor list whose avatars Coil had decoded into hardware bitmaps.
+     */
+    suspend fun captureScreenAsBase64Async(): Pair<String?, Pair<Int, Int>?> {
+        val bitmap = kotlin.coroutines.suspendCoroutine<Bitmap?> { continuation ->
+            captureToBitmapAsync(ScalePresets.ORIGINAL) { continuation.resume(it) }
+        } ?: return Pair(null, null)
+
+        val bytes = encodeToJpeg(bitmap, ScalePresets.ORIGINAL) ?: return Pair(null, null)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val dimensions = if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+            Pair(bounds.outWidth, bounds.outHeight)
+        } else {
+            null
+        }
+        return Pair(Base64.encodeToString(bytes, Base64.NO_WRAP), dimensions)
+    }
+
     fun captureScreenAsBase64(): Pair<String?, Pair<Int, Int>?> {
         return try {
             val byteArray = captureCurrentScreenOptimized(ScalePresets.ORIGINAL)
