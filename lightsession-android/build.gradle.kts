@@ -116,9 +116,14 @@ publishing {
             artifactId = "lightsession-android"
             // 0.1.11-alpha is the artifact with a laptop's LAN address hardcoded into
             // it, so a consumer resolving that one by accident sees an SDK that
-            // silently reports nowhere. This version is the first that takes its
-            // endpoints from `LightSessionConfig`, with no defaults to fall back to.
-            version = "0.2.1"
+            // silently reports nowhere. 0.2.1 was the first that takes its endpoints
+            // from `LightSessionConfig`, with no defaults to fall back to.
+            //
+            // 0.3.0 adds sub-screens: a tab or a modal becomes a screen of its own,
+            // named `destination › part`. Minor rather than patch because it changes
+            // what an existing consumer reports without any code change on their side —
+            // screens appear in the map that were never there before.
+            version = "0.3.0"
 
             afterEvaluate {
                 from(components["release"])

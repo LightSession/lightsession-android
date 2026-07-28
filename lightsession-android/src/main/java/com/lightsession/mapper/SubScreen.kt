@@ -1,0 +1,123 @@
+package com.lightsession.mapper
+
+/**
+ * A part of a screen the NavController does not know about.
+ *
+ * The screen map is built from `NavController.addOnDestinationChangedListener`, so it sees
+ * exactly what the app declared as a route. Everything else that changes what a person is
+ * looking at — a tab, a dialog, a bottom sheet — happens inside one destination and is
+ * invisible to it. In the View world a dialog was its own window and got counted for free;
+ * in Compose the destination simply never changes.
+ *
+ * Modelling these as a *suffix* on the destination rather than as a new concept is what
+ * makes them cost nothing downstream: `dashboard › History` is a screen name like any
+ * other, so it gets an id, a capture, a heatmap and its own node in the flow graph without
+ * a single change on the server.
+ */
+internal data class SubScreen(val kind: Kind, val label: String) {
+    enum class Kind {
+        TAB,
+
+        /**
+         * A dialog or modal sheet in its own window.
+         *
+         * Its lifetime is known exactly — the window is added and removed — so while one is
+         * up there is nothing to re-read, and the removal is what ends it.
+         */
+        MODAL,
+
+        /**
+         * A part of the screen the app declared itself.
+         *
+         * The escape hatch for everything the SDK cannot see: a sheet drawn inside the
+         * composition, a full-screen panel behind `AnimatedVisibility`, a wizard step. None
+         * of those open a window, and none are distinguishable in semantics from ordinary
+         * content — so the app names them, through `LightSession.setSubScreen`.
+         *
+         * Ranked above a tab, because something the app went out of its way to declare is
+         * the thing being looked at.
+         */
+        DECLARED,
+    }
+}
+
+internal object SubScreens {
+
+    /**
+     * Between the destination and the part of it being viewed.
+     *
+     * A character no route contains, so the composed name can always be split back apart,
+     * and one that reads as "inside" rather than as a path separator — `/` would make
+     * `dashboard › History` look like a route the app declares.
+     */
+    const val SEPARATOR = " › "
+
+    /**
+     * Longer than this and it is not a label.
+     *
+     * A tab reads "Overview"; a dialog's testTag reads "confirm-delete". Anything much
+     * longer means the reader grabbed body text, and body text is per-user — "Delete Dr.
+     * Silva?" would mint a screen per doctor. Truncating would keep that bug and hide it,
+     * so an over-long label is rejected outright and the caller falls back.
+     */
+    const val MAX_LABEL = 32
+
+    /**
+     * A label fit to become part of a screen name, or null.
+     *
+     * Screen names are keys: the server rows a screen by (name, version), and the device
+     * caches by a hash of the name. So the same tab has to produce a byte-identical string
+     * every time it is read, which is why whitespace is collapsed rather than trusted —
+     * a label wrapped across two lines arrives with a newline in it, and `Overview\n` and
+     * `Overview` would be two screens.
+     */
+    fun sanitize(raw: String?): String? {
+        if (raw == null) return null
+        val collapsed = raw.replace(SEPARATOR, " ").replace(Regex("\\s+"), " ").trim()
+        if (collapsed.isEmpty() || collapsed.length > MAX_LABEL) return null
+        return collapsed
+    }
+
+    /**
+     * The full screen name for a destination and the part of it in view.
+     *
+     * `default` is the sub-screen that was already showing when the destination was
+     * entered, and matching it yields the bare destination. That is not an optimisation —
+     * it is what keeps one screen from acquiring two names. A destination is reported by
+     * the NavController before its tabs exist, so arriving at `dashboard` names the screen
+     * `dashboard` while the Overview tab is what is actually on display. Without this,
+     * switching to History and back would name that same view `dashboard › Overview`, and
+     * the map would carry both.
+     *
+     * It also removes the need to recognise a bottom navigation bar. `NavigationBarItem`
+     * carries the same `Role.Tab` semantics a tab row does, so the press that navigates to
+     * `home` also reports a selected tab — but that tab is the destination's default by
+     * construction, whatever it happens to be called. The name-based check below is the
+     * belt to this one's braces, for a reading that arrives before the default is known.
+     */
+    fun compose(base: String, sub: SubScreen?, default: SubScreen? = null): String {
+        if (sub == null || sub == default) return base
+        if (isRedundant(base, sub.label)) return base
+        return base + SEPARATOR + sub.label
+    }
+
+    private fun isRedundant(base: String, label: String): Boolean {
+        val leaf = base.substringAfterLast('/').substringAfterLast(SEPARATOR)
+        return leaf.equals(label, ignoreCase = true) ||
+            leaf.replace("_", "").replace("-", "").equals(
+                label.replace(" ", "").replace("_", "").replace("-", ""),
+                ignoreCase = true,
+            )
+    }
+
+    /**
+     * Whether moving from one sub-screen to another is worth reporting.
+     *
+     * Almost every call is a no-op: the tab is re-read after every gesture, and most
+     * gestures are not tab changes. The reads that follow a navigation are not routed here
+     * at all — they establish the destination's default instead, because at that moment the
+     * NavController has already reported the move and counting it again would turn one
+     * navigation into two.
+     */
+    fun shouldReport(previous: SubScreen?, next: SubScreen?): Boolean = previous != next
+}

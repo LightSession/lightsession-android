@@ -27,6 +27,8 @@ import androidx.navigation.fragment.NavHostFragment
 import com.lightsession.LightSessionConfig
 import com.lightsession.interaction.InteractionAwareCallback
 import com.lightsession.replay.ScreenDrawing
+import curtains.Curtains
+import curtains.OnRootViewsChangedListener
 import curtains.OnTouchEventListener
 import curtains.touchEventInterceptors
 import kotlinx.coroutines.Job
@@ -57,6 +59,46 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     private val screenNodes = ConcurrentHashMap<String, ScreenNode>()
     private var lastScreen: String? = null
 
+    /**
+     * The NavController destination, without any sub-screen suffix.
+     *
+     * Split from [lastScreen] rather than derived from it. [lastScreen] is what every
+     * downstream consumer already reads — the screenshot, the capture id, the flow edge —
+     * so making *that* the composed name is what lets a tab or a dialog become a real
+     * screen without touching any of them. This holds the other half: the thing to compose
+     * a new suffix onto, and the thing a repeated navigation is deduplicated against.
+     */
+    private var baseScreen: String? = null
+
+    private var currentSubScreen: SubScreen? = null
+
+    /**
+     * The sub-screen already showing when this destination was entered.
+     *
+     * A destination's default tab is not a sub-screen of it — it *is* it. See
+     * [SubScreens.compose].
+     */
+    private var defaultSubScreen: SubScreen? = null
+
+    /** Whether the pending read establishes the default rather than reporting a change. */
+    private var pendingReadIsBaseline = false
+
+    /** Set by [setDeclaredSubScreen]; see [SubScreen.Kind.DECLARED]. */
+    private var declaredSubScreen: SubScreen? = null
+
+    /** Set while a modal window is on screen, so its removal can be recognised. */
+    private var modalRootView: java.lang.ref.WeakReference<android.view.View>? = null
+
+    /**
+     * What was showing underneath the open modal.
+     *
+     * Closing a dialog returns to whatever was behind it, which is not necessarily the
+     * bare destination: dismiss a confirm dialog raised from the History tab and the
+     * reader is back on History, not on the screen's default tab. Reporting the
+     * destination there would record an arrival that never happened.
+     */
+    private var subScreenBeneathModal: SubScreen? = null
+
     private var sessionDataManager: SessionDataManager? = null
 
     private val skeletonGenerator = SkeletonGenerator()
@@ -79,6 +121,12 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      * the safe fallback when there is no config at all.
      */
     private var captureRealScreens = false
+
+    /** Set from `LightSessionConfig.trackTabs` at [init]. */
+    private var trackTabs = true
+
+    /** Set from `LightSessionConfig.trackModals` at [init]. */
+    private var trackModals = true
 
     /**
      * A wireframe, however it was produced. Exactly one field is set.
@@ -223,6 +271,27 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
          */
         private const val SCREENSHOT_SETTLE_MS = 2_500L
 
+        /**
+         * How long after a touch ends before the sub-screen is re-read.
+         *
+         * Not zero: the tab's `selected` state flips inside the click handler, but with a
+         * pager the move is a fling that keeps running after the finger leaves, and
+         * reading at `ACTION_UP` catches the tab the user is swiping *away* from. Long
+         * enough for the settle, short enough that the reading lands well inside the
+         * screenshot's own wait.
+         */
+        private const val SUB_SCREEN_SETTLE_MS = 350L
+
+        /**
+         * How long after a window appears before its semantics are read.
+         *
+         * The window is reported at `WindowManager.addView`, which is before the
+         * composition inside it has composed or laid out — measured on device, the tree
+         * holds one node at that instant and three once idle. Reading synchronously in the
+         * callback identifies every dialog as empty.
+         */
+        private const val MODAL_SETTLE_MS = 250L
+
         @Volatile
         private var instance: ScreenMapperIntegration? = null
 
@@ -239,6 +308,8 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         sessionDataManager: SessionDataManager,
         wireframeMode: LightSessionConfig.WireframeMode = LightSessionConfig.WireframeMode.RECTS,
         captureRealScreens: Boolean = false,
+        trackTabs: Boolean = true,
+        trackModals: Boolean = true,
     ) {
         if (this.application != null) {
             return
@@ -248,7 +319,12 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         this.sessionDataManager = sessionDataManager
         this.wireframeMode = wireframeMode
         this.captureRealScreens = captureRealScreens
+        this.trackTabs = trackTabs
+        this.trackModals = trackModals
 
+        if (trackModals) {
+            Curtains.onRootViewsChangedListeners += rootViewsListener
+        }
 
         // Initialize cache manager
         cacheManager = CacheManager(application)
@@ -338,8 +414,11 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
     private fun setupActivityLifecycleCallbacks() {
         touchEventListener = OnTouchEventListener { motionEvent ->
-            if (motionEvent.action == MotionEvent.ACTION_DOWN) {
-                onScreenClickListener?.invoke()
+            when (motionEvent.action) {
+                MotionEvent.ACTION_DOWN -> onScreenClickListener?.invoke()
+                // The end of the gesture, not its start: at ACTION_DOWN the tab has not
+                // changed yet, and on a pager it has not even begun to.
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> scheduleSubScreenRead()
             }
         }
 
@@ -565,7 +644,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     override fun handleActivityNavigation(activity: Activity) {
         val screenName = utils.getActivityClassName(activity)
 
-        if (screenName == lastScreen) {
+        if (screenName == baseScreen) {
             return
         }
 
@@ -580,13 +659,13 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             sendInitialScreen(screenName, ScreenType.ACTIVITY, activity)
         }
 
-        lastScreen = screenName
+        enterDestination(screenName)
     }
 
     override fun handleConventionalNavigation(destination: NavDestination) {
         val screenName = utils.getFragmentClassNameSafely(destination)
 
-        if (screenName == lastScreen) {
+        if (screenName == baseScreen) {
             return
         }
 
@@ -604,7 +683,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             }
         }
 
-        lastScreen = screenName
+        enterDestination(screenName)
     }
 
     override fun handleComposeNavigation(destination: NavDestination) {
@@ -624,7 +703,180 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                 sendInitialScreen(screenName, ScreenType.COMPOSE, activity)
             }
         }
+        enterDestination(screenName)
+    }
+
+    /**
+     * A navigation landed: this destination is now the screen, with nothing on top of it.
+     *
+     * Clearing the sub-screen here is not housekeeping — it is what stops a tab from
+     * leaking onto the next destination. Without it, leaving `dashboard › History` for
+     * `profile` would keep the suffix and report `profile › History`, a screen that does
+     * not exist.
+     */
+    private fun enterDestination(screenName: String) {
+        baseScreen = screenName
+        currentSubScreen = null
+        defaultSubScreen = null
+        modalRootView = null
+        subScreenBeneathModal = null
+        // A panel does not survive the destination it was declared on. Its `onDispose` will
+        // arrive, but composition teardown races the NavController and can land after the
+        // next screen has been reported.
+        declaredSubScreen = null
         lastScreen = screenName
+        // Which tab this destination arrived on has to be learned, not assumed, and it
+        // cannot be read yet — the NavController reports the destination before its
+        // content composes. This read supersedes any pending one from the touch that
+        // caused the navigation, which is the same gesture seen from the other end.
+        scheduleSubScreenRead(baseline = true)
+    }
+
+    /**
+     * Moves to a different part of the current destination, as if it were a navigation.
+     *
+     * Deliberately routed through [trackNavigationFlow], the same call an ordinary
+     * navigation makes. A tab change *is* a navigation from the reader's point of view,
+     * and treating it as one means the edge shows up in the flow graph, the new name gets
+     * an id and a capture, and none of that had to be reimplemented here.
+     */
+    private fun applySubScreen(next: SubScreen?) {
+        val base = baseScreen ?: return
+        if (!SubScreens.shouldReport(currentSubScreen, next)) return
+
+        val from = lastScreen ?: base
+        val to = SubScreens.compose(base, next, defaultSubScreen)
+        currentSubScreen = next
+        if (to == from) {
+            // The suffix resolved back to the bare destination — the reader returned to
+            // the tab this screen arrived on. Recorded, but there is nowhere to move to.
+            return
+        }
+
+        Log.d("ScreenMapper", "Sub-screen change: $from -> $to")
+        getOrCreateScreenNode(to, screenNodes[base]?.type ?: ScreenType.COMPOSE)
+        lastScreen = to
+        trackNavigationFlow(from, to)
+    }
+
+    /**
+     * Re-reads what is on top of the destination after a touch, and reports it if it moved.
+     *
+     * Hung off the end of a touch rather than off a click handler, because there is no
+     * click handler to hook: the `Tab` and the sheet are the app's own composables and the
+     * SDK never sees them. Reading the semantics tree afterwards is the only vantage point
+     * that works for a tap on a tab row, a swipe across a pager, and a sheet dragged open
+     * or shut — none of which look alike from here.
+     */
+    /**
+     * The app naming a part of the screen the SDK cannot see for itself.
+     *
+     * Applied straight away rather than at the next gesture, because the caller knows
+     * exactly when its panel appeared and there may be no gesture at all — a sheet can open
+     * from a timer, a deep link, or the result of a request.
+     *
+     * Passing null returns to whatever the SDK can work out on its own, which is why the
+     * tab is re-read on the way out: dismissing a declared sheet reveals the tab beneath it,
+     * and that tab is the screen the reader is now on.
+     */
+    fun setDeclaredSubScreen(name: String?) {
+        val next = SubScreens.sanitize(name)?.let { SubScreen(SubScreen.Kind.DECLARED, it) }
+        if (next == declaredSubScreen) return
+        declaredSubScreen = next
+        if (next != null) {
+            applySubScreen(next)
+        } else {
+            // Not simply `applySubScreen(null)`: the destination may have tabs, and naming
+            // the bare screen here would report an arrival somewhere the reader is not.
+            scheduleSubScreenRead()
+        }
+    }
+
+    /** See `LightSession.clearSubScreen`. */
+    fun clearDeclaredSubScreen(name: String) {
+        if (declaredSubScreen?.label != SubScreens.sanitize(name)) return
+        setDeclaredSubScreen(null)
+    }
+
+    /**
+     * Watches for modal windows opening and closing.
+     *
+     * A Compose `Dialog` is still a real window — `DialogWrapper` extends
+     * `ComponentDialog` — and so is a `ModalBottomSheet`. Both therefore reach
+     * `WindowManager.addView` and both are reported here, which is the same trace the
+     * View world left and the reason this costs no new machinery. What does *not* reach
+     * here is a sheet drawn inside the composition; that one is invisible at the window
+     * level and is not detected.
+     */
+    private val rootViewsListener = OnRootViewsChangedListener { view, added ->
+        if (!trackModals) return@OnRootViewsChangedListener
+        if (added) {
+            // Not read now: the window arrives before its content is composed.
+            mainHandler.postDelayed({ readModal(view) }, MODAL_SETTLE_MS)
+        } else if (modalRootView?.get() === view) {
+            modalRootView = null
+            applySubScreen(subScreenBeneathModal)
+            subScreenBeneathModal = null
+        }
+    }
+
+    private fun readModal(view: android.view.View) {
+        val activity = currentActivityWeakRef?.get() ?: return
+        // The Activity's own window is not a modal, and neither is a window belonging to
+        // an Activity that has since gone away.
+        if (view === activity.window?.decorView) return
+        if (!view.isAttachedToWindow) return
+
+        val modal = try {
+            SubScreenReader.identifyModal(view)
+        } catch (error: Throwable) {
+            Log.d("ScreenMapper", "Modal read failed", error)
+            null
+        } ?: return
+
+        modalRootView = java.lang.ref.WeakReference(view)
+        subScreenBeneathModal = currentSubScreen
+        applySubScreen(modal)
+    }
+
+    private fun scheduleSubScreenRead(baseline: Boolean = false) {
+        if (!trackTabs && !trackModals) return
+        pendingReadIsBaseline = baseline
+        mainHandler.removeCallbacks(subScreenReadRunnable)
+        mainHandler.postDelayed(subScreenReadRunnable, SUB_SCREEN_SETTLE_MS)
+    }
+
+    private val subScreenReadRunnable = Runnable {
+        // A windowed modal owns the screen while it is up, and its own content may hold
+        // tabs; reading them would replace the dialog's name with a tab from inside it.
+        // Its closing arrives as a window removal, so nothing is missed by not looking.
+        //
+        // An in-composition overlay is the opposite case and must keep being read: no
+        // window is removed when it closes, so this is the only thing that ever notices.
+        if (currentSubScreen?.kind == SubScreen.Kind.MODAL) return@Runnable
+        val activity = currentActivityWeakRef?.get() ?: return@Runnable
+        val root = activity.window?.decorView ?: return@Runnable
+        val read = try {
+            SubScreenReader.readSubScreen(root)
+        } catch (error: Throwable) {
+            // A failed read is not worth taking the host app down for, and it is not worth
+            // reporting either: the previous sub-screen stays current, which is the same
+            // answer this would have given on a screen with neither tabs nor a sheet.
+            Log.d("ScreenMapper", "Sub-screen read failed", error)
+            null
+        }
+
+        // An in-composition sheet is a modal even though it shares the window, so it is
+        // governed by `trackModals` and not by the flag that happens to run this read.
+        // What the app declared wins over what was read: it is the more specific claim,
+        // and the sheet it names is drawn over the tab the read found.
+        val next = declaredSubScreen ?: read?.takeIf { trackTabs }
+        if (pendingReadIsBaseline) {
+            defaultSubScreen = next
+            currentSubScreen = next
+        } else {
+            applySubScreen(next)
+        }
     }
 
     private fun getOrCreateScreenNode(name: String, type: ScreenType): ScreenNode {

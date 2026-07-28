@@ -88,6 +88,43 @@ data class LightSessionConfig(
     val captureRealScreens: Boolean = true,
 
     /**
+     * Count a tab as its own screen.
+     *
+     * A screen built from tabs is several screens to the person using it, but one
+     * destination to the NavController — so without this the map shows `dashboard` once
+     * and every tab's content is invisible. With it on, the selected tab's label is
+     * appended (`dashboard › History`) and each tab gets its own node, capture and flow
+     * edge, including the edges between the tabs themselves.
+     *
+     * The label is read from Compose's accessibility semantics, which `Tab` populates
+     * through `Modifier.selectable(role = Role.Tab)`. That makes it safe as a name: it is
+     * a fixed string in the app's source, not per-user content.
+     *
+     * Costs one semantics read per touch, measured at ~1.2ms on a mid-range device.
+     */
+    val trackTabs: Boolean = true,
+
+    /**
+     * Count a dialog or a modal bottom sheet as its own screen.
+     *
+     * Both are real windows in Compose, so opening one is an event the SDK already
+     * receives. Dropdown menus and tooltips are windows too and are deliberately excluded
+     * — they carry `IsPopup` rather than `IsDialog` — or every combo box in the app would
+     * become a screen.
+     *
+     * **On naming.** A dialog has no route and usually no title the SDK can trust: naming
+     * it after its text would turn "Delete Dr. Silva?" into one screen per doctor. So the
+     * name comes from `Modifier.testTag` if the app sets one, then from `paneTitle`, and
+     * failing both from a hash of the dialog's *shape* — stable across openings, but
+     * opaque (`doctors › dialog-1f4a2c`). Adding a testTag to a dialog is what turns that
+     * into a readable name.
+     *
+     * A sheet drawn inside the composition rather than as a window — `BottomSheetScaffold`,
+     * a `Box` overlay, `AnimatedVisibility` — is not a window and is not detected.
+     */
+    val trackModals: Boolean = true,
+
+    /**
      * Interval between captures while nothing is happening, milliseconds.
      *
      * One second is the realistic production setting. It was hardcoded to 300ms,

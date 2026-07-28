@@ -36,6 +36,41 @@ class LightSession private constructor() {
     private var replayIntegration: ReplayIntegration? = null
     private var flushTriggers: FlushTriggers? = null
 
+    /**
+     * Names a part of the current screen that the SDK cannot recognise on its own.
+     *
+     * Dialogs and modal bottom sheets are windows, so they are detected without help. What
+     * is not detectable is anything drawn inside the composition — a `BottomSheetScaffold`
+     * sheet, a panel behind `AnimatedVisibility`, a full-screen step in a wizard. The
+     * measurement behind that claim is in `ComposeOverlayProbeTest`: an expanded sheet's
+     * only marker sits on its 127px drag handle, which is indistinguishable from an
+     * expanded row in a list, and guessing would turn every such row into a screen.
+     *
+     * The name becomes a suffix on the current screen — `doctors › filter-sheet` — with its
+     * own capture, heatmap and edges in the flow map. Use a fixed string, not something
+     * built from the data on display: "filter-sheet" is a screen, `"Dr. \${doctor.name}"` is
+     * one screen per doctor.
+     *
+     * Pass null when it closes. Prefer [com.lightsession.mapper.LightSessionSubScreen] in
+     * Compose, which does both ends for you.
+     */
+    fun setSubScreen(name: String?) {
+        if (!isInitialized) return
+        ScreenMapperIntegration.getInstance().setDeclaredSubScreen(name)
+    }
+
+    /**
+     * Undoes [setSubScreen], but only if [name] is still the one showing.
+     *
+     * The guard is what makes overlapping panels safe. When one sheet replaces another the
+     * arriving one declares itself before the leaving one is disposed, so an unconditional
+     * clear would erase a claim that had already moved on.
+     */
+    fun clearSubScreen(name: String) {
+        if (!isInitialized) return
+        ScreenMapperIntegration.getInstance().clearDeclaredSubScreen(name)
+    }
+
     fun init(application: Application, config: LightSessionConfig) {
         if (isInitialized) {
             return
@@ -72,6 +107,8 @@ class LightSession private constructor() {
             sessionDataManager = sessionDataManager,
             wireframeMode = config.wireframeMode,
             captureRealScreens = config.captureRealScreens,
+            trackTabs = config.trackTabs,
+            trackModals = config.trackModals,
         )
     }
 
