@@ -160,12 +160,20 @@ class InteractionAwareCallback(
             null
         }
 
+        // Measured from the first point, which is the one recorded at ACTION_DOWN and so is
+        // the start of the gesture. It used to be a default on the data class,
+        // `timestamp - 123231`, which no point could compute correctly because a point does
+        // not know when its gesture began — so every interaction shipped a `time_since_start`
+        // of about fifty-five years. Nothing on the server reads the field, which is why it
+        // went unnoticed rather than why it was harmless.
+        val gestureStart = points.firstOrNull()?.timestamp ?: 0L
+
         points.forEach { point ->
             val jsonObject = JSONObject()
             jsonObject.put("x", point.x)
             jsonObject.put("y", point.y)
             jsonObject.put("timestamp", point.timestamp)
-            jsonObject.put("time_since_start", point.timeSinceStart)
+            jsonObject.put("time_since_start", point.timestamp - gestureStart)
 
             // Add current screen information to each point
             currentScreen?.let { screen ->
@@ -240,7 +248,6 @@ class InteractionAwareCallback(
             val x: Float,
             val y: Float,
             val timestamp: Long,
-            val timeSinceStart: Long = timestamp - 123231
         )
     }
 }
