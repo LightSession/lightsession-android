@@ -336,6 +336,12 @@ class SessionDataManager(
         isRepeatedFrame: Boolean,
         currentScreen: String? = null
     ) {
+        // The backstop. Every producer checks `Recording` where the work happens, to avoid
+        // doing it; this is the only place all three kinds of recorded data converge, so
+        // checking again is what makes a producer that forgets cost a wasted capture rather
+        // than a leak.
+        if (!Recording.enabled) return
+
         val frame = FrameData(
             timestamp = System.currentTimeMillis(),
             sequenceNumber = globalSequenceCounter.incrementAndGet(),
@@ -566,6 +572,8 @@ class SessionDataManager(
         screenType: String,
         transitionType: String = "navigation"
     ) {
+        if (!Recording.enabled) return
+
         val navigation = NavigationEvent(
             timestamp = System.currentTimeMillis(),
             sequenceNumber = globalSequenceCounter.incrementAndGet(),
@@ -587,6 +595,7 @@ class SessionDataManager(
      * This receives the raw JSON data from the interaction
      */
     fun addInteractionFromJson(interactionData: String) {
+        if (!Recording.enabled) return
         try {
             val jsonObject = JSONObject(interactionData)
             val type = jsonObject.getString("type")

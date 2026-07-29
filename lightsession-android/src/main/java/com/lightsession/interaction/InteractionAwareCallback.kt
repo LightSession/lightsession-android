@@ -4,6 +4,7 @@ import android.app.Activity
 import android.util.Log
 import android.view.*
 import android.view.accessibility.AccessibilityEvent
+import com.lightsession.Recording
 import com.lightsession.mapper.ScreenMapperIntegration
 import org.json.JSONArray
 import org.json.JSONObject
@@ -64,7 +65,16 @@ class InteractionAwareCallback(
      */
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         try {
-            track(event)
+            if (Recording.enabled) {
+                track(event)
+            } else if (isTrackingGesture) {
+                // Recording went off mid-gesture. Dropped rather than left in place: the points
+                // collected so far would otherwise sit in the buffer and be sent as part of
+                // whatever gesture happened after recording came back — a swipe stitched
+                // together from two different moments, one of which was not being recorded.
+                currentInteractionPoints.clear()
+                isTrackingGesture = false
+            }
         } catch (error: Throwable) {
             Log.e(TAG, "interaction tracking failed; the touch is unaffected", error)
         }

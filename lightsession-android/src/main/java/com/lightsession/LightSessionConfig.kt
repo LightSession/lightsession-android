@@ -150,6 +150,24 @@ data class LightSessionConfig(
     val collectLocation: Boolean = true,
 
     /**
+     * Begin recording as soon as [LightSession.init] runs.
+     *
+     * On, which is what every version before this switch did — an SDK that stopped recording
+     * because a new flag defaulted off would be a silent outage in every app that took the
+     * update.
+     *
+     * Turn it off for an app that wants one flow rather than the whole run: nothing is collected
+     * until [LightSession.startRecording], and nothing again after
+     * [LightSession.stopRecording]. Note that each `startRecording` begins a new session, so a
+     * flow recorded this way is its own replay rather than a fragment of a longer one — see
+     * [LightSession.startRecording] for why.
+     *
+     * Independent of [enableReplay]. That decides whether frames are ever captured at all; this
+     * decides *when* anything is recorded, frames included.
+     */
+    val startRecordingOnInit: Boolean = true,
+
+    /**
      * Paint the wireframe in the screen's own colours.
      *
      * Off, a wireframe is drawn from a palette keyed on widget type — green for text, purple for

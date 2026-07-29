@@ -118,6 +118,69 @@ class LightSession private constructor() {
         Log.d("LightSession", "reset")
     }
 
+    /** Whether anything is being recorded right now. */
+    val isRecording: Boolean
+        get() = Recording.enabled
+
+    /**
+     * Starts recording, as a new session.
+     *
+     * For an app that wants one flow captured rather than everything from the splash onward:
+     * configure [LightSessionConfig.startRecordingOnInit] off, then call this when the flow
+     * begins and [stopRecording] when it ends.
+     *
+     * ## Why this rolls the session instead of resuming one
+     *
+     * A session's replay is rendered as one video, and the renderer holds the last frame it has
+     * across any gap in the timeline. Resuming inside one session would therefore produce a video
+     * in which the app appears frozen for however long recording was off, beside an event list
+     * with an unexplained hole in it — a replay that describes something that did not happen.
+     *
+     * Rolled, each recorded stretch is a complete and honest replay of itself. The two stretches
+     * are still one person's: [identify] and the anonymous-id alias are what tie them together,
+     * and they are unaffected by this.
+     *
+     * Calling this while already recording does nothing — deliberately, and not just for safety.
+     * A screen that starts recording in `onResume` would otherwise split a session every time it
+     * came back to the foreground.
+     */
+    fun startRecording() {
+        if (!isInitialized) {
+            Log.w("LightSession", "startRecording before init; ignored")
+            return
+        }
+        if (Recording.enabled) return
+
+        // Rolled before the flag flips, so nothing from this moment lands in the session that
+        // was open while recording was off.
+        sessionDataManager.startNewSession("recording_started")
+        Recording.enabled = true
+        Log.i("LightSession", "recording started")
+    }
+
+    /**
+     * Stops recording, and sends what has been recorded so far.
+     *
+     * Flushed rather than discarded: everything up to this call was collected while recording was
+     * on, which is what the app asked for. It also means the session closes on the server without
+     * waiting out the idle timeout, so the replay is available sooner.
+     *
+     * After this, no frame is captured, no tap or navigation becomes an event, and no screen is
+     * captured for the screen map. See [Recording] for why the screen map is included.
+     */
+    fun stopRecording() {
+        if (!isInitialized) {
+            Log.w("LightSession", "stopRecording before init; ignored")
+            return
+        }
+        if (!Recording.enabled) return
+
+        // Flag first, so nothing new arrives while the flush is in flight.
+        Recording.enabled = false
+        sessionDataManager.forceFlush("recording_stopped")
+        Log.i("LightSession", "recording stopped")
+    }
+
     fun init(application: Application, config: LightSessionConfig) {
         if (isInitialized) {
             return
@@ -127,6 +190,9 @@ class LightSession private constructor() {
         // Set before anything can capture. `ScreenDrawing` consults this at capture
         // time, so a recorder started later still masks.
         Masking.configure(config)
+        // Same ordering, and for a stronger reason: every producer reads this, and one that
+        // starts before it is set would record a stretch the app asked not to have.
+        Recording.enabled = config.startRecordingOnInit
         this.isInitialized = true
 
         identity = Identity.from(application.applicationContext)

@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewTreeObserver
+import com.lightsession.Recording
 import com.lightsession.mapper.CompositionActivity
 import curtains.Curtains
 import curtains.OnRootViewsChangedListener
@@ -226,6 +227,19 @@ internal class Recorder {
             }
 
             cleanupDeadViews()
+
+            // Nothing at all while recording is off — not even a repeated-frame marker, which
+            // would still be a row on the wire saying the screen was unchanged at this instant.
+            // The tick keeps running rather than stopping so `startRecording` needs no restart,
+            // and an idle tick is one field read.
+            if (!Recording.enabled) {
+                isScreenContentChanged.set(false)
+                // Reset, so the frame after recording resumes is a real capture: a resumed
+                // recording whose first frame were a repeat would hold whatever the renderer had
+                // from the previous stretch.
+                isFirstCapture = true
+                return
+            }
 
             val changed = isScreenContentChanged.getAndSet(false)
 

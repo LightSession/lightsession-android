@@ -25,6 +25,7 @@ import androidx.navigation.NavDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.fragment.NavHostFragment
 import com.lightsession.LightSessionConfig
+import com.lightsession.Recording
 import com.lightsession.interaction.InteractionAwareCallback
 import com.lightsession.replay.ScreenDrawing
 import curtains.Curtains
@@ -977,6 +978,11 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      * @param to The destination screen name.
      */
     private fun trackNavigationFlow(from: String, to: String) {
+        // Gated inside the funnel rather than at its callers: there are seven of those, and a
+        // gate per call site is a gate the eighth one forgets. See [Recording] for why the screen
+        // map is covered at all — a wireframe of a screen is a picture of it.
+        if (!Recording.enabled) return
+
         screenNodes[from]?.connections?.merge(to, 1, Int::plus)
 
         val appVersionCode = getAppVersionCode()
@@ -1171,6 +1177,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      * @param activity The activity reference to get context and theme.
      */
     private fun sendInitialScreen(screenName: String, screenType: ScreenType, activity: Activity) {
+        if (!Recording.enabled) return
         val scope = (activity as? ComponentActivity)?.lifecycleScope ?: return
 
         scope.launch {
@@ -1263,6 +1270,10 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      * app, permanentemente, e não há masking no device.
      */
     private fun scheduleScreenshot() {
+        // The real-screenshot upgrade is its own producer: it runs on a delay, so recording can
+        // be stopped between the schedule and the capture. Checked again where the capture
+        // happens, for that gap.
+        if (!Recording.enabled) return
         cancelScreenshot()
 
         if (!captureRealScreens) return
@@ -1282,6 +1293,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         currentScreenshotJob = scope.launch {
             try {
                 delay(SCREENSHOT_SETTLE_MS)
+                // The gap the schedule-time check cannot cover: several seconds pass here, and
+                // recording may have been stopped in them.
+                if (!Recording.enabled) return@launch
                 // `lifecycleScope` já cancela na destruição, mas a Activity pode
                 // estar terminando sem que o escopo tenha sido cancelado ainda.
                 if (!activity.isFinishing && !activity.isDestroyed) {
