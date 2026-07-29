@@ -60,7 +60,6 @@ class ReplayIntegration(
             val timestamp = System.currentTimeMillis()
             val isRepeatedFrame = bitmapBytes.contentEquals(Recorder.REPEATED_FRAME_SIGNAL)
 
-            // Obter a tela atual
             val currentScreen = try {
                 ScreenMapperIntegration.getInstance().getCurrentScreen()
             } catch (e: Exception) {
@@ -74,7 +73,6 @@ class ReplayIntegration(
                 uniqueCaptures.incrementAndGet()
             }
 
-            // Enviar para SessionDataManager se disponível
             sessionDataManager?.addFrame(
                 imageData = bitmapBytes,
                 isRepeatedFrame = isRepeatedFrame,

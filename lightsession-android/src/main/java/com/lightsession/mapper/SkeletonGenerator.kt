@@ -38,7 +38,6 @@ import androidx.core.graphics.createBitmap
 class SkeletonGenerator {
 
     private companion object {
-        /** Teto para o desembrulho de Composition aninhada. */
         const val MAX_UNWRAP_DEPTH = 8
     }
 
@@ -47,7 +46,7 @@ class SkeletonGenerator {
         val type: NodeType,
         val color: Int,
         val style: Paint.Style,
-        val name: String? = null, // 🆕 ADICIONADO: Nome real do composable ou View
+        val name: String? = null,
         val children: List<SkeletonNode> = emptyList()
     )
 
@@ -56,20 +55,17 @@ class SkeletonGenerator {
     }
 
     private val defaultColors: Map<NodeType, Int> = mapOf(
-        NodeType.CONTAINER to Color.parseColor("#E0E0E0"), // Cinza claro para containers
-        NodeType.TEXT to Color.parseColor("#4CAF50"),      // Verde para texto
-        NodeType.IMAGE to Color.parseColor("#2196F3"),     // Azul para imagens
-        NodeType.INPUT to Color.parseColor("#FF9800"),     // Laranja para inputs
-        NodeType.BUTTON to Color.parseColor("#9C27B0"),    // Roxo para botões
-        NodeType.UNKNOWN to Color.parseColor("#757575"),   // Cinza escuro para desconhecidos
-        NodeType.CARD to Color.parseColor("#FFEB3B"),      // Amarelo para cards
-        NodeType.WEBVIEW to Color.parseColor("#00BCD4"),   // Ciano para webview
-        NodeType.COMPOSE_HOST to Color.TRANSPARENT         // Transparente para o host
+        NodeType.CONTAINER to Color.parseColor("#E0E0E0"),
+        NodeType.TEXT to Color.parseColor("#4CAF50"),
+        NodeType.IMAGE to Color.parseColor("#2196F3"),
+        NodeType.INPUT to Color.parseColor("#FF9800"),
+        NodeType.BUTTON to Color.parseColor("#9C27B0"),
+        NodeType.UNKNOWN to Color.parseColor("#757575"),
+        NodeType.CARD to Color.parseColor("#FFEB3B"),
+        NodeType.WEBVIEW to Color.parseColor("#00BCD4"),
+        NodeType.COMPOSE_HOST to Color.TRANSPARENT
     )
 
-    /**
-     * Detecta se a Activity contém uma tela Compose.
-     */
     fun isComposeScreen(activity: Activity): Boolean {
         val rootView = activity.window.decorView.rootView
         return containsComposeView(rootView)
@@ -139,7 +135,6 @@ class SkeletonGenerator {
         val rootView = activity.window.decorView.rootView
 
         if (!containsComposeView(rootView)) {
-            // View clássica: já está desenhável.
             if (rootView.width > 0 && rootView.height > 0) {
                 onComplete(produce(activity, rootView))
                 return
@@ -319,7 +314,6 @@ class SkeletonGenerator {
         val type = determineNodeType(view)
         val (color, style) = extractVisuals(view, type)
 
-        // 🆕 CORREÇÃO: Armazena o nome da View Android também
         val viewName = if (isComposeView(view)) {
             "AndroidComposeView"
         } else {
@@ -367,9 +361,6 @@ class SkeletonGenerator {
         null
     }
 
-    /**
-     * Usa a mesma técnica do Radiography para escanear Compose usando UI Tooling API
-     */
     @OptIn(UiToolingDataApi::class)
     private fun scanComposeHierarchyUsingTooling(composeView: View): List<SkeletonNode> {
         try {
@@ -424,9 +415,6 @@ class SkeletonGenerator {
         )
     }
 
-    /**
-     * Converte ComposeLayoutInfo para SkeletonNode
-     */
     private fun convertLayoutInfoToSkeletonNode(layoutInfo: ComposeLayoutInfo): SkeletonNode {
         return when (layoutInfo) {
             is ComposeLayoutInfo.LayoutNodeInfo -> {
@@ -472,7 +460,6 @@ class SkeletonGenerator {
                 )
             }
             is ComposeLayoutInfo.AndroidViewInfo -> {
-                // Para AndroidView, escaneia a view Android recursivamente
                 scanViewHierarchy(layoutInfo.view) ?: SkeletonNode(
                     rect = Rect(),
                     type = NodeType.UNKNOWN,
@@ -559,12 +546,6 @@ class SkeletonGenerator {
         return found
     }
 
-    /**
-     * 🆕 CORREÇÃO PRINCIPAL: Parseia recursivamente a árvore de Groups ACUMULANDO o callChain
-     */
-    /**
-     * 🆕 CORREÇÃO: Varre a hierarquia para encontrar o tipo mais específico (Text, Image, etc)
-     */
     @OptIn(UiToolingDataApi::class)
     private fun parseGroupTree(group: Group, parentCallChain: List<String>): List<SkeletonNode> {
         val callChain: List<String> = if (!group.name.isNullOrBlank()) {
@@ -578,34 +559,24 @@ class SkeletonGenerator {
             if (bounds.width > 0 && bounds.height > 0) {
                 val rect = Rect(bounds.left, bounds.top, bounds.right, bounds.bottom)
 
-                // Tenta descobrir o tipo pelo nome, se não conseguir, assume CONTAINER
                 val type = resolveNodeTypeFromChain(callChain)
 
-                // Processa os filhos primeiro para saber se este nó é um "Pai" ou uma "Folha"
                 val children = group.children.flatMap {
-                    parseGroupTree(it, callChain) // Passa o callChain acumulado
+                    parseGroupTree(it, callChain)
                 }.toMutableList()
 
                 val isLeaf = children.isEmpty()
 
-                // LÓGICA DE CORES E ESTILOS:
-                // 1. Elementos específicos (Text, Image, Button, Input, Card) -> FILL com cor vibrante
-                // 2. Container folha (sem filhos) -> FILL com cinza claro
-                // 3. Container pai (com filhos) -> STROKE com cinza claro (apenas borda)
                 val (finalColor, style) = when {
-                    // Elementos específicos sempre têm cores vibrantes e são preenchidos
                     type in listOf(NodeType.TEXT, NodeType.IMAGE, NodeType.BUTTON, NodeType.INPUT, NodeType.CARD) -> {
                         Pair(defaultColors[type] ?: Color.LTGRAY, Paint.Style.FILL)
                     }
-                    // Container folha (bloco de conteúdo sem filhos identificados)
                     type == NodeType.CONTAINER && isLeaf -> {
                         Pair(Color.parseColor("#E0E0E0"), Paint.Style.FILL)
                     }
-                    // Container pai (apenas organizador) - apenas borda
                     type == NodeType.CONTAINER && !isLeaf -> {
                         Pair(Color.parseColor("#BDBDBD"), Paint.Style.STROKE)
                     }
-                    // Outros casos
                     else -> {
                         Pair(defaultColors[type] ?: Color.LTGRAY, Paint.Style.FILL)
                     }
@@ -736,16 +707,11 @@ class SkeletonGenerator {
         return if (view is ViewGroup) NodeType.CONTAINER else NodeType.UNKNOWN
     }
 
-    /**
-     * Extrai visuais de Views Android
-     */
     private fun extractVisuals(view: View, type: NodeType): Pair<Int, Paint.Style> {
-        // Para AndroidComposeView, usa cor transparente (os filhos Compose terão suas cores)
         if (isComposeView(view)) {
             return Pair(Color.TRANSPARENT, Paint.Style.FILL)
         }
 
-        // 1. TENTATIVA: CardView
         if (view.javaClass.name.contains("CardView")) {
             try {
                 val method = view.javaClass.getMethod("getCardBackgroundColor")
@@ -754,7 +720,6 @@ class SkeletonGenerator {
             } catch (e: Exception) {}
         }
 
-        // 2. TENTATIVA: Background Tint
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             view.backgroundTintList?.defaultColor?.let {
                 if (it != 0 && it != Color.TRANSPARENT) {
@@ -763,14 +728,12 @@ class SkeletonGenerator {
             }
         }
 
-        // 3. TENTATIVA: Extração Profunda do Drawable
         extractColorFromDrawable(view.background)?.let { extracted ->
             if (extracted != 0 && extracted != Color.TRANSPARENT) {
                 return Pair(extracted, Paint.Style.FILL)
             }
         }
 
-        // 4. TRATAMENTO ESPECIAL PARA BOTÕES
         if (view is android.widget.Button) {
             getThemeColor(view.context, android.R.attr.colorPrimary)?.let {
                 return Pair(it, Paint.Style.FILL)
@@ -778,12 +741,10 @@ class SkeletonGenerator {
             return Pair(Color.parseColor("#6200EE"), Paint.Style.FILL)
         }
 
-        // 5. TEXTOS
         if (view is TextView) {
             return Pair(view.currentTextColor, Paint.Style.FILL)
         }
 
-        // 6. FALLBACKS
         if (type == NodeType.CONTAINER) {
             return Pair(defaultColors[NodeType.CONTAINER] ?: Color.LTGRAY, Paint.Style.STROKE)
         }
@@ -830,17 +791,14 @@ class SkeletonGenerator {
         // Non-breaking space no início
         append('\u00a0')
 
-        // Desenha as linhas verticais dos pais
         for (i in 0 until depth - 1) {
             append(if (parentIsLast[i]) "  " else "│ ")
         }
 
-        // Desenha o conector do nó atual
         if (depth > 0) {
             append(if (isLast) "╰─" else "├─")
         }
 
-        // 🆕 CORREÇÃO: Usa o nome real ou fallback para o tipo
         val displayName = node.name ?: when (node.type) {
             NodeType.TEXT -> "Text"
             NodeType.BUTTON -> "Button"

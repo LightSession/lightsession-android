@@ -147,7 +147,6 @@ class LightSession private constructor() {
         networkDataSender.setApiKey(config.apiKey)
         networkDataSender.setBaseUrl("${config.normalizedApiUrl}/api/v1/screenmap")
 
-        // Passar o networkDataSender configurado para o ScreenMapperIntegration
         ScreenMapperIntegration.getInstance().init(
             application = application,
             dataSender = networkDataSender,

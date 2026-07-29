@@ -24,7 +24,7 @@ interface DataSender {
         height: Int,
         appVersionCode: Int,
         appVersionName: String,
-        theme: String // Novo parâmetro: theme
+        theme: String
     ): Result<Unit>
 
     /**
@@ -43,7 +43,7 @@ interface DataSender {
         height: Int,
         appVersionCode: Int,
         appVersionName: String,
-        theme: String // Novo parâmetro: theme
+        theme: String
     ): Result<Unit>
 
     suspend fun sendNavigationFlow(
