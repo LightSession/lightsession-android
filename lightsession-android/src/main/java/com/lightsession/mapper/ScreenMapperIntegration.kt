@@ -410,7 +410,6 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         setupActivityLifecycleCallbacks()
     }
 
-    // Função para obter o versionCode
     private fun getAppVersionCode(): Int {
         val currentApplication = application ?: return 0
 
@@ -432,7 +431,6 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         }.getOrDefault(0)
     }
 
-    // Função para obter o versionName
     private fun getAppVersionName(): String {
         val currentApplication = application ?: return "unknown"
 
@@ -450,7 +448,6 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         }.getOrDefault("unknown")
     }
 
-    // Nova função para obter o tema da tela
     private fun getCurrentTheme(context: Context): String {
         val uiMode = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
         return when (uiMode) {
@@ -1062,7 +1059,6 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      *
      * @param from The origin screen name.
      * @param to The destination screen name.
-     * @param activity A referência da Activity para obter o Context e o Tema.
      */
     private suspend fun sendNavigationData(from: String, to: String, activity: Activity) {
         try {

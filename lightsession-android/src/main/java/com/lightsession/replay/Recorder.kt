@@ -5,6 +5,7 @@ import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewTreeObserver
+import com.lightsession.mapper.CompositionActivity
 import curtains.Curtains
 import curtains.OnRootViewsChangedListener
 import curtains.OnTouchEventListener
@@ -59,6 +60,15 @@ internal class Recorder {
 
         /** How long a burst survives with no further touch and no drawing. */
         private const val BURST_QUIET_MS = 250L
+
+        /**
+         * How recently the composition must have changed to count as "still moving".
+         *
+         * A little above one frame at 60Hz. Long enough that a running animation reads as
+         * continuous movement rather than as a series of quiet moments between its frames, short
+         * enough that an ordinary screen is considered settled almost immediately after a tap.
+         */
+        private const val TRANSITION_QUIET_MS = 120L
 
         /**
          * Ceiling on a single burst, measured from the touch that started it.
@@ -167,6 +177,10 @@ internal class Recorder {
         isFirstCapture = true
         isScreenContentChanged.set(true)
 
+        // Watches for composition movement, which is how `tick` knows not to capture a frame
+        // that straddles two screens. Idempotent, and a no-op in a host without Compose.
+        CompositionActivity.start()
+
         installViewMonitoring()
 
         Log.d(
@@ -213,7 +227,22 @@ internal class Recorder {
 
             cleanupDeadViews()
 
-            if (isFirstCapture || isScreenContentChanged.getAndSet(false)) {
+            val changed = isScreenContentChanged.getAndSet(false)
+
+            // A screen that is still moving is a screen mid-transition, and a frame from there
+            // shows two screens at once with both of their masks. See [CompositionActivity]:
+            // the mask cannot be made correct for such a frame, so the frame is not taken.
+            //
+            // Repeated rather than skipped. Skipping leaves a gap and the renderer holds the
+            // frame before it across the gap, which is how an earlier attempt at this made the
+            // artefact last longer instead of shorter.
+            val moving = CompositionActivity.movingWithin(TRANSITION_QUIET_MS)
+
+            if (!isFirstCapture && moving) {
+                onBitmapBytesReady?.invoke(REPEATED_FRAME_SIGNAL)
+                // Left set, so the change is not swallowed: the next quiet tick captures it.
+                if (changed) isScreenContentChanged.set(true)
+            } else if (isFirstCapture || changed) {
                 isFirstCapture = false
                 captureFrame()
             } else {
@@ -288,6 +317,9 @@ internal class Recorder {
     fun shutdown() {
         scheduledFuture?.cancel(false)
         scheduledFuture = null
+        // Released with the recorder: a snapshot observer left registered outlives the session
+        // and keeps writing a timestamp nothing reads.
+        CompositionActivity.stop()
         uninstallViewMonitoring()
         scheduler.shutdown()
         encoder.shutdown()

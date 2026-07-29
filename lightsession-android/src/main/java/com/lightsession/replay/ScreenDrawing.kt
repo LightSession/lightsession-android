@@ -63,6 +63,7 @@ internal class ScreenDrawing {
      */
     private val masker = MaskScanner()
 
+
     private val paintPool = mutableListOf<Paint>()
     private val canvasPool = mutableListOf<Canvas>()
     private val byteArrayPool = mutableListOf<ByteArrayOutputStream>()
@@ -878,7 +879,7 @@ internal class ScreenDrawing {
                 val bitmap = BitmapFactory.decodeByteArray(it, 0, it.size)
                 val dimensions = Pair(bitmap.width, bitmap.height)
                 val base64 = Base64.encodeToString(it, Base64.NO_WRAP)
-                bitmap.recycle() // Liberar memória do bitmap temporário
+                bitmap.recycle()
                 Pair(base64, dimensions)
             } ?: Pair(null, null)
         } catch (e: Exception) {
@@ -992,9 +993,6 @@ internal class ScreenDrawing {
         }
     }
 
-    /**
-     * Converte coordenadas da tela original para coordenadas da screenshot escalada
-     */
     fun convertOriginalToScaledCoordinates(
         originalX: Float,
         originalY: Float,
@@ -1007,9 +1005,6 @@ internal class ScreenDrawing {
         )
     }
 
-    /**
-     * Converte coordenadas da screenshot escalada para coordenadas da tela original
-     */
     fun convertScaledToOriginalCoordinates(
         scaledX: Float,
         scaledY: Float,
@@ -1022,9 +1017,6 @@ internal class ScreenDrawing {
         )
     }
 
-    /**
-     * Obtém o scale factor atual sendo usado nas capturas
-     */
     fun getCurrentScaleFactor(): Float = globalScaleFactor
 
     /**
