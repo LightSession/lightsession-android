@@ -18,6 +18,7 @@ import android.view.WindowManager
 import com.lightsession.mapper.SkeletonScreenGenerator
 import java.io.ByteArrayOutputStream
 import com.lightsession.Masking
+import com.lightsession.ScreenGeometry
 import com.lightsession.MaskScanner
 
 /**
@@ -224,11 +225,10 @@ internal class ScreenDrawing {
      */
     private fun surfaceLayers(baseWindow: android.view.Window?): List<SurfaceLayer> {
         val layers = mutableListOf<SurfaceLayer>()
-        val metrics = Resources.getSystem().displayMetrics
 
         if (baseWindow != null) {
             layers.add(
-                SurfaceLayer(baseWindow, Rect(0, 0, metrics.widthPixels, metrics.heightPixels)),
+                SurfaceLayer(baseWindow, Rect(0, 0, ScreenGeometry.width, ScreenGeometry.height)),
             )
         }
 
@@ -285,10 +285,9 @@ internal class ScreenDrawing {
             return
         }
 
-        val metrics = Resources.getSystem().displayMetrics
         val effectiveScale = scaleFactor.coerceIn(0.1f, 1.0f)
-        val width = (metrics.widthPixels * effectiveScale).toInt()
-        val height = (metrics.heightPixels * effectiveScale).toInt()
+        val width = (ScreenGeometry.width * effectiveScale).toInt()
+        val height = (ScreenGeometry.height * effectiveScale).toInt()
         if (width <= 0 || height <= 0) {
             onResult(null)
             return
@@ -435,10 +434,9 @@ internal class ScreenDrawing {
             val views = windowData.views!!
             val params = windowData.params
 
-            val displayMetrics = Resources.getSystem().displayMetrics
             val effectiveScale = scaleFactor.coerceIn(0.1f, 1.0f)
-            val width = (displayMetrics.widthPixels * effectiveScale).toInt()
-            val height = (displayMetrics.heightPixels * effectiveScale).toInt()
+            val width = (ScreenGeometry.width * effectiveScale).toInt()
+            val height = (ScreenGeometry.height * effectiveScale).toInt()
             if (width <= 0 || height <= 0) return null
 
             val config =
@@ -451,7 +449,7 @@ internal class ScreenDrawing {
                 canvas.scale(effectiveScale, effectiveScale)
             }
 
-            processViewsOptimized(views, params, canvas, effectiveScale, displayMetrics)
+            processViewsOptimized(views, params, canvas, effectiveScale)
 
             // Masking happens here, and the position is the point.
             //
@@ -709,14 +707,12 @@ internal class ScreenDrawing {
      * @param params Layout parameters for positioning the views
      * @param canvas Canvas to draw the views on
      * @param scaleFactor Scale factor being used (affects minimum view size filter)
-     * @param displayMetrics Display metrics for screen dimensions and density
      */
     private fun processViewsOptimized(
         views: List<View>,
         params: List<WindowManager.LayoutParams>?,
         canvas: Canvas,
         scaleFactor: Float,
-        displayMetrics: android.util.DisplayMetrics
     ) {
         val visibleViews = views.filterIndexed { index, view ->
             view.visibility == View.VISIBLE &&
@@ -734,7 +730,7 @@ internal class ScreenDrawing {
 
             val originalIndex = views.indexOf(view)
             val layoutParams = params?.getOrNull(originalIndex)
-            val (x, y) = calculateViewPositionOriginal(view, layoutParams, displayMetrics)
+            val (x, y) = calculateViewPositionOriginal(view, layoutParams)
 
             canvas.translate(x.toFloat(), y.toFloat())
             view.draw(canvas)
@@ -763,16 +759,14 @@ internal class ScreenDrawing {
      *
      * @param view The view whose position needs to be calculated
      * @param layoutParams WindowManager layout parameters containing positioning info
-     * @param displayMetrics Display metrics for screen dimensions
      * @return Pair of (x, y) coordinates for the view position
      */
     private fun calculateViewPositionOriginal(
         view: View,
         layoutParams: WindowManager.LayoutParams?,
-        displayMetrics: android.util.DisplayMetrics
     ): Pair<Int, Int> {
-        val screenWidth = displayMetrics.widthPixels
-        val screenHeight = displayMetrics.heightPixels
+        val screenWidth = ScreenGeometry.width
+        val screenHeight = ScreenGeometry.height
 
         return try {
             if (layoutParams != null) {
@@ -835,9 +829,8 @@ internal class ScreenDrawing {
         height: Int? = null
     ): ByteArray? {
         return try {
-            val displayMetrics = Resources.getSystem().displayMetrics
-            val screenWidth = width ?: displayMetrics.widthPixels
-            val screenHeight = height ?: displayMetrics.heightPixels
+            val screenWidth = width ?: ScreenGeometry.width
+            val screenHeight = height ?: ScreenGeometry.height
 
             // Synchronizes the scalefactor between the two classes
             skeletonGenerator.setGlobalScaleFactor(scaleFactor)
@@ -907,9 +900,8 @@ internal class ScreenDrawing {
         height: Int? = null
     ): Bitmap? {
         return try {
-            val displayMetrics = Resources.getSystem().displayMetrics
-            val screenWidth = width ?: displayMetrics.widthPixels
-            val screenHeight = height ?: displayMetrics.heightPixels
+            val screenWidth = width ?: ScreenGeometry.width
+            val screenHeight = height ?: ScreenGeometry.height
 
             // Sincroniza o scaleFactor entre as duas classes
             skeletonGenerator.setGlobalScaleFactor(scaleFactor)

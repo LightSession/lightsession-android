@@ -1,5 +1,6 @@
 package com.lightsession.mapper
 
+import com.lightsession.ScreenGeometry
 import android.content.res.Resources
 import android.graphics.*
 import android.util.Base64
@@ -36,8 +37,8 @@ class SkeletonScreenGenerator {
      * @return bitmap with Skeleton Screen
      */
     fun generateRandomSkeleton(
-        width: Int = Resources.getSystem().displayMetrics.widthPixels,
-        height: Int = Resources.getSystem().displayMetrics.heightPixels,
+        width: Int = ScreenGeometry.width,
+        height: Int = ScreenGeometry.height,
         scaleFactor: Float = globalScaleFactor
     ): Bitmap {
         val effectiveScale = scaleFactor.coerceIn(0.1f, 1.0f)
@@ -95,8 +96,8 @@ class SkeletonScreenGenerator {
      * Generates a skeleton screen and returns it as a compressed ByteArray.
      */
     private fun generateRandomSkeletonAsByteArray(
-        width: Int = Resources.getSystem().displayMetrics.widthPixels,
-        height: Int = Resources.getSystem().displayMetrics.heightPixels,
+        width: Int = ScreenGeometry.width,
+        height: Int = ScreenGeometry.height,
         scaleFactor: Float = globalScaleFactor
     ): ByteArray? {
         return try {
@@ -122,8 +123,8 @@ class SkeletonScreenGenerator {
      * Generates a skeleton screen and returns it as a Base64 string.
      */
     fun generateRandomSkeletonAsBase64(
-        width: Int = Resources.getSystem().displayMetrics.widthPixels,
-        height: Int = Resources.getSystem().displayMetrics.heightPixels,
+        width: Int = ScreenGeometry.width,
+        height: Int = ScreenGeometry.height,
         scaleFactor: Float = globalScaleFactor
     ): String? {
         val byteArray = generateRandomSkeletonAsByteArray(width, height, scaleFactor)
