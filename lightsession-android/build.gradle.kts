@@ -136,7 +136,7 @@ publishing {
             // names are lower-cased consistently, so a consumer upgrading reports
             // `home/manager` where it used to report `Home/Manager` — the server keys on
             // the name, so both rows exist until the old one is deleted.
-            version = "0.4.0"
+            version = "0.6.0"
 
             afterEvaluate {
                 from(components["release"])
