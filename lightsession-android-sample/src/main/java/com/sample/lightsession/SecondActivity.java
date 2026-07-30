@@ -1,5 +1,6 @@
 package com.sample.lightsession;
 
+import android.content.Intent;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.os.Handler;
@@ -8,12 +9,24 @@ import android.widget.Button;
 
 import androidx.appcompat.app.AppCompatActivity;
 
+import com.lightsession.LightSession;
+
 import java.util.Random;
 
+/**
+ * The second Activity, reached from the first.
+ *
+ * There is nothing to call here beyond what the SDK does on its own: the navigation between the two
+ * appears in the map without either screen asking for it, which is most of the point of the sample.
+ * A commented-out `trackEvent` call used to sit in the back button, for an API the SDK does not have.
+ *
+ * `reset` is the one thing worth showing, because it is the counterpart to the `identify` on the
+ * screen before and its ordering matters.
+ */
 public class SecondActivity extends AppCompatActivity {
     private View colorChangingView;
-    private Handler colorChangeHandler = new Handler();
-    private Random random = new Random();
+    private final Handler colorChangeHandler = new Handler();
+    private final Random random = new Random();
     private Runnable colorChangeRunnable;
 
     @Override
@@ -26,47 +39,37 @@ public class SecondActivity extends AppCompatActivity {
         Button goToComposeButton = findViewById(R.id.goToComposeButton);
 
         backButton.setOnClickListener(v -> {
+            // Before finishing, so the last thing recorded under whoever was identified is still
+            // theirs. `reset` mints a new anonymous id and starts a new session, so the next person
+            // to use this device does not inherit their history — which is what a sign-out does.
+            LightSession.getInstance().reset();
             finish();
-
-            // --- NOVO: Exemplo de rastreamento de evento ao voltar para a tela anterior ---
-            // Map<String, Object> eventProperties = new HashMap<>();
-            // eventProperties.put("action", "back_button_pressed");
-            // eventProperties.put("from_screen", "SecondActivity");
-            // LightSession.getInstance().trackEvent("Navigation Back", eventProperties);
-            // --- FIM NOVO ---
         });
 
-        // Botão para navegar para a tela em Jetpack Compose
-        goToComposeButton.setOnClickListener(v -> {
-            android.content.Intent intent = new android.content.Intent(SecondActivity.this, ComposeWithNavigationActivity.class);
-            startActivity(intent);
-        });
+        // The simple Compose case, matching this button's label. It used to jump straight to the
+        // NavHost variant, which left `ComposeActivity` in the manifest with nothing opening it.
+        goToComposeButton.setOnClickListener(v ->
+                startActivity(new Intent(SecondActivity.this, ComposeActivity.class)));
 
-        // Cria um Runnable para mudar a cor periodicamente (com cores diferentes da primeira tela)
+        // Repaints twice as fast as the first screen and in lighter tones, so the two are told
+        // apart at a glance in a replay.
         colorChangeRunnable = new Runnable() {
             @Override
             public void run() {
-                // Gera uma cor aleatória com foco em tons mais claros
-                int color = Color.rgb(
-                        150 + random.nextInt(106),  // 150-255
+                colorChangingView.setBackgroundColor(Color.rgb(
+                        150 + random.nextInt(106),
                         150 + random.nextInt(106),
                         150 + random.nextInt(106)
-                );
-                colorChangingView.setBackgroundColor(color);
-
-                // Agenda a próxima mudança de cor após 500ms (mais rápido que a primeira tela)
+                ));
                 colorChangeHandler.postDelayed(this, 500);
             }
         };
-
-        // Inicia a animação de mudança de cor
         colorChangeHandler.post(colorChangeRunnable);
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        // Remove callbacks para evitar vazamentos de memória
         colorChangeHandler.removeCallbacks(colorChangeRunnable);
     }
 }

@@ -20,20 +20,16 @@ import androidx.navigation.compose.rememberNavController
 import com.lightsession.mapper.withNavigationTracking
 
 /**
- * Exemplo de Activity com Navegação Compose usando NavHost
+ * Several Compose screens inside one Activity, which is the case that needs a line of integration.
  *
- * Esta é uma implementação OPCIONAL que demonstra como usar navegação
- * entre múltiplas telas Compose com tracking automático do LightSession.
+ * [ComposeActivity] next door needs none: one Activity is one screen, and the SDK reads that from
+ * the lifecycle. Here the Activity name says nothing — every destination is the same
+ * `ComposeWithNavigationActivity` — so the NavController is wrapped with `withNavigationTracking()`,
+ * which registers it and reports each destination as it becomes current.
  *
- * IMPORTANTE: Para usar este exemplo, você precisa adicionar a dependência
- * de navegação Compose no build.gradle.kts:
- *
- * implementation("androidx.navigation:navigation-compose:2.7.0")
- *
- * O .withNavigationTracking() é uma extensão que:
- * 1. Registra o NavController no ScreenMapperIntegration
- * 2. Trackeia automaticamente todas as navegações entre telas Compose
- * 3. Envia os dados para o LightSession via handleComposeNavigation()
+ * That call is the entire integration. Wrap every NavController the app has, including ones nested
+ * inside a screen: a destination reached only through an inner controller is invisible otherwise,
+ * and looks like a screen users never open.
  */
 class ComposeWithNavigationActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -46,7 +42,6 @@ class ComposeWithNavigationActivity : ComponentActivity() {
 
 @Composable
 fun ComposeNavigationApp() {
-    // Aplica o withNavigationTracking() para tracking automático
     val navController = rememberNavController().withNavigationTracking()
 
     MaterialTheme {

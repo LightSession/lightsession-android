@@ -20,15 +20,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Reached from MainActivity, so it is not a launcher entry. It was declared as one,
+             which put a second icon for this app in the launcher and offered a mid-flow screen as
+             a way to start it — and starting there means the flow the SDK records has no
+             beginning. Not exported either: nothing outside this app has business opening it. -->
         <activity
             android:name="com.sample.lightsession.SecondActivity"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+            android:exported="false" />
         <activity
             android:name="com.sample.lightsession.ComposeActivity"
             android:exported="false" />

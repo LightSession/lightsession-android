@@ -1,5 +1,6 @@
 package com.sample.lightsession
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,18 +20,15 @@ import androidx.compose.ui.unit.sp
 import kotlin.random.Random
 
 /**
- * ComposeActivity - Exemplo de Activity usando Jetpack Compose
+ * A Compose screen that is tracked without asking to be.
  *
- * Esta Activity é automaticamente trackeada pelo LightSession através do
- * ScreenMapperIntegration.handleActivityNavigation(), que é chamado no
- * lifecycle callback onActivityResumed.
+ * Nothing here calls the SDK. `ScreenMapperIntegration` picks the Activity up from
+ * `onActivityResumed` and, seeing no NavController, records it as one screen named
+ * `ComposeActivity`. That is the case worth showing: an app whose navigation is one Activity per
+ * screen needs no integration code at all.
  *
- * O tracking acontece automaticamente porque:
- * 1. Esta Activity não usa NavController (navegação simples por Activity)
- * 2. O ScreenMapperIntegration detecta isso e trata como ScreenType.ACTIVITY
- * 3. O nome da tela será "ComposeActivity"
- *
- * Para navegação Compose com múltiplas telas, use NavHostController.withNavigationTracking()
+ * When several Compose screens live inside one Activity, the Activity name is no longer the screen
+ * — see [ComposeWithNavigationActivity], which wraps its NavController to report each destination.
  */
 class ComposeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,17 +41,16 @@ class ComposeActivity : ComponentActivity() {
 
 @Composable
 fun ComposeScreen(onBackPressed: () -> Unit) {
-    // Estado para controlar a cor animada
     var targetColor by remember { mutableStateOf(generateRandomColor()) }
 
-    // Animação de transição de cor
+    // Tweened rather than stepped, so the recorder has to deal with a screen that is mid-change
+    // when it samples — which is the interesting case for a replay.
     val animatedColor by animateColorAsState(
         targetValue = targetColor,
         animationSpec = tween(durationMillis = 800, easing = LinearEasing),
         label = "color animation"
     )
 
-    // Efeito para mudar a cor periodicamente
     LaunchedEffect(Unit) {
         while (true) {
             kotlinx.coroutines.delay(1000)
@@ -61,7 +58,6 @@ fun ComposeScreen(onBackPressed: () -> Unit) {
         }
     }
 
-    // Context para navegação
     val context = androidx.compose.ui.platform.LocalContext.current
 
     MaterialTheme {
@@ -93,7 +89,6 @@ fun ComposeScreen(onBackPressed: () -> Unit) {
 
                 Spacer(modifier = Modifier.height(48.dp))
 
-                // Box animada com mudança de cor
                 Box(
                     modifier = Modifier
                         .size(200.dp)
@@ -114,7 +109,6 @@ fun ComposeScreen(onBackPressed: () -> Unit) {
 
                 Spacer(modifier = Modifier.height(48.dp))
 
-                // Botão de voltar com estilo Material3
                 Button(
                     onClick = onBackPressed,
                     modifier = Modifier
@@ -126,6 +120,29 @@ fun ComposeScreen(onBackPressed: () -> Unit) {
                 ) {
                     Text(
                         text = "Voltar para XML View",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // On to the NavHost variant, which closes the flow: XML views, then a Compose
+                // Activity, then several Compose screens inside one. `ComposeWithNavigationActivity`
+                // had nothing that opened it, so the case it demonstrates was never reached — and
+                // the `context` this uses was sitting unused for the navigation nobody wired.
+                OutlinedButton(
+                    onClick = {
+                        context.startActivity(
+                            Intent(context, ComposeWithNavigationActivity::class.java)
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                ) {
+                    Text(
+                        text = "Compose com NavHost",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Medium
                     )
@@ -150,35 +167,3 @@ private fun generateRandomColor(): Color {
         blue = Random.nextInt(256)
     )
 }
-
-/*
- * ============================================================================
- * EXEMPLO: Como usar withNavigationTracking para navegação Compose
- * ============================================================================
- *
- * Se você quiser adicionar navegação entre múltiplas telas Compose, use:
- *
- * import androidx.navigation.compose.NavHost
- * import androidx.navigation.compose.composable
- * import androidx.navigation.compose.rememberNavController
- * import com.lightsession.mapper.withNavigationTracking
- *
- * @Composable
- * fun ComposeNavigationExample() {
- *     val navController = rememberNavController().withNavigationTracking()
- *
- *     NavHost(navController = navController, startDestination = "home") {
- *         composable("home") {
- *             HomeScreen(onNavigate = { navController.navigate("details") })
- *         }
- *         composable("details") {
- *             DetailsScreen(onBack = { navController.popBackStack() })
- *         }
- *     }
- * }
- *
- * O .withNavigationTracking() garante que todas as navegações entre telas
- * Compose sejam automaticamente trackeadas pelo LightSession.
- * ============================================================================
- */
-

@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">lightsession-android-sample</string>
+
+    <!-- The recording button reads its label from the SDK's own state, so it needs both. -->
+    <string name="start_recording">Start recording</string>
+    <string name="stop_recording">Stop recording</string>
 </resources>

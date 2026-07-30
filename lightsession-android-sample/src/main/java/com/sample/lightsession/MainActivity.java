@@ -10,103 +10,129 @@ import android.widget.Button;
 
 import androidx.appcompat.app.AppCompatActivity;
 
+import com.lightsession.LightSession;
+
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 
+/**
+ * The sample's first screen, and deliberately still Java.
+ *
+ * The SDK is Kotlin and its config is built in Kotlin next door, but a consumer writing Java has to
+ * be able to call the rest of the API — so something here keeps that honest at compile time.
+ *
+ * Four of these buttons used to do nothing. They built a properties map, wrote a line to logcat and
+ * returned: `identify` was never called, the recording toggle had an empty body, and the "track
+ * event" button called an API the SDK does not have. A sample whose buttons only log is worse than
+ * one with fewer buttons, because it reads as proof that the integration works.
+ */
 public class MainActivity extends AppCompatActivity {
     private View colorChangingView;
-    private Handler colorChangeHandler = new Handler();
-    private Random random = new Random();
+    private final Handler colorChangeHandler = new Handler();
+    private final Random random = new Random();
     private Runnable colorChangeRunnable;
+
+    /** Whether the modal sub-screen is currently declared. Toggled by its button. */
+    private boolean subScreenOpen = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        Button toggleButton = findViewById(R.id.capture_button);
+
+        Button recordingButton = findViewById(R.id.capture_button);
         Button goToSecondButton = findViewById(R.id.go_to_second_button);
         Button identifyUserButton = findViewById(R.id.identify_user_button);
-        Button trackEventButton = findViewById(R.id.track_event_button);
+        Button subScreenButton = findViewById(R.id.track_event_button);
         Button crashButton = findViewById(R.id.crash_button);
         Button softErrorButton = findViewById(R.id.soft_error_button);
 
         colorChangingView = findViewById(R.id.colorChangingView);
 
-        goToSecondButton.setOnClickListener(v -> {
-            Intent intent = new Intent(MainActivity.this, SecondActivity.class);
-            startActivity(intent);
-        });
+        goToSecondButton.setOnClickListener(v ->
+                startActivity(new Intent(MainActivity.this, SecondActivity.class)));
 
-        toggleButton.setOnClickListener(v -> {
-
+        // Start and stop recording, which is what this button always said it did.
+        //
+        // The label is set from the SDK's own state rather than from a local boolean, so it cannot
+        // drift out of step with what is actually being recorded — `stopRecording` also flushes,
+        // and a button claiming "stop" while nothing is running is how you end up debugging the
+        // wrong end of a missing session.
+        updateRecordingLabel(recordingButton);
+        recordingButton.setOnClickListener(v -> {
+            if (LightSession.getInstance().isRecording()) {
+                LightSession.getInstance().stopRecording();
+            } else {
+                LightSession.getInstance().startRecording();
+            }
+            updateRecordingLabel(recordingButton);
         });
 
         identifyUserButton.setOnClickListener(v -> {
-            String distinctId = "user_12345";
-            Map<String, Object> userProperties = new HashMap<>();
-            userProperties.put("name", "John Doe");
-            userProperties.put("email", "john.doe@example.com");
-            userProperties.put("subscription_tier", "premium");
-            Log.d("MainActivity", "User identified: " + distinctId);
+            Map<String, Object> traits = new HashMap<>();
+            traits.put("name", "John Doe");
+            traits.put("email", "john.doe@example.com");
+            traits.put("subscription_tier", "premium");
+            // Everything this install recorded before now, including this screen, becomes
+            // attributable to this person.
+            LightSession.getInstance().identify("user_12345", traits);
+            Log.d("MainActivity", "identified user_12345");
         });
 
-        trackEventButton.setOnClickListener(v -> {
-            Map<String, Object> eventProperties = new HashMap<>();
-            eventProperties.put("button_name", "Track Event Button");
-            eventProperties.put("screen_name", "MainActivity");
-            eventProperties.put("interaction_type", "click");
-            Log.d("MainActivity", "Custom event 'Custom Button Click' tracked.");
+        // Declares a part of this screen as a screen of its own — what a modal or a tab is. The
+        // map records `MainActivity › checkout` while it is set, so a dialog stops being invisible
+        // in the flow. This replaces a button that called a `trackEvent` API the SDK never had.
+        subScreenButton.setOnClickListener(v -> {
+            if (subScreenOpen) {
+                LightSession.getInstance().clearSubScreen("checkout");
+            } else {
+                LightSession.getInstance().setSubScreen("checkout");
+            }
+            subScreenOpen = !subScreenOpen;
+            Log.d("MainActivity", "sub-screen checkout " + (subScreenOpen ? "set" : "cleared"));
         });
 
-        // --- NOVO: Listener para o botão de CRASH ---
         crashButton.setOnClickListener(v -> {
             Log.e("MainActivity", "Simulating app crash...");
-            // Esta linha irá causar um NullPointerException e o aplicativo irá quebrar.
-            // O LightSessionExceptionHandler deverá capturar isso.
+            // Uncaught, on purpose: the session up to this point still has to arrive.
             String nullString = null;
-            nullString.length(); // Isso vai gerar um NullPointerException
+            //noinspection ConstantConditions,DataFlowIssue
+            nullString.length();
         });
-        // --- FIM NOVO ---
 
-        // --- NOVO: Listener para o botão de ERRO SOFT ---
         softErrorButton.setOnClickListener(v -> {
             try {
-                Log.w("MainActivity", "Simulating a soft error (handled exception)...");
-                // Simula uma divisão por zero que é capturada.
+                Log.w("MainActivity", "Simulating a handled exception...");
+                @SuppressWarnings({"unused", "divzero", "NumericOverflow"})
                 int result = 10 / 0;
             } catch (ArithmeticException e) {
-                // Aqui você pode criar um breadcrumb customizado para o erro
-                Map<String, Object> errorProperties = new HashMap<>();
-                errorProperties.put("type", "handled_error");
-                errorProperties.put("message", "Attempted division by zero.");
-                errorProperties.put("details", e.getMessage());
-                errorProperties.put("screen", "MainActivity");
-                Log.e("MainActivity", "Soft error caught: " + e.getMessage());
+                // Caught, so the app keeps running and the session keeps recording. Here to show
+                // the difference from the button above, which does not.
+                Log.e("MainActivity", "handled: " + e.getMessage());
             }
         });
-        // --- FIM NOVO ---
 
-
-        // Cria um Runnable para mudar a cor periodicamente
+        // A view that repaints every second, so the recorder has real motion to capture on a
+        // screen that would otherwise be static.
         colorChangeRunnable = new Runnable() {
             @Override
             public void run() {
-                // Gera uma cor aleatória
-                int color = Color.rgb(
+                colorChangingView.setBackgroundColor(Color.rgb(
                         random.nextInt(256),
                         random.nextInt(256),
                         random.nextInt(256)
-                );
-                colorChangingView.setBackgroundColor(color);
-
-                // Agenda a próxima mudança de cor após 1 segundo
+                ));
                 colorChangeHandler.postDelayed(this, 1000);
             }
         };
-
-        // Inicia a animação de mudança de cor
         colorChangeHandler.post(colorChangeRunnable);
+    }
+
+    private void updateRecordingLabel(Button button) {
+        button.setText(LightSession.getInstance().isRecording()
+                ? R.string.stop_recording
+                : R.string.start_recording);
     }
 
     @Override
