@@ -1,6 +1,8 @@
 package com.lightsession.replay
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.MotionEvent
 import android.view.View
@@ -97,7 +99,7 @@ internal class Recorder {
 
     private val scheduler by lazy {
         Executors.newSingleThreadScheduledExecutor(
-            LightSessionThreadFactory("LightSession-Scheduler", enableCounter = false)
+            LightSessionThreadFactory("LightSession-Scheduler")
         )
     }
 
@@ -110,12 +112,24 @@ internal class Recorder {
      */
     private val encoder by lazy {
         Executors.newSingleThreadExecutor(
-            LightSessionThreadFactory("LightSession-Encoder", enableCounter = false)
+            LightSessionThreadFactory("LightSession-Encoder")
         )
     }
 
     private var scheduledFuture: ScheduledFuture<*>? = null
-    private var mainHandler: MainLooperHandler? = null
+
+    /**
+     * For the half of a capture that has to run on the UI thread.
+     *
+     * A plain `Handler`, and a `val`. This was a nullable `var` holding a wrapper created inside
+     * `capture()`, which made `captureFrame` open with `mainHandler ?: return` — a silent path that
+     * dropped a frame for no reason other than the wrapper not existing yet. A handler on the main
+     * looper is always constructible, so the branch had nothing to protect against.
+     *
+     * The wrapper it replaced offered nine methods; one was ever called, and the two other files
+     * that need a main-thread handler construct one of these directly.
+     */
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var contextRef: WeakReference<Context>? = null
 
     /**
@@ -173,7 +187,6 @@ internal class Recorder {
 
         screenDrawing.setGlobalScaleFactor(scaleFactor)
         contextRef = WeakReference(context)
-        mainHandler = MainLooperHandler()
 
         isFirstCapture = true
         isScreenContentChanged.set(true)
@@ -281,9 +294,8 @@ internal class Recorder {
      * compression does not, and it is the larger half.
      */
     private fun captureFrame() {
-        val handler = mainHandler ?: return
         val scale = scaleFactor
-        handler.post {
+        mainHandler.post {
             // Async, because the fallback path is: on a screen holding a hardware bitmap
             // the software draw cannot run at all, and PixelCopy answers on the
             // compositor's schedule. See `ScreenDrawing.captureToBitmapAsync`.

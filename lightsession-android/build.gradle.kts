@@ -188,7 +188,29 @@ publishing {
             // `lifecycleScope ?: return`, so even past the gate its screen went nowhere.
             //
             // The decision is now a pure function with the whole space under unit test.
-            version = "0.10.0"
+            // 0.11.0 removes what was never called.
+            //
+            // `MainLooperHandler` in full: nine methods, one of them ever used, and the two other
+            // files needing a main-thread handler already built a plain one. It also cost a frame
+            // occasionally — being created inside `capture()` made the field a nullable `var`, so
+            // `captureFrame` opened with `?: return` and dropped a frame for no reason but the
+            // wrapper not existing yet.
+            //
+            // `LightSessionThreadFactory` keeps what it exists for — a thread name and `isDaemon`,
+            // neither of which `Executors.defaultThreadFactory()` gives — and loses an unused
+            // counter, an unused priority and four builders with no callers. Its uncaught-exception
+            // handler is gone too: it was the only one in the SDK, so it complemented nothing and
+            // instead replaced the default on those threads, keeping an encoder crash out of the
+            // host app's own reporting.
+            //
+            // `SkeletonGenerator` loses three members with no callers, including reflection into
+            // `android.app.ActivityThread` to find the foreground Activity — something the mapper
+            // already tracks from the lifecycle.
+            //
+            // Minor, not patch: three public methods leave a public class, and the thread factory
+            // narrows to `internal`. Nothing outside this SDK is known to call them, but the
+            // signatures are gone.
+            version = "0.11.0"
 
             afterEvaluate {
                 from(components["release"])

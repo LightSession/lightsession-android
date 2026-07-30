@@ -1,68 +1,40 @@
 package com.lightsession.replay
 
 import java.util.concurrent.ThreadFactory
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Thread factory for LightSession executors.
+ * Names the SDK's threads, and makes them daemons.
  *
- * Creates daemon threads with customizable naming and optional thread counting.
- * All threads created by this factory are daemon threads and won't prevent JVM shutdown.
+ * Two things `Executors.defaultThreadFactory()` will not do, and both matter for code that runs
+ * inside somebody else's app:
  *
- * @property threadBaseName the base name for threads (will be suffixed with counter if enabled)
- * @property enableCounter whether to append an incremental counter to thread names
- * @property priority the thread priority (default: Thread.NORM_PRIORITY)
+ *  * **A name.** Measured on a running host: 31 threads in the process, and the SDK's show up as
+ *    `LightSession-Encoder` and `LightSession-Scheduler` rather than `pool-3-thread-1`. When the app's
+ *    own team opens an ANR trace or a profiler, that is the difference between "this is the analytics
+ *    SDK" and a thread nobody can attribute. An SDK that cannot be identified in a profile gets
+ *    blamed for whatever is near it.
+ *  * **`isDaemon = true`.** The default factory creates non-daemon threads, which hold the JVM open.
+ *    It shows up as a test suite that will not exit rather than as anything a user sees, but there is
+ *    no reason for a recorder's executor to outlive the thing it records.
+ *
+ * ## What used to be here
+ *
+ * An `enableCounter` flag with an `AtomicInteger`, a `priority` parameter, and four companion
+ * builders — `forBackground`, `forIO`, `forNetwork`, `forAnalytics`. Both call sites passed
+ * `enableCounter = false`, nothing ever passed a priority, and the four builders had no callers at
+ * all: two thirds of the file existed for uses that never arrived.
+ *
+ * Also an uncaught-exception handler that printed to `System.err` and stopped there. That was worse
+ * than absent. It was the only such handler in the SDK, so it complemented nothing and instead
+ * *replaced* the default on these threads — an exception in the encoder no longer reached the host
+ * app's `Thread.setDefaultUncaughtExceptionHandler`, and therefore never reached their crash
+ * reporting. It became a stack trace on stderr with no tag. An SDK swallowing its host's crashes is
+ * worse than one that lets them through: at least a crash that propagates gets seen.
  */
-class LightSessionThreadFactory(
-    private val threadBaseName: String,
-    private val enableCounter: Boolean = true,
-    private val priority: Int = Thread.NORM_PRIORITY
+internal class LightSessionThreadFactory(
+    private val threadName: String,
 ) : ThreadFactory {
 
-    private val threadCounter = AtomicInteger(0)
-
-    override fun newThread(runnable: Runnable): Thread {
-        val threadName = if (enableCounter) {
-            "$threadBaseName-${threadCounter.incrementAndGet()}"
-        } else {
-            threadBaseName
-        }
-
-        return Thread(runnable, threadName).apply {
-            isDaemon = true
-            this.priority = this@LightSessionThreadFactory.priority
-
-            // Set uncaught exception handler for better debugging
-            uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { thread, exception ->
-                System.err.println("Uncaught exception in LightSession thread '${thread.name}': $exception")
-                exception.printStackTrace()
-            }
-        }
-    }
-
-    companion object {
-        /**
-         * Creates a factory for background processing threads
-         */
-        fun forBackground(): LightSessionThreadFactory =
-            LightSessionThreadFactory("LightSession-Background", priority = Thread.MIN_PRIORITY)
-
-        /**
-         * Creates a factory for I/O operation threads
-         */
-        fun forIO(): LightSessionThreadFactory =
-            LightSessionThreadFactory("LightSession-IO")
-
-        /**
-         * Creates a factory for network operation threads
-         */
-        fun forNetwork(): LightSessionThreadFactory =
-            LightSessionThreadFactory("LightSession-Network")
-
-        /**
-         * Creates a factory for analytics threads
-         */
-        fun forAnalytics(): LightSessionThreadFactory =
-            LightSessionThreadFactory("LightSession-Analytics", priority = Thread.MIN_PRIORITY)
-    }
+    override fun newThread(runnable: Runnable): Thread =
+        Thread(runnable, threadName).apply { isDaemon = true }
 }

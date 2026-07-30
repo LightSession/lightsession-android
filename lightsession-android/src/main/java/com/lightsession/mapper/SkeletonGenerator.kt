@@ -66,11 +66,6 @@ class SkeletonGenerator {
         NodeType.COMPOSE_HOST to Color.TRANSPARENT
     )
 
-    fun isComposeScreen(activity: Activity): Boolean {
-        val rootView = activity.window.decorView.rootView
-        return containsComposeView(rootView)
-    }
-
     private fun containsComposeView(view: View): Boolean {
         if (isComposeView(view)) {
             return true
@@ -88,11 +83,10 @@ class SkeletonGenerator {
     private val settleDetector = ComposeSettleDetector()
 
     /**
-     * Conta quantos LayoutNodes a composição da tela já produziu.
+     * How many LayoutNodes the screen's composition has emitted so far.
      *
-     * Usado como sinal de "tem conteúdo". Só é chamado quando a tela parece
-     * quieta, então o custo de varrer a composição é pago uma ou duas vezes por
-     * navegação, não a cada quadro.
+     * Used as a "there is content" signal. Only asked once the screen looks quiet, so walking the
+     * composition costs one or two passes per navigation rather than one per frame.
      */
     private fun composeNodeCount(rootView: View): Int {
         val composeView = findComposeView(rootView) ?: return 0
@@ -108,24 +102,23 @@ class SkeletonGenerator {
     }
 
     /**
-     * Espera a tela ficar desenhável e então produz algo a partir dela.
+     * Waits for the screen to become drawable, then makes something out of it.
      *
-     * Para uma Activity clássica, a hierarquia já está medida quando chegamos
-     * aqui e a captura é imediata.
+     * For a classic Activity the hierarchy is already measured by the time this runs, so the capture
+     * is immediate.
      *
-     * Para Compose não: o evento de navegação chega antes da composição emitir
-     * qualquer nó. A versão anterior contornava com `postDelayed(1000)`, um
-     * palpite que era longo demais para tela estática e curto demais para tela
-     * que carrega dados — e quando errava, gravava um skeleton vazio sem avisar.
-     * Agora [ComposeSettleDetector] espera a composição *parar de mudar*, o que
-     * é rápido quando dá e paciente quando precisa.
+     * Not for Compose: the navigation event arrives before the composition has emitted a single
+     * node. The previous version worked around it with `postDelayed(1000)` — a guess that was too
+     * long for a static screen and too short for one loading data, and when it was wrong it recorded
+     * an empty skeleton without saying so. [ComposeSettleDetector] waits for the composition to
+     * *stop changing* instead, which is quick when it can be and patient when it has to be.
      *
-     * A espera vive aqui, e não em cada modo de captura, porque é a única parte
-     * difícil: [generateSkeletonFrame] e [generateSkeletonBitmap] diferem só no
-     * que fazem com a hierarquia depois que ela existe.
+     * The wait lives here rather than in each capture mode because it is the only hard part:
+     * [generateSkeletonFrame] and [generateSkeletonBitmap] differ only in what they do with the
+     * hierarchy once it exists.
      *
-     * @param onComplete recebe null quando não houve o que capturar. Melhor
-     *   nenhum skeleton do que um em branco marcado como válido.
+     * @param onComplete receives null when there was nothing to capture. No skeleton beats a blank
+     *   one marked valid.
      */
     private fun <T> awaitDrawableRoot(
         activity: Activity,
@@ -170,28 +163,28 @@ class SkeletonGenerator {
     }
 
     /**
-     * Descreve a tela como retângulos, para o servidor desenhar.
+     * Describes the screen as rectangles, for the server to draw.
      *
-     * O caminho normal. Não aloca bitmap, não codifica JPEG: percorre a
-     * hierarquia — que é o custo irredutível de saber o que tem na tela — e
-     * devolve uns poucos KB de geometria. Ver [SkeletonFrame].
+     * The normal path. Allocates no bitmap and encodes no JPEG: it walks the hierarchy — the
+     * irreducible cost of knowing what is on screen — and returns a few KB of geometry. See
+     * [SkeletonFrame].
      */
     fun generateSkeletonFrame(activity: Activity, onComplete: (SkeletonFrame?) -> Unit) {
         awaitDrawableRoot(activity, ::generateSkeletonFrameSync, onComplete)
     }
 
     /**
-     * Desenha o wireframe aqui e devolve o bitmap.
+     * Draws the wireframe here and hands back the bitmap.
      *
-     * Mantido para um backend que ainda não entenda `skeleton` no payload de
-     * tela. Produz a mesma imagem que [generateSkeletonFrame] produz no
-     * servidor, pagando o encode que aquele caminho não paga.
+     * Kept for a backend that does not yet understand `skeleton` in the screen payload. Produces the
+     * same image [generateSkeletonFrame] produces on the server, paying the encode that path does
+     * not.
      */
     fun generateSkeletonBitmap(activity: Activity, onComplete: (Bitmap?) -> Unit) {
         awaitDrawableRoot(activity, ::generateSkeletonBitmapSync, onComplete)
     }
 
-    /** Aborta uma espera em andamento (nova navegação, ou o usuário tocou a tela). */
+    /** Aborts a wait in progress — a new navigation, or the user touching the screen. */
     fun cancelPendingCapture() {
         settleDetector.cancel()
     }
@@ -200,12 +193,12 @@ class SkeletonGenerator {
         frameFrom(rootView, getWindowBackgroundColor(activity))
 
     /**
-     * A varredura e a serialização, sem a Activity.
+     * The scan and the serialisation, without the Activity.
      *
-     * A Activity só servia para uma consulta de tema, e exigi-la tornava o caminho
-     * caro impossível de medir sem subir uma tela inteira. Separar as duas coisas é o
-     * que permite `SkeletonCostTest` cronometrar este caminho contra [bitmapFrom]
-     * sobre a *mesma* hierarquia — que é a única comparação honesta entre eles.
+     * The Activity was only there for a theme lookup, and demanding one made the expensive path
+     * impossible to measure without standing up a whole screen. Separating the two is what lets
+     * `SkeletonCostTest` time this path against [bitmapFrom] over the *same* hierarchy — the only
+     * honest comparison between them.
      */
     internal fun frameFrom(rootView: View, backgroundColor: Int): SkeletonFrame? {
         if (rootView.width == 0 || rootView.height == 0) return null
@@ -223,12 +216,12 @@ class SkeletonGenerator {
     }
 
     /**
-     * Achata a árvore na ordem de pintura, do jeito que [renderTreeToCanvas] pinta.
+     * Flattens the tree in paint order, the order [renderTreeToCanvas] paints in.
      *
-     * Pré-ordem, pai antes dos filhos — é o que faz o filho cair em cima. E pula
-     * o nó transparente mantendo os filhos, que é como `COMPOSE_HOST` se marca:
-     * ele existe para dizer onde o Compose começa, o que um wireframe não mostra.
-     * Divergir daqui mudaria a imagem sem que nada avisasse.
+     * Pre-order, parent before children — that is what puts a child on top. And it skips a
+     * transparent node while keeping its children, which is how `COMPOSE_HOST` marks itself: it
+     * exists to say where Compose begins, which is not something a wireframe shows. Diverging from
+     * here would change the image with nothing to announce it.
      */
     private fun flattenForWire(node: SkeletonNode, into: MutableList<SkeletonRect>) {
         if (node.color != Color.TRANSPARENT) {
@@ -250,7 +243,7 @@ class SkeletonGenerator {
     private fun generateSkeletonBitmapSync(activity: Activity, rootView: View): Bitmap? =
         bitmapFrom(rootView, getWindowBackgroundColor(activity))
 
-    /** A mesma varredura de [frameFrom], mas desenhando aqui. Ver o kdoc de lá. */
+    /** The same scan as [frameFrom], drawing here instead. See its kdoc. */
     internal fun bitmapFrom(rootView: View, backgroundColor: Int): Bitmap? {
         if (rootView.width == 0 || rootView.height == 0) return null
 
@@ -264,7 +257,7 @@ class SkeletonGenerator {
         return bitmap
     }
 
-    /** Só a varredura, para separar o custo irredutível do que cada modo acrescenta. */
+    /** The scan alone, to separate the irreducible cost from what each mode adds to it. */
     internal fun scanOnly(rootView: View): Int {
         val tree = scanViewHierarchy(rootView) ?: return 0
         val rects = ArrayList<SkeletonRect>(64)
@@ -291,7 +284,7 @@ class SkeletonGenerator {
     }
 
     /**
-     * Escaneia a hierarquia completa, detectando Views Android e Compose
+     * Walks the whole hierarchy, picking up both Android Views and Compose
      */
     private fun scanViewHierarchy(view: View): SkeletonNode? {
         if (view.visibility != View.VISIBLE || view.width <= 0 || view.height <= 0) return null
@@ -324,42 +317,17 @@ class SkeletonGenerator {
     }
 
     /**
-     * Detecta o host de uma composição.
+     * Recognises the host of a composition.
      *
-     * `AndroidComposeView` é interno do Compose e o R8 o renomeia — em release
-     * vira algo como `p0.r`, então casar o nome da classe nunca acerta. Quando
-     * isso acontece a tela Compose é tratada como view clássica: o gerador
-     * percorre a árvore de Views, não encontra filhos dentro do host, e produz
-     * um skeleton vazio sem erro nenhum.
+     * `AndroidComposeView` is internal to Compose and R8 renames it — in release it becomes
+     * something like `p0.r`, so matching on the class name never hits. When that happens a Compose
+     * screen is treated as a classic view: the generator walks the View tree, finds no children
+     * inside the host, and produces an empty skeleton with no error at all.
      *
-     * `RootForTest` é a interface pública que esse host implementa (via
-     * `ViewRootForTest`). Checar o tipo é resolvido pelo compilador contra a
-     * classe real e sobrevive à ofuscação.
+     * `RootForTest` is the public interface that host implements, through `ViewRootForTest`. A type
+     * check is resolved by the compiler against the real class and survives obfuscation.
      */
     private fun isComposeView(view: View): Boolean = view is RootForTest
-
-    fun getCurrentActivity(): Activity? = try {
-        Class.forName("android.app.ActivityThread")
-            .getMethod("currentActivityThread")
-            .invoke(null)
-            .let { activityThread ->
-                @Suppress("UNCHECKED_CAST")
-                val mActivities = activityThread.javaClass
-                    .getDeclaredField("mActivities")
-                    .apply { isAccessible = true }
-                    .get(activityThread) as Map<Any, Any>
-
-                mActivities.values
-                    .mapNotNull { record ->
-                        record.javaClass.getDeclaredField("activity")
-                            .apply { isAccessible = true }
-                            .get(record) as? Activity
-                    }
-                    .lastOrNull { it.window?.decorView?.isShown == true }
-            }
-    } catch (e: Throwable) {
-        null
-    }
 
     @OptIn(UiToolingDataApi::class)
     private fun scanComposeHierarchyUsingTooling(composeView: View): List<SkeletonNode> {
@@ -371,10 +339,10 @@ class SkeletonGenerator {
 
             val rootGroup = composer.compositionData.asTree()
 
-            // A árvore de semantics é a fonte de tipo que SOBREVIVE à minificação:
-            // acessibilidade depende dela, então o R8 não pode removê-la. Os nomes
-            // de composable, em contraste, vêm da source information do compilador,
-            // que o runtime do Compose apaga em release via -assumenosideeffects.
+            // The semantics tree is the source of type information that SURVIVES minification:
+            // accessibility depends on it, so R8 cannot strip it. Composable names, by contrast,
+            // come from the compiler's source information, which the Compose runtime removes in
+            // release through -assumenosideeffects.
             val semantics = SemanticsIndex((composeView as? RootForTest)?.semanticsOwner)
             if (semantics.isEmpty) {
                 Log.d("SkeletonGenerator", "No semantics available; falling back to call-chain names")
@@ -382,14 +350,14 @@ class SkeletonGenerator {
 
             val layoutInfos = rootGroup.computeLayoutInfos(semantics = semantics)
 
-            // Traduz para coordenadas de tela.
+            // Translated into screen coordinates.
             //
-            // `Group.box` é relativo à raiz da composição; `scanViewHierarchy` usa
-            // `getLocationOnScreen` para as Views. Os dois iam para a mesma árvore sem
-            // conversão — o que só passava desapercebido porque um app edge-to-edge
-            // coloca o `AndroidComposeView` em (0,0) e o deslocamento é zero. Fora
-            // disso o wireframe sai deslocado, e uma máscara deslocada deixa o texto
-            // à vista: erro cosmético num caso, falha de privacidade no outro.
+            // `Group.box` is relative to the composition's root; `scanViewHierarchy` uses
+            // `getLocationOnScreen` for Views. Both went into the same tree unconverted — which
+            // went unnoticed only because an edge-to-edge app puts the `AndroidComposeView` at
+            // (0,0), making the offset zero. Anywhere else the wireframe comes out shifted, and a
+            // shifted mask leaves text in view: cosmetic in one case, a privacy failure in the
+            // other.
             val hostLocation = IntArray(2)
             composeView.getLocationOnScreen(hostLocation)
 
@@ -404,7 +372,7 @@ class SkeletonGenerator {
         }
     }
 
-    /** Move uma subárvore inteira, para levar a composição ao espaço de tela. */
+    /** Moves a whole subtree, to bring the composition into screen space. */
     private fun translate(node: SkeletonNode, dx: Int, dy: Int): SkeletonNode {
         if (dx == 0 && dy == 0) return node
         val moved = Rect(node.rect)
@@ -494,17 +462,17 @@ class SkeletonGenerator {
     }
 
     /**
-     * Desembrulha uma [Composition] até chegar na implementação real.
+     * Unwraps a [Composition] down to the real implementation.
      *
-     * NÃO compara nome de classe. Num build de release minificado o R8 renomeia
-     * `androidx.compose.ui.platform.WrappedComposition` para algo como `p0.V0`, e
-     * `androidx.compose.runtime.CompositionImpl` para `H.w` — a versão anterior
-     * comparava `this::class.java.name` com o literal, nunca casava, devolvia o
-     * wrapper sem desembrulhar e o [getComposer] logo em seguida retornava null.
-     * Resultado: toda tela Compose gerava um skeleton vazio, em silêncio.
+     * Does **not** compare class names. In a minified release build R8 renames
+     * `androidx.compose.ui.platform.WrappedComposition` to something like `p0.V0` and
+     * `androidx.compose.runtime.CompositionImpl` to `H.w` — the previous version compared
+     * `this::class.java.name` against the literal, never matched, returned the wrapper unwrapped, and
+     * [getComposer] right after it returned null. The result: every Compose screen produced an empty
+     * skeleton, silently.
      *
-     * Buscar por *tipo* funciona depois da ofuscação: `is Composition` é resolvido
-     * pelo compilador contra a classe real, não pelo nome.
+     * Looking by *type* works after obfuscation: `is Composition` is resolved by the compiler against
+     * the real class rather than by name.
      */
     private fun Composition.unwrap(): Composition {
         var current: Composition = this
@@ -525,7 +493,7 @@ class SkeletonGenerator {
     }
 
     /**
-     * Extrai o [Composer] de uma [Composition], também por tipo.
+     * Pulls the [Composer] out of a [Composition], by type as well.
      */
     private fun Composition.getComposer(): Composer? {
         val found = javaClass.declaredFields.asSequence()
@@ -610,9 +578,9 @@ class SkeletonGenerator {
 
 
     /**
-     * Deriva o tipo do nó a partir da árvore de semantics.
+     * Derives a node's type from the semantics tree.
      *
-     * Retorna null quando a semantics não diz nada de útil, para o chamador cair
+     * Returns null when semantics says nothing useful, so the caller falls
      * no heurístico por nome.
      */
     private fun classifyBySemantics(nodes: List<SemanticsNode>): NodeType? {
@@ -631,7 +599,7 @@ class SkeletonGenerator {
                 }
             }
 
-            // Campo editável: EditableText, ou a ação de escrita quando o valor está vazio.
+            // An editable field: EditableText, or the set-text action when the value is empty.
             if (config.getOrNull(SemanticsProperties.EditableText) != null ||
                 config.getOrNull(SemanticsActions.SetText) != null
             ) {
@@ -642,12 +610,12 @@ class SkeletonGenerator {
                 return NodeType.TEXT
             }
 
-            // Descrição sem texto é o padrão de ícone/imagem.
+            // A description with no text is the icon/image pattern.
             if (config.getOrNull(SemanticsProperties.ContentDescription)?.isNotEmpty() == true) {
                 return NodeType.IMAGE
             }
 
-            // Clicável sem role explícito ainda é um alvo de toque.
+            // Clickable with no explicit role is still a touch target.
             if (config.getOrNull(SemanticsActions.OnClick) != null) {
                 return NodeType.BUTTON
             }
@@ -693,7 +661,7 @@ class SkeletonGenerator {
     }
 
     /**
-     * Determina o tipo de um View Android
+     * Works out the type of an Android View
      */
     private fun determineNodeType(view: View): NodeType {
         if (isComposeView(view)) return NodeType.COMPOSE_HOST
@@ -750,99 +718,6 @@ class SkeletonGenerator {
         }
 
         return Pair(defaultColors[type] ?: Color.LTGRAY, Paint.Style.FILL)
-    }
-
-    /**
-     * Renderiza a hierarquia de views como texto ASCII art
-     */
-    fun renderHierarchyAsText(): String {
-        val activity = getCurrentActivity() ?: return "Nenhuma Activity encontrada no momento"
-
-        val rootView = activity.window?.decorView ?: return "Window/decorView não disponível"
-
-        if (rootView.width <= 0 || rootView.height <= 0) {
-            return "View raiz ainda não está pronta (${rootView.width}×${rootView.height})"
-        }
-
-        val skeletonTree = scanViewHierarchy(rootView)
-            ?: return "Não foi possível escanear a hierarquia de views"
-
-        return buildString {
-            appendLine("${activity.javaClass.simpleName} (${activity::class.qualifiedName})")
-            appendLine("  package: ${activity.packageName}")
-            appendLine("  window focus: ${rootView.hasWindowFocus()}")
-            appendLine("  root view: ${rootView.javaClass.simpleName} (${rootView.width}×${rootView.height})")
-
-            renderNodeAsText(
-                node = skeletonTree,
-                depth = 0,
-                isLast = true,
-                parentIsLast = booleanArrayOf()
-            )
-        }
-    }
-
-    private fun StringBuilder.renderNodeAsText(
-        node: SkeletonNode,
-        depth: Int,
-        isLast: Boolean,
-        parentIsLast: BooleanArray
-    ) {
-        // Non-breaking space no início
-        append('\u00a0')
-
-        for (i in 0 until depth - 1) {
-            append(if (parentIsLast[i]) "  " else "│ ")
-        }
-
-        if (depth > 0) {
-            append(if (isLast) "╰─" else "├─")
-        }
-
-        val displayName = node.name ?: when (node.type) {
-            NodeType.TEXT -> "Text"
-            NodeType.BUTTON -> "Button"
-            NodeType.IMAGE -> "Image"
-            NodeType.INPUT -> "TextField"
-            NodeType.CONTAINER -> "Container"
-            NodeType.WEBVIEW -> "WebView"
-            NodeType.CARD -> "Card"
-            NodeType.COMPOSE_HOST -> "AndroidComposeView"
-            NodeType.UNKNOWN -> "Unknown"
-        }
-        append(displayName)
-
-        // Atributos
-        append(" { ")
-        val attributes = mutableListOf<String>()
-
-        val width = node.rect.width()
-        val height = node.rect.height()
-        attributes.add("${width}×${height}px")
-        attributes.add("pos:(${node.rect.left},${node.rect.top})")
-
-        if (node.color != Color.TRANSPARENT) {
-            val colorHex = String.format("#%08X", node.color)
-            attributes.add("color:$colorHex")
-        }
-
-        attributes.add(if (node.style == Paint.Style.FILL) "fill" else "stroke")
-
-        if (node.children.isNotEmpty()) {
-            attributes.add("children:${node.children.size}")
-        }
-
-        append(attributes.joinToString(", "))
-        append(" }")
-        appendLine()
-
-        // Renderiza filhos recursivamente
-        node.children.forEachIndexed { index, child ->
-            val childIsLast = (index == node.children.size - 1)
-            val newParentIsLast = parentIsLast.copyOf(depth + 1)
-            newParentIsLast[depth] = isLast
-            renderNodeAsText(child, depth + 1, childIsLast, newParentIsLast)
-        }
     }
 
     private fun extractColorFromDrawable(drawable: Drawable?): Int? {
@@ -903,17 +778,18 @@ class SkeletonGenerator {
             isAntiAlias = true
         }
 
-        // Canto reto, e os preenchidos desenham igual aos contornados.
+        // Square corners, and filled rectangles draw the same as outlined ones.
         //
-        // Havia um `drawRoundRect(rect, 12f, 12f)` aqui, e o renderizador do servidor copiou
-        // o 12 para que mover o desenho para lá não mudasse o que o usuário vê. Mudou de todo
-        // jeito: este `Paint` tem `isAntiAlias`, o do servidor não tem antialiasing nenhum, e
-        // o mesmo arco que aqui sai suavizado sai de lá em degraus de um pixel. Copiar o raio
-        // sem poder copiar o antialiasing deixou o canto mais aparente do que o original.
+        // There was a `drawRoundRect(rect, 12f, 12f)` here, and the server's renderer copied the 12
+        // so that moving the drawing over there would not change what a user sees. It changed
+        // anyway: this `Paint` has `isAntiAlias`, the server's has no antialiasing at all, and the
+        // same arc that comes out smooth here comes out in one-pixel steps there. Copying the radius
+        // without being able to copy the antialiasing made the corner *more* obvious than the
+        // original.
         //
-        // Reto é o que este desenho já parecia ser, e é a única versão que não depende de
-        // antialiasing para parecer certa — não há arco para amostrar mal. Retângulo fino é
-        // quem mais ganha: um divisor de 6px tinha o raio limitado a 3 e virava pílula.
+        // Square is what this drawing already looked like, and it is the only version that does not
+        // depend on antialiasing to look right — there is no arc to sample badly. A thin rectangle
+        // gains the most: a 6px divider had its radius clamped to 3 and came out a pill.
         canvas.drawRect(node.rect, paint)
 
         node.children.forEach { child ->
