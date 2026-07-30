@@ -159,7 +159,14 @@ publishing {
             // Minor rather than patch: an existing consumer starts reporting a layer it did not
             // before, with no code change on their side, and the dashboard gains a wireframe view
             // of screens that previously had none.
-            version = "0.8.0"
+            // 0.8.1 makes the config constructible from Java. Every parameter after `apiUrl` has a
+            // default and Java cannot use one, so a Java caller had to pass all twenty-one in order
+            // — and each field added since moved every argument after it onto a different
+            // parameter. `@JvmOverloads` generates the overloads that drop trailing parameters.
+            //
+            // Additive: existing constructors keep their signatures, and Kotlin callers using named
+            // arguments see no difference.
+            version = "0.8.1"
 
             afterEvaluate {
                 from(components["release"])

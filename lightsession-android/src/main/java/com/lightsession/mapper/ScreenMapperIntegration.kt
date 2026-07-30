@@ -991,15 +991,12 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         val appVersionCode = getAppVersionCode()
         val appVersionName = getAppVersionName()
 
+        // No null check on the theme: `getCurrentTheme` returns a String and falls back to
+        // "Unknown" itself, so the branch that used to be here was dead and the compiler said so.
+        // What can still be absent is the Activity, which is what the safe call covers.
         val screenParams = currentActivityWeakRef?.get()?.run {
-            val theme = getCurrentTheme(this)
-
-            if (theme != null) {
-                val screen = ScreenGeometry.size()
-                ScreenParams(screen.width, screen.height, theme)
-            } else {
-                null
-            }
+            val screen = ScreenGeometry.size()
+            ScreenParams(screen.width, screen.height, getCurrentTheme(this))
         }
 
         fun generateId(screenName: String): String? {

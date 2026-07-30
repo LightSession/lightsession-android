@@ -9,8 +9,20 @@ package com.lightsession
  * so the artifact published to GitHub Packages as `0.1.11-alpha` could only ever
  * talk to one developer's laptop. A required parameter fails at the call site;
  * a default would fail silently in production.
+ *
+ * ## Calling this from Java
+ *
+ * Every parameter after [apiUrl] has a default, and Java cannot use a Kotlin default — so without
+ * [JvmOverloads] a Java caller has to pass all twenty-one, in order. That is not a hypothetical
+ * inconvenience: the sample app did exactly that, and each field added since moved every argument
+ * after it onto a different parameter. It broke on `wireframeMode` receiving a millisecond count.
+ *
+ * The generated overloads drop parameters from the end, so `new LightSessionConfig(key, ingest, api)`
+ * works and picking up a later field still means passing everything before it. Java callers who need
+ * one of the tail options should pass them and stop there; Kotlin callers should use named arguments
+ * and ignore all of this.
  */
-data class LightSessionConfig(
+data class LightSessionConfig @JvmOverloads constructor(
     val apiKey: String,
 
     /**
