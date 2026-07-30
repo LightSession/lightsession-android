@@ -33,6 +33,26 @@
         <activity
             android:name="com.sample.lightsession.ComposeWithNavigationActivity"
             android:exported="false" />
+
+        <!-- One per shape the screen mapper decides between. See MainActivity's hub. -->
+        <activity
+            android:name="com.sample.lightsession.LegacyActivity"
+            android:exported="false" />
+        <activity
+            android:name="com.sample.lightsession.FragmentNavActivity"
+            android:exported="false" />
+        <activity
+            android:name="com.sample.lightsession.HybridNavActivity"
+            android:exported="false" />
+        <activity
+            android:name="com.sample.lightsession.UntrackedComposeNavActivity"
+            android:exported="false" />
+        <activity
+            android:name="com.sample.lightsession.NestedComposeNavActivity"
+            android:exported="false" />
+        <activity
+            android:name="com.sample.lightsession.TabsAndModalActivity"
+            android:exported="false" />
     </application>
 
 </manifest>

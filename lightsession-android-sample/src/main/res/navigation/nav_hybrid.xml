@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A fragment graph where one destination renders with Compose. The migration shape, and the one that
+  used to go dark.
+
+  A fragment's views hang under the Activity's content view, so as soon as the Compose destination is
+  showing, "does this Activity use Compose" is true for the whole Activity — and the mapper's Compose
+  test ran before the fragment registration and skipped it. The Activity then reported neither its
+  destinations nor its own name.
+
+  It also made the behaviour depend on timing: the test runs once, at resume. Background the app on
+  the Compose destination and come back, and the Activity took the Compose path; do it from the XML
+  destination and it took the conventional one. Same build, same screens.
+
+  The start destination is the XML one on purpose, so the second destination is reached by a real
+  navigation rather than by being first.
+-->
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/nav_hybrid"
+    app:startDestination="@id/hybridXml">
+
+    <fragment
+        android:id="@+id/hybridXml"
+        android:name="com.sample.lightsession.fragments.XmlOneFragment"
+        android:label="hybridXml">
+        <action
+            android:id="@+id/toHybridCompose"
+            app:destination="@id/hybridCompose" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/hybridCompose"
+        android:name="com.sample.lightsession.fragments.ComposeInsideFragment"
+        android:label="hybridCompose" />
+</navigation>

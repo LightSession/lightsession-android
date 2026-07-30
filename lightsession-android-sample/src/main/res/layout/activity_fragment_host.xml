@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A bare container rather than a FragmentContainerView with app:navGraph.
+
+  The host is added in code with NavHostFragment.create(graph), which is what lets one layout serve
+  both fragment-based screens: the conventional shape and the hybrid one differ only by which graph
+  they load. What the SDK looks for is a NavHostFragment in the FragmentManager, and this produces a
+  real one — inflating it from XML would too, at the cost of a second identical layout.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/nav_container"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent" />

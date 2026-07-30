@@ -1,95 +1,153 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    xmlns:tools="http://schemas.android.com/tools"
+<!--
+  The hub. Scrollable, because breadth is the point of this app: one entry per navigation shape the
+  mapper has to recognise, so each can be walked deliberately rather than stumbled into.
+
+  Two sections. The first calls the SDK's API directly; the second opens a screen shaped to exercise
+  one branch of the mapper's decision about where screen names come from.
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/main"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    tools:context=".MainActivity">
+    android:layout_height="match_parent">
 
-    <TextView
-        android:id="@+id/hello_world_text"
-        android:layout_width="wrap_content"
+    <LinearLayout
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Hello World!"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintVertical_bias="0.8"/>
+        android:orientation="vertical"
+        android:padding="20dp">
 
-    <Button
-        android:id="@+id/capture_button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/start_recording"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toTopOf="parent"
-        android:layout_marginTop="16dp" />
+        <TextView
+            android:id="@+id/hello_world_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="LightSession sample"
+            android:textSize="22sp"
+            android:textStyle="bold" />
 
-    <Button
-        android:id="@+id/go_to_second_button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Ir para Segunda Tela"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/capture_button"
-        android:layout_marginTop="16dp" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="4dp"
+            android:paddingBottom="12dp"
+            android:text="XML views. Every screen below is a different shape the screen mapper has to recognise."
+            android:textSize="13sp" />
 
-    <Button
-        android:id="@+id/identify_user_button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Identificar Usuário"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/go_to_second_button"
-        android:layout_marginTop="16dp" />
+        <!-- SDK API =========================================================== -->
 
-    <Button
-        android:id="@+id/track_event_button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Toggle sub-screen"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/identify_user_button"
-        android:layout_marginTop="16dp" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:text="SDK calls"
+            android:textAllCaps="true"
+            android:textSize="12sp"
+            android:textStyle="bold" />
 
-    <Button
-        android:id="@+id/crash_button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Simular Crash (Quebra o App)"
-        android:backgroundTint="#FF0000"
-        android:textColor="#FFFFFF"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/track_event_button"
-        android:layout_marginTop="16dp" />
+        <Button
+            android:id="@+id/capture_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/start_recording" />
 
-    <Button
-        android:id="@+id/soft_error_button"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Simular Erro Suave (Não Quebra)"
-        android:backgroundTint="#FFA500"
-        android:textColor="#FFFFFF"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/crash_button"
-        android:layout_marginTop="16dp" />
+        <Button
+            android:id="@+id/identify_user_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Identify a user" />
 
-    <View
-        android:id="@+id/colorChangingView"
-        android:layout_width="100dp"
-        android:layout_height="100dp"
-        android:background="#FF0000"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/soft_error_button"
-        android:layout_marginTop="32dp" />
+        <Button
+            android:id="@+id/track_event_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Toggle sub-screen" />
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+        <Button
+            android:id="@+id/crash_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#B00020"
+            android:text="Crash (uncaught)"
+            android:textColor="#FFFFFF" />
+
+        <Button
+            android:id="@+id/soft_error_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#F57C00"
+            android:text="Handled exception"
+            android:textColor="#FFFFFF" />
+
+        <!-- navigation shapes ================================================= -->
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="20dp"
+            android:text="Navigation shapes"
+            android:textAllCaps="true"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/go_to_second_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Activity → Activity (XML views)" />
+
+        <Button
+            android:id="@+id/go_legacy_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Legacy Activity (pre-AndroidX)" />
+
+        <Button
+            android:id="@+id/go_fragment_nav_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="NavHostFragment (XML destinations)" />
+
+        <Button
+            android:id="@+id/go_hybrid_nav_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="NavHostFragment + a Compose destination" />
+
+        <Button
+            android:id="@+id/go_compose_simple_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Compose Activity (one screen)" />
+
+        <Button
+            android:id="@+id/go_compose_navhost_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Compose NavHost (tracked)" />
+
+        <Button
+            android:id="@+id/go_compose_untracked_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Compose NavHost (NOT tracked)" />
+
+        <Button
+            android:id="@+id/go_compose_nested_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Nested Compose NavHosts" />
+
+        <Button
+            android:id="@+id/go_tabs_modal_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Tabs, a dialog and a declared part" />
+
+        <!-- Repaints once a second, so a still hub gives the recorder something to record. -->
+        <View
+            android:id="@+id/colorChangingView"
+            android:layout_width="match_parent"
+            android:layout_height="80dp"
+            android:layout_marginTop="20dp" />
+    </LinearLayout>
+</ScrollView>

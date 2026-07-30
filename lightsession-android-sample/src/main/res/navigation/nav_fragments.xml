@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Two XML fragments, no Compose anywhere. The conventional Navigation shape.
+
+  The SDK finds this graph's NavController through the FragmentManager and listens to it, so each
+  destination is a screen and the Activity's own name never appears. Nothing to integrate.
+-->
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/nav_fragments"
+    app:startDestination="@id/fragmentOne">
+
+    <fragment
+        android:id="@+id/fragmentOne"
+        android:name="com.sample.lightsession.fragments.XmlOneFragment"
+        android:label="fragmentOne">
+        <action
+            android:id="@+id/toFragmentTwo"
+            app:destination="@id/fragmentTwo" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/fragmentTwo"
+        android:name="com.sample.lightsession.fragments.XmlTwoFragment"
+        android:label="fragmentTwo" />
+</navigation>

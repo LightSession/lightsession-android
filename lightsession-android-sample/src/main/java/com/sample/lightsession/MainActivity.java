@@ -53,6 +53,18 @@ public class MainActivity extends AppCompatActivity {
         goToSecondButton.setOnClickListener(v ->
                 startActivity(new Intent(MainActivity.this, SecondActivity.class)));
 
+        // One entry per shape the mapper decides between. They are separate screens rather than one
+        // configurable screen on purpose: what is being exercised is the decision made at
+        // `onActivityResumed`, and that is per Activity.
+        open(R.id.go_legacy_button, LegacyActivity.class);
+        open(R.id.go_fragment_nav_button, FragmentNavActivity.class);
+        open(R.id.go_hybrid_nav_button, HybridNavActivity.class);
+        open(R.id.go_compose_simple_button, ComposeActivity.class);
+        open(R.id.go_compose_navhost_button, ComposeWithNavigationActivity.class);
+        open(R.id.go_compose_untracked_button, UntrackedComposeNavActivity.class);
+        open(R.id.go_compose_nested_button, NestedComposeNavActivity.class);
+        open(R.id.go_tabs_modal_button, TabsAndModalActivity.class);
+
         // Start and stop recording, which is what this button always said it did.
         //
         // The label is set from the SDK's own state rather than from a local boolean, so it cannot
@@ -127,6 +139,12 @@ public class MainActivity extends AppCompatActivity {
             }
         };
         colorChangeHandler.post(colorChangeRunnable);
+    }
+
+    /** Wires a hub button to the Activity it demonstrates. */
+    private void open(int buttonId, Class<?> target) {
+        findViewById(buttonId).setOnClickListener(v ->
+                startActivity(new Intent(MainActivity.this, target)));
     }
 
     private void updateRecordingLabel(Button button) {
