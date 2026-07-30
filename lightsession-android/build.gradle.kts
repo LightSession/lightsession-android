@@ -136,7 +136,18 @@ publishing {
             // names are lower-cased consistently, so a consumer upgrading reports
             // `home/manager` where it used to report `Home/Manager` — the server keys on
             // the name, so both rows exist until the old one is deleted.
-            version = "0.6.0"
+            //
+            // 0.7.1 changes where the screen size comes from, and makes it one read.
+            //
+            // 0.7.0 asked `Resources.getSystem()`, which answers correctly but hands back the
+            // framework's live `DisplayMetrics` — an object `getRealMetrics` and `getMetrics` write
+            // into, so anything in the host process can rewrite it for every reader. The display is
+            // now asked directly, into metrics this SDK owns. `size()` also returns both sides at
+            // once, so a rotation between two reads cannot yield a pair that never existed.
+            //
+            // Hardening rather than a fix: 0.7.0 produced correct captures, including the landscape
+            // ones that prompted the look. A patch, and nothing on 0.7.0 is wrong.
+            version = "0.7.1"
 
             afterEvaluate {
                 from(components["release"])

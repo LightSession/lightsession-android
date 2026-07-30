@@ -187,6 +187,11 @@ class LightSession private constructor() {
         }
         this.accessKey = config.apiKey
         this.config = config
+        // First, because it decides what "the screen" means for everything below: the bitmap a
+        // capture allocates, the size recorded against it, and the divisor every touch coordinate
+        // is normalised by. Un-attached it falls back to a metrics object shared with the whole
+        // process, which is exactly what [ScreenGeometry] exists to stop depending on.
+        ScreenGeometry.attach(application)
         // Set before anything can capture. `ScreenDrawing` consults this at capture
         // time, so a recorder started later still masks.
         Masking.configure(config)

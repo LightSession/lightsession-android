@@ -1123,13 +1123,15 @@ class SessionDataManager(
             }
         }
 
+        val screen = ScreenGeometry.size()
+
         return DeviceInfo(
             // The server divides raw touch pixels by these to get the 0..1 coordinates every
             // heatmap is built from, so they have to describe the image the heat is drawn on.
             // They used to come from the app context, which reports the Activity's area — 2337
             // of a 2400-pixel display — while the capture is the display. See [ScreenGeometry].
-            screenWidth = ScreenGeometry.width,
-            screenHeight = ScreenGeometry.height,
+            screenWidth = screen.width,
+            screenHeight = screen.height,
             density = ScreenGeometry.density,
             androidVersion = Build.VERSION.RELEASE,
             deviceModel = Build.MODEL,

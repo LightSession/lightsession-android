@@ -275,12 +275,13 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             val appVersionCode = getAppVersionCode()
             val appVersionName = getAppVersionName()
             val theme = getCurrentTheme(activity)
+            val screen = ScreenGeometry.size()
             generateScreenID(
                 screenName = screenName,
                 appVersionName = appVersionName,
                 appVersionCode = appVersionCode,
-                width = ScreenGeometry.width,
-                height = ScreenGeometry.height,
+                width = screen.width,
+                height = screen.height,
                 theme = theme
             )
         } catch (e: Exception) {
@@ -998,7 +999,8 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             val theme = getCurrentTheme(this)
 
             if (theme != null) {
-                ScreenParams(ScreenGeometry.width, ScreenGeometry.height, theme)
+                val screen = ScreenGeometry.size()
+                ScreenParams(screen.width, screen.height, theme)
             } else {
                 null
             }
@@ -1077,8 +1079,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             val appVersionName = getAppVersionName()
             val currentTheme = getCurrentTheme(activity)
 
-            val screenWidth = ScreenGeometry.width
-            val screenHeight = ScreenGeometry.height
+            val screen = ScreenGeometry.size()
+            val screenWidth = screen.width
+            val screenHeight = screen.height
 
             val screenId = generateScreenID(
                 screenName = to,
@@ -1190,8 +1193,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                 val appVersionName = getAppVersionName()
                 val currentTheme = getCurrentTheme(activity)
 
-                val screenWidth = ScreenGeometry.width
-                val screenHeight = ScreenGeometry.height
+                val screen = ScreenGeometry.size()
+                val screenWidth = screen.width
+                val screenHeight = screen.height
 
                 val screenId = generateScreenID(
                     screenName = screenName,
@@ -1346,9 +1350,11 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             val appVersionName = getAppVersionName()
             val currentTheme = getCurrentTheme(activity)
 
-            // Get dimensions from activity - USE THIS FOR CONSISTENCY
-            val screenWidth = ScreenGeometry.width
-            val screenHeight = ScreenGeometry.height
+            // Read once, and before the capture: these size the screen id this screenshot is
+            // filed under, so they must be the same pair the capture itself was taken at.
+            val screen = ScreenGeometry.size()
+            val screenWidth = screen.width
+            val screenHeight = screen.height
 
             val (bitmapBase64, _) = screenDrawing.captureScreenAsBase64Async()
 

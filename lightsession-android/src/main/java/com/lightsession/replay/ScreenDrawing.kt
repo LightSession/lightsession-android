@@ -227,8 +227,9 @@ internal class ScreenDrawing {
         val layers = mutableListOf<SurfaceLayer>()
 
         if (baseWindow != null) {
+            val screen = ScreenGeometry.size()
             layers.add(
-                SurfaceLayer(baseWindow, Rect(0, 0, ScreenGeometry.width, ScreenGeometry.height)),
+                SurfaceLayer(baseWindow, Rect(0, 0, screen.width, screen.height)),
             )
         }
 
@@ -286,8 +287,11 @@ internal class ScreenDrawing {
         }
 
         val effectiveScale = scaleFactor.coerceIn(0.1f, 1.0f)
-        val width = (ScreenGeometry.width * effectiveScale).toInt()
-        val height = (ScreenGeometry.height * effectiveScale).toInt()
+        // One read for both sides: this pair is the bitmap's shape, and a mismatched pair is a
+        // bitmap that matches no screen anyone ever saw.
+        val screen = ScreenGeometry.size()
+        val width = (screen.width * effectiveScale).toInt()
+        val height = (screen.height * effectiveScale).toInt()
         if (width <= 0 || height <= 0) {
             onResult(null)
             return
@@ -435,8 +439,9 @@ internal class ScreenDrawing {
             val params = windowData.params
 
             val effectiveScale = scaleFactor.coerceIn(0.1f, 1.0f)
-            val width = (ScreenGeometry.width * effectiveScale).toInt()
-            val height = (ScreenGeometry.height * effectiveScale).toInt()
+            val screen = ScreenGeometry.size()
+            val width = (screen.width * effectiveScale).toInt()
+            val height = (screen.height * effectiveScale).toInt()
             if (width <= 0 || height <= 0) return null
 
             val config =
@@ -765,8 +770,9 @@ internal class ScreenDrawing {
         view: View,
         layoutParams: WindowManager.LayoutParams?,
     ): Pair<Int, Int> {
-        val screenWidth = ScreenGeometry.width
-        val screenHeight = ScreenGeometry.height
+        val screen = ScreenGeometry.size()
+        val screenWidth = screen.width
+        val screenHeight = screen.height
 
         return try {
             if (layoutParams != null) {
@@ -829,8 +835,9 @@ internal class ScreenDrawing {
         height: Int? = null
     ): ByteArray? {
         return try {
-            val screenWidth = width ?: ScreenGeometry.width
-            val screenHeight = height ?: ScreenGeometry.height
+            val screen = ScreenGeometry.size()
+            val screenWidth = width ?: screen.width
+            val screenHeight = height ?: screen.height
 
             // Synchronizes the scalefactor between the two classes
             skeletonGenerator.setGlobalScaleFactor(scaleFactor)
@@ -900,10 +907,11 @@ internal class ScreenDrawing {
         height: Int? = null
     ): Bitmap? {
         return try {
-            val screenWidth = width ?: ScreenGeometry.width
-            val screenHeight = height ?: ScreenGeometry.height
+            val screen = ScreenGeometry.size()
+            val screenWidth = width ?: screen.width
+            val screenHeight = height ?: screen.height
 
-            // Sincroniza o scaleFactor entre as duas classes
+            // Keeps the scale factor in step between the two classes
             skeletonGenerator.setGlobalScaleFactor(scaleFactor)
 
             skeletonGenerator.generateRandomSkeleton(screenWidth, screenHeight, scaleFactor)
