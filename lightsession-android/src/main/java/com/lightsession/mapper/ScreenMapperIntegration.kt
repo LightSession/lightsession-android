@@ -45,10 +45,30 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     private var application: Application? = null
     private var activityLifecycleCallbacks: Application.ActivityLifecycleCallbacks? = null
 
-    private val registeredComposeControllers = mutableSetOf<WeakReference<NavController>>()
+    /**
+     * The Compose NavControllers handed over with `withNavigationTracking()`, each with the
+     * Activity whose composition handed it over.
+     *
+     * The owner is the part that was missing. This was a flat set of controllers, so the only
+     * question it could answer was "has *any* Activity in this app integrated" — and the answer was
+     * used to decide what to do about *this* one. An app with a NavHost screen and a plain Compose
+     * screen therefore reported the plain one as nothing at all: the NavHost's controller was in the
+     * set, so the check concluded there was nothing to do.
+     */
+    private val registeredComposeControllers = mutableSetOf<ComposeController>()
 
-    /** Warned once per process; the message is advice, not an event. */
-    private var composeIntegrationWarned = false
+    private class ComposeController(
+        val controller: WeakReference<NavController>,
+        val owner: WeakReference<Activity>,
+    )
+
+    /**
+     * Activity classes the integration advice has already been logged for.
+     *
+     * Per class rather than once per process, for the same reason: one Activity integrating used to
+     * silence the advice for every other, which is exactly when it is worth reading.
+     */
+    private val composeAdviceGiven = mutableSetOf<String>()
 
     /** The delayed integration check runs here, because
      *  `registeredComposeControllers` is read and written on the main thread
@@ -525,7 +545,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                          * screen map with no screen names, which is indistinguishable
                          * from the SDK being broken. Hence the check below.
                          */
-                        warnIfNavControllerMissing(activity)
+                        resolveComposeScreen(activity)
                     } else {
                         if (checkNavControllerConventional(activity)) {
                             /**
@@ -663,40 +683,69 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     }
 
     /**
-     * Complains, once, if a Compose host never handed over its NavController.
+     * Settles what a Compose Activity's screen is, once its composition has had a chance to run.
      *
-     * Delayed rather than immediate: `withNavigationTracking()` registers from a
-     * `LaunchedEffect`, which runs after the first composition, so at
-     * `onActivityResumed` nothing has arrived yet and an immediate check would warn
-     * at every app that *does* integrate correctly.
+     * Two shapes reach here and they need opposite treatment:
      *
-     * The message names the exact line to add. A warning that only says "screen
-     * tracking is not working" costs the reader the same afternoon this cost me.
+     *  * **One Activity, one Compose screen.** No NavController, nothing to hand over, and the
+     *    Activity's name *is* the screen. Very common, and it used to be recorded as nothing:
+     *    `isActivityUsingCompose` was true, so the branch that reports an Activity was skipped and
+     *    the only thing that happened was a warning. A screen a user spent half a minute on simply
+     *    did not exist, and the flow through it read as one navigation straight past.
+     *  * **Several Compose screens inside one Activity.** The Activity name says nothing — every
+     *    destination shares it — so the destinations are the screens, and only
+     *    `rememberNavController().withNavigationTracking()` can supply them. Compose keeps no global
+     *    registry of NavControllers, so there is nothing for the SDK to find on its own.
+     *
+     * Nothing distinguishes the two synchronously, so this waits: after
+     * [COMPOSE_INTEGRATION_GRACE_MS], an Activity that handed over a controller is the second shape
+     * and its destinations are already arriving. One that did not is treated as the first shape and
+     * reported under its own name, with the advice logged in case it was meant to be the second.
+     *
+     * Being late is the price, and it is the right way round. Reporting immediately and letting a
+     * destination supersede it would put a node per Activity in the map *as well as* one per screen,
+     * and screens are permanent — a wrong node stays wrong. A screen dismissed inside the grace
+     * period is missed instead, which is the same cost a splash already pays.
      */
-    private fun warnIfNavControllerMissing(activity: Activity) {
-        if (composeIntegrationWarned) return
+    private fun resolveComposeScreen(activity: Activity) {
         val activityName = activity.javaClass.simpleName
 
         mainHandler.postDelayed({
-            registeredComposeControllers.removeAll { it.get() == null }
-            if (registeredComposeControllers.isNotEmpty() || composeIntegrationWarned) return@postDelayed
-            composeIntegrationWarned = true
+            pruneComposeControllers()
+            if (hasComposeController(activity)) return@postDelayed
 
-            Log.w(
-                "ScreenMapper",
-                "$activityName hosts Compose but no NavController was registered, so the " +
-                    "screen map will have no screen names. Compose keeps no global registry " +
-                    "of NavControllers, so LightSession cannot find yours — hand it over:\n" +
-                    "    import com.lightsession.mapper.withNavigationTracking\n" +
-                    "    val navController = rememberNavController().withNavigationTracking()\n" +
-                    "Session recording and replay are unaffected either way."
-            )
+            // The reader may have moved on during the grace period. Reporting now would file this
+            // screen after the one that replaced it, inventing a navigation backwards.
+            if (currentActivityWeakRef?.get() !== activity) return@postDelayed
+
+            handleActivityNavigation(activity)
+
+            if (composeAdviceGiven.add(activityName)) {
+                Log.i(
+                    "ScreenMapper",
+                    "$activityName hosts Compose and handed over no NavController, so it is " +
+                        "recorded as one screen named $activityName. Correct if the Activity is " +
+                        "one screen. If it hosts several Compose destinations, they will all be " +
+                        "this one node until you hand the controller over:\n" +
+                        "    import com.lightsession.mapper.withNavigationTracking\n" +
+                        "    val navController = rememberNavController().withNavigationTracking()\n" +
+                        "Session recording and replay are unaffected either way."
+                )
+            }
         }, COMPOSE_INTEGRATION_GRACE_MS)
     }
 
+    private fun pruneComposeControllers() {
+        registeredComposeControllers.removeAll { it.controller.get() == null || it.owner.get() == null }
+    }
+
+    /** Whether this Activity's own composition handed over a NavController. */
+    private fun hasComposeController(activity: Activity): Boolean =
+        registeredComposeControllers.any { it.owner.get() === activity }
+
     internal fun registerComposeNavController(navController: NavController) {
-        registeredComposeControllers.removeAll { it.get() == null }
-        if (registeredComposeControllers.any { it.get() == navController }) return
+        pruneComposeControllers()
+        if (registeredComposeControllers.any { it.controller.get() == navController }) return
 
         val listener =
             NavController.OnDestinationChangedListener { _, destination, _ ->
@@ -704,7 +753,12 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             }
 
         navController.addOnDestinationChangedListener(listener)
-        registeredComposeControllers.add(WeakReference(navController))
+        // The Activity being composed right now owns it. `withNavigationTracking` runs inside that
+        // composition, so the foreground Activity is the right answer and is the only one available
+        // — a NavController does not name the Activity that created it.
+        registeredComposeControllers.add(
+            ComposeController(WeakReference(navController), WeakReference(currentActivityWeakRef?.get())),
+        )
     }
 
     private fun unregisterConventionalNavController(navController: NavController) {
@@ -1250,8 +1304,8 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
     internal fun unregisterComposeNavController(navController: NavController) {
         registeredComposeControllers.removeAll {
-            val controller = it.get()
-            controller == null || controller == navController
+            val controller = it.controller.get()
+            controller == null || it.owner.get() == null || controller == navController
         }
     }
 
@@ -1471,7 +1525,7 @@ fun NavHostController.withNavigationTracking(): NavHostController {
             try {
                 ScreenMapperIntegration.getInstance().unregisterComposeNavController(this@withNavigationTracking)
             } catch (e: Exception) {
-                Log.e("ComposeExtensions", "Erro ao desregistrar NavController", e)
+                Log.e("ComposeExtensions", "Error unregistering NavController", e)
             }
         }
     }

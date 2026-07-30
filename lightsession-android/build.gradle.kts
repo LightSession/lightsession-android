@@ -166,7 +166,16 @@ publishing {
             //
             // Additive: existing constructors keep their signatures, and Kotlin callers using named
             // arguments see no difference.
-            version = "0.8.1"
+            // 0.9.0 records a Compose Activity that has no NavController.
+            //
+            // `isActivityUsingCompose` being true skipped the branch that reports an Activity, on
+            // the assumption that a Compose host always has a NavController for the app to hand
+            // over. One Activity holding one Compose screen has none, and was recorded as nothing:
+            // the screen did not exist and the flow through it read as one navigation straight past.
+            //
+            // Minor rather than patch: an existing consumer starts reporting screens it never did,
+            // with no code change on their side, and its map gains nodes and edges.
+            version = "0.9.0"
 
             afterEvaluate {
                 from(components["release"])
