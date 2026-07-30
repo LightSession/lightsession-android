@@ -235,23 +235,19 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         }
     }
 
-    /**
-     * Whether sending this wireframe would replace a better image.
-     *
-     * The two captures race, and the wireframe can lose. Its capture waits for the
-     * composition to *settle*, which is unbounded, while the real screenshot waits a
-     * fixed [SCREENSHOT_SETTLE_MS] from navigation. On Phoenix's home screen the
-     * screenshot landed at +2.6s and the wireframe only finished settling at +5.2s —
-     * so the wireframe arrived last and overwrote the real screen, and the server's
-     * supersede-delete then removed the screenshot from the bucket.
-     *
-     * The guard at the top of the send is checked *before* the capture starts, so it
-     * cannot see this. This is the same question asked again after the wait, which is
-     * the only point where the answer is current. It also saves an upload that was
-     * always going to be discarded.
-     */
-    private fun wireframeWouldDowngrade(screenCacheKey: String): Boolean =
-        captureRealScreens && cacheManager.isScreenFullyCaptured(screenCacheKey)
+    // `wireframeWouldDowngrade` was here, and is gone with what made it necessary.
+    //
+    // The two captures race and the wireframe can lose: its capture waits for the composition to
+    // *settle*, which is unbounded, while the screenshot waits a fixed [SCREENSHOT_SETTLE_MS] from
+    // navigation. On one app's home screen the screenshot landed at +2.6s and the wireframe only
+    // settled at +5.2s, so the wireframe arrived last, overwrote the real screen, and the server's
+    // supersede-delete removed the screenshot from the bucket. Dropping the late wireframe was the
+    // only way to keep the better image.
+    //
+    // The server keeps each in its own slot now, so neither can displace the other and the race
+    // has no consequence. Dropping the wireframe would instead cost the screen the layer a reader
+    // can switch to — which is exactly the screens that need it, since a screen somebody stayed on
+    // long enough to photograph is the one whose skeleton used to be deleted.
 
     fun getCurrentScreen(): String? {
         return lastScreen
@@ -1096,9 +1092,11 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             if (!cacheManager.isScreenSent(screenCacheKey)) {
                 screenNodes[to]?.let { toNode ->
                     captureWireframe(activity) { wireframe ->
-                        if (wireframeWouldDowngrade(screenCacheKey)) {
-                            Log.d("ScreenMapper", "Real screenshot already stored for $to; wireframe dropped.")
-                        } else if (wireframe != null) {
+                        // Sent even when the screenshot already landed. The two are stored in
+                        // separate slots now, so a wireframe arriving second adds a layer instead
+                        // of replacing the better image — which is what the dropped-wireframe
+                        // guard here used to be protecting against.
+                        if (wireframe != null) {
                             (activity as? ComponentActivity)?.lifecycleScope?.launch {
                                 val result = dataSender?.sendScreenData(
                                     screenId = screenId,
@@ -1209,9 +1207,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
                 if (!cacheManager.isScreenSent(screenCacheKey)) {
                     captureWireframe(activity) { wireframe ->
-                        if (wireframeWouldDowngrade(screenCacheKey)) {
-                            Log.d("ScreenMapper", "Real screenshot already stored for $screenName; wireframe dropped.")
-                        } else if (wireframe != null) {
+                        // See the same send on the navigation path: with a slot each, a late
+                        // wireframe adds a layer rather than displacing the screenshot.
+                        if (wireframe != null) {
                             scope.launch {
                                 val result = dataSender?.sendScreenData(
                                     screenId = screenId,
@@ -1261,19 +1259,22 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     }
 
     /**
-     * Agenda o upgrade do wireframe para o print real da tela.
+     * Schedules the upgrade from wireframe to a real screenshot of the screen.
      *
-     * Espera [SCREENSHOT_SETTLE_MS] antes de capturar, e é a espera que dá valor
-     * à captura: animação termina, imagem carrega, dado da rede chega. O que for
-     * capturado antes disso é uma tela em construção, não a tela.
+     * Waits [SCREENSHOT_SETTLE_MS], and the wait is what gives the capture its worth:
+     * animations finish, images load, network content arrives. Anything captured before
+     * that is a screen mid-build rather than the screen.
      *
-     * Qualquer toque ou nova navegação cancela via [cancelScreenshot] — se o
-     * usuário interagiu, a tela mudou, e capturar depois disso registraria um
-     * estado que não é o de chegada.
+     * Any touch or further navigation cancels it through [cancelScreenshot] — if the user
+     * interacted, the screen has changed, and capturing after that records a state that is
+     * not the one they arrived at.
      *
-     * Governado por `LightSessionConfig.captureRealScreens`, e vale reler o kdoc
-     * de lá: com isso ligado o bucket guarda um print sem máscara de cada tela do
-     * app, permanentemente, e não há masking no device.
+     * Governed by `LightSessionConfig.captureRealScreens`, whose kdoc is worth rereading:
+     * with it on, the bucket keeps a picture of every screen in the app for as long as the
+     * project exists. Masking does apply here — `ScreenDrawing` consults [Masking] at
+     * capture time, and `maskText` is on by default — so what leaves the device has its
+     * text covered. Turning masking off while leaving this on is what stores an unmasked
+     * picture of every screen indefinitely.
      */
     private fun scheduleScreenshot() {
         // The real-screenshot upgrade is its own producer: it runs on a delay, so recording can

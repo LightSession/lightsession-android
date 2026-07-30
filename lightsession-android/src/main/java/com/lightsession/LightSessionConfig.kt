@@ -72,7 +72,7 @@ data class LightSessionConfig(
     /**
      * Whether the screen map upgrades a screen's wireframe to a real screenshot.
      *
-     * The wireframe goes out at navigation time. Two and a half seconds later, if the
+     * The wireframe goes out at navigation time. Five and a half seconds later, if the
      * user has neither navigated away nor touched the screen, the SDK captures the
      * screen for real at full resolution and replaces the wireframe with it. The
      * settle delay is the point: it waits for animations, images and network content,

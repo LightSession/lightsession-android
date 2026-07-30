@@ -147,7 +147,19 @@ publishing {
             //
             // Hardening rather than a fix: 0.7.0 produced correct captures, including the landscape
             // ones that prompted the look. A patch, and nothing on 0.7.0 is wrong.
-            version = "0.7.1"
+            // 0.8.0 stops dropping the wireframe once a screenshot exists.
+            //
+            // The two used to share one slot on the server, and they finish in an order nobody
+            // controls — one waits a fixed delay, the other waits for a composition to settle — so
+            // a late wireframe overwrote the real screen and the server deleted the screenshot. The
+            // guard here dropped it to protect the better image, at the cost of the wireframe
+            // existing only for screens nobody stayed on. The server keeps a slot for each now, so
+            // neither displaces the other and both are worth sending.
+            //
+            // Minor rather than patch: an existing consumer starts reporting a layer it did not
+            // before, with no code change on their side, and the dashboard gains a wireframe view
+            // of screens that previously had none.
+            version = "0.8.0"
 
             afterEvaluate {
                 from(components["release"])
