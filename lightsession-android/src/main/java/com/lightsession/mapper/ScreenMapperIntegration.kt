@@ -70,6 +70,31 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      */
     private val composeAdviceGiven = mutableSetOf<String>()
 
+    /**
+     * Where a send runs when the Activity cannot supply a scope.
+     *
+     * Every send used to read `(activity as? ComponentActivity)?.lifecycleScope ?: return`, which
+     * meant an Activity predating AndroidX had its screen recorded locally and sent nowhere. That
+     * was invisible in the same way the Compose gap was: local state looked right and the map was
+     * simply missing a screen.
+     *
+     * The Activity's own scope is still preferred — it cancels when the Activity dies, which is what
+     * you want for work about that Activity. This is only the fallback, and being a `SupervisorJob`
+     * means one failed send does not take the others with it.
+     */
+    private val fallbackScope =
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+
+    /**
+     * The scope to send this Activity's data on.
+     *
+     * Never null, which is the point: the call sites used to decide between sending and doing
+     * nothing, and "doing nothing" was reached by a whole category of Activity rather than by an
+     * error.
+     */
+    private fun scopeFor(activity: Activity): kotlinx.coroutines.CoroutineScope =
+        (activity as? ComponentActivity)?.lifecycleScope ?: fallbackScope
+
     /** The delayed integration check runs here, because
      *  `registeredComposeControllers` is read and written on the main thread
      *  everywhere else and is not synchronised. */
@@ -90,6 +115,22 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      * a new suffix onto, and the thing a repeated navigation is deduplicated against.
      */
     private var baseScreen: String? = null
+
+    /**
+     * The Activity [baseScreen] belongs to.
+     *
+     * A sub-screen is a *part of* a screen, so composing one onto a base that came from a different
+     * Activity invents a screen nobody saw. `enterDestination` used to be the only guard against
+     * that: it cancels the read scheduled by the touch that caused the navigation, on the assumption
+     * that the new destination is reported before that read fires.
+     *
+     * Deferring a Compose Activity's name by a grace period broke the assumption. Measured: tapping
+     * into a tabbed Compose Activity produced `MainActivity › Overview` — the tab read landed while
+     * the base was still the screen the tap left, and the phantom is permanent, since screens are.
+     * The touch read fires after a settle of a few hundred milliseconds; the Activity's own name can
+     * be seconds behind it.
+     */
+    private var baseScreenOwner: WeakReference<Activity>? = null
 
     private var currentSubScreen: SubScreen? = null
 
@@ -529,59 +570,36 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                     }
                 }
 
-                if (activity is ComponentActivity) {
-                    if (isActivityUsingCompose(activity)) {
-                        /**
-                         * A Compose host. Its NavController is created inside the
-                         * composition by `rememberNavController()`, and Compose keeps
-                         * no global registry of them — so unlike the Fragment case
-                         * below, there is nothing here for the SDK to find. The host
-                         * app has to hand it over with
-                         * `rememberNavController().withNavigationTracking()`.
-                         *
-                         * That is a documented requirement, not an oversight. What
-                         * *was* an oversight is that nothing said so: an app that
-                         * skipped the call recorded frames normally and produced a
-                         * screen map with no screen names, which is indistinguishable
-                         * from the SDK being broken. Hence the check below.
-                         */
-                        resolveComposeScreen(activity)
-                    } else {
-                        if (checkNavControllerConventional(activity)) {
-                            /**
-                            This means that this activity is likely a host activity for navigable
-                            fragments, using nav_host and nav_controller in the conventional way.
-                            The NavController is inflated synchronously, meaning we can access it
-                            via the FragmentManager and add a listener to it.
-                             */
-                            if (activity is FragmentActivity) {
-                                val fragmentManager = activity.supportFragmentManager
-                                val fragments = fragmentManager.fragments
-                                for (fragment in fragments) {
-                                    if (fragment is NavHostFragment) {
-                                        val navController = fragment.navController
-                                        registerConventionalNavController(navController)
-                                    }
-                                }
-                            }
-                        } else {
-                            /**
-                             * Handles navigation for Activities that don't use NavController or Compose.
-                             *
-                             * This typically applies to:
-                             * 1. Simple screens (e.g., splash screens, About screens) with no internal navigation
-                             * 2. Legacy projects not using Navigation Component/Jetpack Compose
-                             * 3. Special cases like:
-                             * - Deep link handlers
-                             * - Dialog-style Activities
-                             * - Third-party SDK UIs with their own navigation
-                             *
-                             * Navigation between these Activities is done via Intents. Any internal "navigation"
-                             * is managed through FragmentTransactions or direct view manipulation.
-                             */
-                            handleActivityNavigation(activity)
+                // Where this Activity's screen names come from. Decided by [planScreenSource], which
+                // is a pure function so the four cases can be walked by a unit test — this was
+                // nested branching that got two of them wrong for nineteen commits.
+                //
+                // No `activity is ComponentActivity` gate: nothing below needs one. It used to wrap
+                // the whole decision, so an Activity predating AndroidX was reported as nothing at
+                // all. `checkNavControllerConventional` asks for `FragmentActivity` itself, which is
+                // the only type requirement that is real.
+                val plan = planScreenSource(
+                    usesCompose = isActivityUsingCompose(activity),
+                    hasConventionalNavHost = checkNavControllerConventional(activity),
+                )
+
+                if (plan.registerConventionalNav && activity is FragmentActivity) {
+                    // Inflated with the layout, so it is here to be found — the opposite of a
+                    // Compose NavController, which is created inside a composition and can only be
+                    // handed over.
+                    for (fragment in activity.supportFragmentManager.fragments) {
+                        if (fragment is NavHostFragment) {
+                            registerConventionalNavController(fragment.navController)
                         }
                     }
+                }
+
+                if (plan.resolveComposeAfterGrace) {
+                    resolveComposeScreen(activity)
+                }
+
+                if (plan.reportActivityNow) {
+                    handleActivityNavigation(activity)
                 }
             }
 
@@ -843,6 +861,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      */
     private fun enterDestination(screenName: String) {
         baseScreen = screenName
+        baseScreenOwner = currentActivityWeakRef
         currentSubScreen = null
         defaultTabs = emptyList()
         modalRootView = null
@@ -869,6 +888,20 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      */
     private fun applySubScreen(next: SubScreen?) {
         val base = baseScreen ?: return
+
+        // A sub-screen is a part *of* a base, so the base has to belong to the Activity in front.
+        //
+        // This guard started on the tab read alone, which was the wrong place: three mechanisms
+        // reach here — a tab from semantics, a modal from a window being added, and a declared part
+        // — and the modal one walked straight past it. Measured: entering a tabbed Compose Activity
+        // and opening its dialog inside the grace period produced `MainActivity › Dialog`, a screen
+        // that never existed, because the Activity's own name had not arrived yet. Same defect as
+        // the tab phantom, different door, so the check belongs at the funnel.
+        if (currentActivityWeakRef?.get() !== baseScreenOwner?.get()) {
+            Log.d("ScreenMapper", "sub-screen dropped: base '$base' belongs to another Activity")
+            return
+        }
+
         if (!SubScreens.shouldReport(currentSubScreen, next)) return
 
         val from = lastScreen ?: base
@@ -982,6 +1015,15 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         // window is removed when it closes, so this is the only thing that ever notices.
         if (currentSubScreen?.kind == SubScreen.Kind.MODAL) return@Runnable
         val activity = currentActivityWeakRef?.get() ?: return@Runnable
+
+        // Bail before reading, not just before reporting. `applySubScreen` guards the report for
+        // every mechanism, but the baseline branch below writes `defaultTabs` directly — and
+        // learning the next Activity's tabs as the *previous* screen's default would make the
+        // reader's first real tab choice look like no change at all.
+        if (activity !== baseScreenOwner?.get()) {
+            Log.d("ScreenMapper", "sub-screen read dropped: base is not this Activity's yet")
+            return@Runnable
+        }
         val root = activity.window?.decorView ?: return@Runnable
         val tabs = try {
             SubScreenReader.selectedTabs(root)
@@ -1095,7 +1137,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         Log.d("ScreenMapper", "New navigation flow detected: $from -> $to. Scheduling screenshot.")
 
         currentActivityWeakRef?.get()?.let { activity ->
-            (activity as? ComponentActivity)?.lifecycleScope?.launch {
+            scopeFor(activity).launch {
                 sendNavigationData(from, to, activity)
             }
         }
@@ -1148,7 +1190,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                         // of replacing the better image — which is what the dropped-wireframe
                         // guard here used to be protecting against.
                         if (wireframe != null) {
-                            (activity as? ComponentActivity)?.lifecycleScope?.launch {
+                            scopeFor(activity).launch {
                                 val result = dataSender?.sendScreenData(
                                     screenId = screenId,
                                     screenName = to,
@@ -1234,7 +1276,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      */
     private fun sendInitialScreen(screenName: String, screenType: ScreenType, activity: Activity) {
         if (!Recording.enabled) return
-        val scope = (activity as? ComponentActivity)?.lifecycleScope ?: return
+        val scope = scopeFor(activity)
 
         scope.launch {
             try {
@@ -1342,10 +1384,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             return
         }
 
-        val scope = (activity as? ComponentActivity)?.lifecycleScope ?: run {
-            Log.w("ScreenMapper", "No lifecycleScope for this Activity; screenshot not scheduled.")
-            return
-        }
+        val scope = scopeFor(activity)
 
         isScreenshotScheduledForCurrentScreen = true
         currentScreenshotJob = scope.launch {
@@ -1354,8 +1393,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                 // The gap the schedule-time check cannot cover: several seconds pass here, and
                 // recording may have been stopped in them.
                 if (!Recording.enabled) return@launch
-                // `lifecycleScope` já cancela na destruição, mas a Activity pode
-                // estar terminando sem que o escopo tenha sido cancelado ainda.
+                // A lifecycle-bound scope cancels on destruction, but the Activity can be
+                // finishing without the scope having been cancelled yet — and the fallback scope
+                // is not bound to it at all, so this check is the only one for a legacy Activity.
                 if (!activity.isFinishing && !activity.isDestroyed) {
                     takeScreenshot(activity)
                 }
@@ -1414,7 +1454,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                 Log.d("ScreenMapper", "Screenshot of screen ${activity.javaClass.simpleName} taken successfully! Using dimensions: ${screenWidth}x${screenHeight}")
 
                 lastScreen?.let { screenName ->
-                    val scope = (activity as? ComponentActivity)?.lifecycleScope ?: return
+                    val scope = scopeFor(activity)
                     scope.launch {
                         try {
                             // Use activity dimensions for consistency with flow and initial screen data

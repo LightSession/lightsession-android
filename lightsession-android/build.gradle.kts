@@ -175,7 +175,20 @@ publishing {
             //
             // Minor rather than patch: an existing consumer starts reporting screens it never did,
             // with no code change on their side, and its map gains nodes and edges.
-            version = "0.9.0"
+            // 0.10.0 closes the last two shapes that reported nothing.
+            //
+            // A hybrid Activity — a `NavHostFragment` plus a `ComposeView` anywhere under it —
+            // registered neither: the Compose test ran first and short-circuited the fragment
+            // registration. Since a fragment's views hang under the Activity's content view, one
+            // Compose screen in a migrating app was enough, and because the test runs once at resume
+            // it depended on which fragment was showing then. The same build behaved two ways.
+            //
+            // An Activity predating AndroidX reported nothing either, twice over: an
+            // `is ComponentActivity` gate wrapped the whole decision, and every send read
+            // `lifecycleScope ?: return`, so even past the gate its screen went nowhere.
+            //
+            // The decision is now a pure function with the whole space under unit test.
+            version = "0.10.0"
 
             afterEvaluate {
                 from(components["release"])
