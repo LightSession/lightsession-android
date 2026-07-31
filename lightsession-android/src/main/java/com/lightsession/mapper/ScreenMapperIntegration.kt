@@ -31,6 +31,7 @@ import com.lightsession.replay.ScreenDrawing
 import curtains.Curtains
 import curtains.OnRootViewsChangedListener
 import curtains.OnTouchEventListener
+import curtains.phoneWindow
 import curtains.touchEventInterceptors
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -190,6 +191,17 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      * the safe fallback when there is no config at all.
      */
     private var captureRealScreens = false
+
+    /**
+     * Set from `LightSessionConfig.screensReportedByHost` at [init].
+     *
+     * Defaults to false here, so a caller reaching this singleton without a config still gets screens
+     * discovered rather than none at all — the safe fallback is the one that records something.
+     */
+    private var screensReportedByHost = false
+
+    /** Whether [handleReportedNavigation] has ever been called, for the advice below. */
+    private var hostHasReportedAScreen = false
 
     /** Set from `LightSessionConfig.trackTabs` at [init]. */
     private var trackTabs = true
@@ -376,7 +388,18 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     enum class ScreenType {
         COMPOSE,
         CONVENTIONAL,
-        ACTIVITY
+        ACTIVITY,
+
+        /**
+         * A screen a JavaScript navigator named, because the platform cannot.
+         *
+         * React Native is one Activity hosting everything, so no lifecycle callback, FragmentManager
+         * or NavController distinguishes its screens — there is nothing for the SDK to observe. The
+         * host reports them, and this records that the name came from there rather than from the
+         * platform. Distinct from a missing type: an RN screen is precisely known, just known from
+         * somewhere else.
+         */
+        REACT_NATIVE
     }
 
     companion object {
@@ -436,6 +459,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         sessionDataManager: SessionDataManager,
         wireframeMode: LightSessionConfig.WireframeMode = LightSessionConfig.WireframeMode.RECTS,
         captureRealScreens: Boolean = false,
+        screensReportedByHost: Boolean = false,
         trackTabs: Boolean = true,
         trackModals: Boolean = true,
         trueColourWireframes: Boolean = true,
@@ -448,9 +472,36 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         this.sessionDataManager = sessionDataManager
         this.wireframeMode = wireframeMode
         this.captureRealScreens = captureRealScreens
+        this.screensReportedByHost = screensReportedByHost
         this.trackTabs = trackTabs
         this.trackModals = trackModals
         this.trueColourWireframes = trueColourWireframes
+
+        // An Activity that resumed *before* this ran will never be announced: lifecycle callbacks do
+        // not replay. That used to be impossible, because init happened in `Application.onCreate`. It
+        // stopped being impossible when the SDK gained a JavaScript entry point — React Native starts
+        // it from the bundle, which runs after the Activity is already on screen — and the symptom was
+        // brutal for how small it is: every reported navigation was dropped with "no foreground
+        // Activity", so an app that integrated correctly recorded nothing at all.
+        //
+        // Curtains already knows the attached windows, so the Activity can be recovered from one
+        // rather than guessed at or found by reflecting into `ActivityThread`. Last first: the topmost
+        // window is the current one.
+        if (currentActivityWeakRef?.get() == null) {
+            Curtains.rootViews.asReversed().firstNotNullOfOrNull {
+                // Through the `Window`, not the view. A decor view's own context is a `DecorContext`
+                // whose base is the *application* context, so walking from the view never reaches the
+                // Activity — measured: the root was there and the walk still came back null. A
+                // PhoneWindow is constructed with its Activity as the context, so that chain works.
+                it.phoneWindow?.context?.activityOrNull()
+            }?.let {
+                Log.d("ScreenMapper", "late init: adopting ${it.javaClass.simpleName} as foreground")
+                // The same work a resume would have done — the window callback and the touch
+                // interceptor included. Setting only the reference named screens correctly while
+                // recording no touches at all.
+                attachTo(it)
+            }
+        }
 
         if (trackModals) {
             Curtains.onRootViewsChangedListeners += rootViewsListener
@@ -459,7 +510,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         // Initialize cache manager
         cacheManager = CacheManager(application)
 
-        // Obter AppVersionCode e AppVersionName
+        // The app's version code and name
         val currentAppVersionCode = getAppVersionCode()
         val currentAppVersionName = getAppVersionName()
 
@@ -555,52 +606,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             override fun onActivityStarted(activity: Activity) {}
 
             override fun onActivityResumed(activity: Activity) {
-                currentActivityWeakRef = WeakReference(activity)
-
-                val originalCallback = activity.window.callback
-                if (originalCallback !is InteractionAwareCallback) {
-                    originalCallbacks[activity] = originalCallback
-                    activity.window.callback = InteractionAwareCallback(originalCallback, activity)
-                }
-
-                activity.window?.let { window ->
-                    touchEventListener?.let { listener ->
-                        window.touchEventInterceptors -= listener
-                        window.touchEventInterceptors += listener
-                    }
-                }
-
-                // Where this Activity's screen names come from. Decided by [planScreenSource], which
-                // is a pure function so the four cases can be walked by a unit test — this was
-                // nested branching that got two of them wrong for nineteen commits.
-                //
-                // No `activity is ComponentActivity` gate: nothing below needs one. It used to wrap
-                // the whole decision, so an Activity predating AndroidX was reported as nothing at
-                // all. `checkNavControllerConventional` asks for `FragmentActivity` itself, which is
-                // the only type requirement that is real.
-                val plan = planScreenSource(
-                    usesCompose = isActivityUsingCompose(activity),
-                    hasConventionalNavHost = checkNavControllerConventional(activity),
-                )
-
-                if (plan.registerConventionalNav && activity is FragmentActivity) {
-                    // Inflated with the layout, so it is here to be found — the opposite of a
-                    // Compose NavController, which is created inside a composition and can only be
-                    // handed over.
-                    for (fragment in activity.supportFragmentManager.fragments) {
-                        if (fragment is NavHostFragment) {
-                            registerConventionalNavController(fragment.navController)
-                        }
-                    }
-                }
-
-                if (plan.resolveComposeAfterGrace) {
-                    resolveComposeScreen(activity)
-                }
-
-                if (plan.reportActivityNow) {
-                    handleActivityNavigation(activity)
-                }
+                attachTo(activity)
             }
 
             override fun onActivityPaused(activity: Activity) {
@@ -753,6 +759,115 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         }, COMPOSE_INTEGRATION_GRACE_MS)
     }
 
+    /**
+     * Says so, once, when an app opted out of discovery and then reported nothing.
+     *
+     * `screensReportedByHost` has no fallback by design — if the Activity were reported anyway, the
+     * flag would not mean anything. So the failure is an empty screen map, which looks exactly like
+     * the SDK being broken. The same shape as the advice for a Compose host that never handed over its
+     * NavController, and for the same reason: the expensive part of this class of bug is not the fix,
+     * it is the afternoon spent believing something else is wrong.
+     */
+    private fun adviseIfHostNeverReports(activity: Activity) {
+        if (hostHasReportedAScreen) return
+        val name = activity.javaClass.simpleName
+        if (!composeAdviceGiven.add("host-reports:$name")) return
+
+        mainHandler.postDelayed({
+            if (hostHasReportedAScreen) return@postDelayed
+            Log.w(
+                "ScreenMapper",
+                "screensReportedByHost is on and nothing has called setScreen, so the screen map " +
+                    "will stay empty. On React Native, hand the navigator over:\n" +
+                    "    import {useLightSessionNavigation} from 'lightsession-react-native/navigation'\n" +
+                    "    const tracking = useLightSessionNavigation()\n" +
+                    "    <NavigationContainer {...tracking}>\n" +
+                    "Otherwise call LightSession.setScreen(name) when the screen changes, or turn the " +
+                    "flag off and let the SDK name Activities itself. Session recording and replay are " +
+                    "unaffected either way."
+            )
+        }, COMPOSE_INTEGRATION_GRACE_MS)
+    }
+
+    /**
+     * The Activity a view belongs to, by walking its context chain.
+     *
+     * A view's context is usually the Activity but can be a `ContextThemeWrapper` around it, so the
+     * chain has to be followed rather than cast. Returns null for a view belonging to a window that is
+     * not an Activity's — a Toast, or an overlay from another process.
+     */
+    private fun Context.activityOrNull(): Activity? {
+        var ctx: Context? = this
+        while (ctx is android.content.ContextWrapper) {
+            if (ctx is Activity) return ctx
+            ctx = ctx.baseContext
+        }
+        return null
+    }
+
+    /**
+     * Everything that has to happen for an Activity that is now in front.
+     *
+     * Extracted because `onActivityResumed` is no longer the only way to arrive here. Lifecycle
+     * callbacks do not replay, so an SDK initialised *after* an Activity resumed — which is what
+     * happens when the host starts it from JavaScript — never hears about the Activity already on
+     * screen. Recovering just the reference was not enough and the gap was invisible: screens were
+     * named correctly and **not a single touch was recorded**, because the window callback and the
+     * touch interceptor are installed here too. Measured on the React Native example: two taps, two
+     * navigations reported, zero interactions stored.
+     *
+     * Safe to call twice for the same Activity. The callback is only wrapped when it is not already
+     * ours, and the interceptor is removed before being added.
+     */
+    private fun attachTo(activity: Activity) {
+        currentActivityWeakRef = WeakReference(activity)
+
+        val originalCallback = activity.window.callback
+        if (originalCallback !is InteractionAwareCallback) {
+            originalCallbacks[activity] = originalCallback
+            activity.window.callback = InteractionAwareCallback(originalCallback, activity)
+        }
+
+        activity.window?.let { window ->
+            touchEventListener?.let { listener ->
+                window.touchEventInterceptors -= listener
+                window.touchEventInterceptors += listener
+            }
+        }
+
+        // Where this Activity's screen names come from. Decided by [planScreenSource], which
+        // is a pure function so the four cases can be walked by a unit test — this was
+        // nested branching that got two of them wrong for nineteen commits.
+        //
+        // No `activity is ComponentActivity` gate: nothing below needs one. It used to wrap
+        // the whole decision, so an Activity predating AndroidX was reported as nothing at
+        // all. `checkNavControllerConventional` asks for `FragmentActivity` itself, which is
+        // the only type requirement that is real.
+        val plan = planScreenSource(
+            usesCompose = isActivityUsingCompose(activity),
+            hasConventionalNavHost = checkNavControllerConventional(activity),
+        )
+
+        if (plan.registerConventionalNav && activity is FragmentActivity) {
+            // Inflated with the layout, so it is here to be found — the opposite of a
+            // Compose NavController, which is created inside a composition and can only be
+            // handed over.
+            for (fragment in activity.supportFragmentManager.fragments) {
+                if (fragment is NavHostFragment) {
+                    registerConventionalNavController(fragment.navController)
+                }
+            }
+        }
+
+        if (plan.resolveComposeAfterGrace) {
+            resolveComposeScreen(activity)
+        }
+
+        if (plan.reportActivityNow) {
+            handleActivityNavigation(activity)
+        }
+    }
+
     private fun pruneComposeControllers() {
         registeredComposeControllers.removeAll { it.controller.get() == null || it.owner.get() == null }
     }
@@ -786,7 +901,58 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         }
     }
 
+    /**
+     * Records a screen the host named, for a UI toolkit the platform cannot see into.
+     *
+     * The fourth navigation entry, and the simplest of the four: the other three have to work out
+     * *what* the screen is from an Activity, a fragment destination or a Compose destination. Here the
+     * caller already knows, which is the whole reason this exists — React Native is one Activity, so
+     * there is nothing to work out from and nothing to observe.
+     *
+     * That makes it the same bargain as `rememberNavController().withNavigationTracking()`: the SDK
+     * cannot find the navigator, so the app hands it over. Reported through the same
+     * [enterDestination] and [trackNavigationFlow] as everything else, so a screen named from
+     * JavaScript is a screen like any other from here on — it gets a wireframe, a heatmap and flow
+     * edges with no downstream code knowing where the name came from.
+     *
+     * Ignores a repeat of the current screen, because a navigator will re-emit its state for reasons
+     * that are not navigations: a param change, a re-render, a tab bar updating.
+     */
+    fun handleReportedNavigation(screenName: String) {
+        hostHasReportedAScreen = true
+        val name = screenName.trim()
+        if (name.isEmpty() || name == baseScreen) return
+
+        val activity = currentActivityWeakRef?.get() ?: run {
+            // Nothing to capture against, and no way to build a screen id — which needs the theme and
+            // the geometry of a live window. A navigation reported with no Activity in front is a
+            // report from a screen nobody is looking at.
+            Log.d("ScreenMapper", "reported navigation '$name' ignored: no foreground Activity")
+            return
+        }
+
+        getOrCreateScreenNode(name, ScreenType.REACT_NATIVE).apply { routes.add(name) }
+
+        if (lastScreen != null) {
+            trackNavigationFlow(lastScreen!!, name)
+        } else {
+            sendInitialScreen(name, ScreenType.REACT_NATIVE, activity)
+        }
+
+        enterDestination(name)
+        scheduleScreenshot()
+    }
+
     override fun handleActivityNavigation(activity: Activity) {
+        // An app that names its own screens has nothing to gain from this and something to lose. On
+        // React Native the Activity is not a screen — it is the box every screen is drawn in — so
+        // reporting it puts a node at the top of every session that no user ever navigated to, and
+        // screens are permanent.
+        if (screensReportedByHost) {
+            adviseIfHostNeverReports(activity)
+            return
+        }
+
         val screenName = utils.getActivityClassName(activity)
 
         if (screenName == baseScreen) {

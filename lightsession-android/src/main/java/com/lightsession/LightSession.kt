@@ -72,6 +72,33 @@ class LightSession private constructor() {
     }
 
     /**
+     * Reports the screen the app is on, for a UI toolkit the SDK cannot see into.
+     *
+     * Every other screen in the map is discovered: an Activity resumes, a fragment destination
+     * changes, a Compose NavController reports one. React Native defeats all three — the whole app is
+     * one Activity and every screen inside it is a JavaScript concern the platform never hears about.
+     * Without this, such an app records exactly one screen, named after its Activity, forever.
+     *
+     * The same bargain `rememberNavController().withNavigationTracking()` strikes for Compose: the SDK
+     * cannot find the navigator, so the host hands the answer over. Call it whenever the current
+     * screen changes, with the name a person would recognise — the route name, usually.
+     *
+     * Calling it with the screen already showing does nothing, so a navigator that re-emits its state
+     * on a re-render or a param change costs nothing.
+     *
+     * ```kotlin
+     * LightSession.getInstance().setScreen("Checkout")
+     * ```
+     *
+     * From here on the screen is a screen like any other: wireframe, heatmap, flow edges. Nothing
+     * downstream knows the name came from JavaScript.
+     */
+    fun setScreen(name: String) {
+        if (!isInitialized) return
+        ScreenMapperIntegration.getInstance().handleReportedNavigation(name)
+    }
+
+    /**
      * Says who is using the app.
      *
      * `userId` is the app's own identifier for the person — whatever its database calls it.
@@ -224,6 +251,7 @@ class LightSession private constructor() {
             sessionDataManager = sessionDataManager,
             wireframeMode = config.wireframeMode,
             captureRealScreens = config.captureRealScreens,
+            screensReportedByHost = config.screensReportedByHost,
             trackTabs = config.trackTabs,
             trackModals = config.trackModals,
             trueColourWireframes = config.trueColourWireframes,

@@ -37,18 +37,18 @@ import kotlin.sequences.filter
 import kotlin.sequences.mapNotNull
 
 /**
- * Descoberta por ESTRUTURA, não por nome de classe.
+ * Found by **structure**, not by class name.
  *
- * O original fazia `Class.forName("androidx.compose.runtime.ComposerImpl$CompositionContextHolder")`.
- * Num release minificado o R8 renomeia essa classe, o `forName` lança
- * ClassNotFoundException, o catch zera REFLECTION_CONSTANTS e
- * [getCompositionContexts] passa a devolver sequência vazia — ou seja, toda
- * subcomposição (LazyColumn, LazyRow, bottom sheet) desaparece do skeleton, em
- * silêncio.
+ * The original did `Class.forName("androidx.compose.runtime.ComposerImpl$CompositionContextHolder")`.
+ * In a minified release R8 renames that class, the `forName` throws ClassNotFoundException, the catch
+ * clears REFLECTION_CONSTANTS, and [getCompositionContexts] starts returning an empty sequence — so
+ * every subcomposition disappears from the skeleton. A `LazyColumn`, a `LazyRow`, a bottom sheet: on
+ * a screen that is a list, what survives is the frame around it. Silently, and only in release, which
+ * is the combination that makes it expensive to find.
  *
- * Procurar um campo cujo TIPO é CompositionContext funciona depois da ofuscação,
- * porque a referência de tipo é resolvida pelo compilador. O resultado é
- * memoizado por classe, então o custo de reflection é pago uma vez.
+ * Looking for a field whose *type* is CompositionContext works after obfuscation, because the type
+ * reference is resolved by the compiler rather than by a string. The result is memoised per class, so
+ * the reflection is paid for once.
  */
 private val contextFieldByClass = ConcurrentHashMap<Class<*>, Field>()
 private val classesWithoutContext: MutableSet<Class<*>> =
@@ -77,8 +77,8 @@ private fun CompositionContext.composersField(): Field? {
     composersFieldByClass[cls]?.let { return it }
     if (cls in classesWithoutComposers) return null
 
-    // `composers` é um Set<Composer>; o tipo declarado é genérico, então
-    // identificamos pelo conteúdo.
+    // `composers` is a Set<Composer>, and the declared type is generic — so the field is
+    // identified by what it holds rather than by its type.
     val field = runCatching {
         cls.declaredFields
             .asSequence()

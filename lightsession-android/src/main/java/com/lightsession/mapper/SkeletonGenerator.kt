@@ -102,64 +102,111 @@ class SkeletonGenerator {
     }
 
     /**
-     * Waits for the screen to become drawable, then makes something out of it.
+     * Waits for the screen to have something on it, then makes something out of it.
      *
-     * For a classic Activity the hierarchy is already measured by the time this runs, so the capture
-     * is immediate.
+     * A navigation event can arrive before the screen exists. Compose was the known case — the event
+     * lands before the composition has emitted a single node — and the fix was to wait for the tree
+     * to *stop changing* rather than to guess a delay, which the previous `postDelayed(1000)` did
+     * badly in both directions.
      *
-     * Not for Compose: the navigation event arrives before the composition has emitted a single
-     * node. The previous version worked around it with `postDelayed(1000)` — a guess that was too
-     * long for a static screen and too short for one loading data, and when it was wrong it recorded
-     * an empty skeleton without saying so. [ComposeSettleDetector] waits for the composition to
-     * *stop changing* instead, which is quick when it can be and patient when it has to be.
+     * The mistake was believing Compose was the only such case. Everything else took a fast path
+     * asking `rootView.width > 0 && height > 0` — whether the window has a **size** — and captured
+     * on the spot. A window has a size immediately; that says nothing about whether anything has
+     * been drawn into it.
+     *
+     * React Native is the second case, and it is not a niche one: the whole app is one Activity whose
+     * content is rendered by JavaScript after `onResume`. Measured on a stock RN app, the wireframe
+     * went out 238ms *before* the JS bundle logged `Running "example"`, so the scan walked an empty
+     * `ReactRootView` and stored a blank page — while the real screenshot, which waits, came out
+     * perfect. Any host that fills its tree asynchronously would have failed the same way: a Flutter
+     * view, a WebView, a layout inflated off a coroutine.
+     *
+     * So there is one path now, and the question it asks is "is there anything here yet" rather than
+     * "does the window have a size". A classic Activity that is already laid out answers yes on the
+     * first frame and is captured with no added delay — the fast path is not lost, it just stopped
+     * being a special case that assumed the answer.
      *
      * The wait lives here rather than in each capture mode because it is the only hard part:
      * [generateSkeletonFrame] and [generateSkeletonBitmap] differ only in what they do with the
      * hierarchy once it exists.
      *
      * @param onComplete receives null when there was nothing to capture. No skeleton beats a blank
-     *   one marked valid.
+     *   one marked valid — which is exactly what React Native was producing.
      */
     private fun <T> awaitDrawableRoot(
         activity: Activity,
         produce: (Activity, View) -> T?,
         onComplete: (T?) -> Unit,
     ) {
-        val rootView = activity.window.decorView.rootView
-
-        if (!containsComposeView(rootView)) {
-            if (rootView.width > 0 && rootView.height > 0) {
-                onComplete(produce(activity, rootView))
-                return
-            }
-            rootView.viewTreeObserver.addOnGlobalLayoutListener(
-                object : ViewTreeObserver.OnGlobalLayoutListener {
-                    override fun onGlobalLayout() {
-                        rootView.viewTreeObserver.removeOnGlobalLayoutListener(this)
-                        onComplete(
-                            if (rootView.width > 0 && rootView.height > 0) {
-                                produce(activity, rootView)
-                            } else {
-                                null
-                            }
-                        )
-                    }
-                }
-            )
-            return
-        }
-
         settleDetector.await(
             activity = activity,
             hasContent = {
                 val root = activity.window?.decorView?.rootView
-                root != null && root.width > 0 && root.height > 0 && composeNodeCount(root) > 0
+                root != null && root.width > 0 && root.height > 0 && contentCount(root) > 0
             },
             onSettled = { settled ->
                 val root = settled.window?.decorView?.rootView
                 onComplete(root?.let { produce(settled, it) })
             },
         )
+    }
+
+    /**
+     * How much of the *app's own* content this screen would draw.
+     *
+     * Counting rects was the obvious measure and it was wrong. `scanOnly` returns exactly what the
+     * capture will draw, which is the right property — but from the decor view it is never zero. A
+     * window arrives with its own furniture: a status bar background, a navigation bar, the content
+     * frame. On React Native that furniture settled the wait 4ms before the JS bundle logged
+     * `Running "example"`, and the stored wireframe was those rects and nothing else: a thin border
+     * around a white page, byte-for-byte identical to the blank one it was meant to fix.
+     *
+     * So the question is asked twice as narrowly. Only under `android.R.id.content`, which is where
+     * an app's views live and the window's own do not. And only *leaves* — text, an image, an input,
+     * a button — because a container proves nothing: an empty `ReactRootView` is a `ViewGroup` and
+     * counts as a rect while showing nothing at all. A wireframe with no leaves is a blank wireframe,
+     * which is the thing being avoided, so that is the thing to measure.
+     *
+     * Compose is still asked through the tooling data: its nodes are not Views, so a View walk sees
+     * only the host.
+     */
+    private fun contentCount(rootView: View): Int {
+        if (containsComposeView(rootView)) return composeNodeCount(rootView)
+
+        val content = rootView.findViewById<View>(android.R.id.content) ?: rootView
+        return runCatching { contentLeaves(scanViewHierarchy(content)) }.getOrDefault(0)
+    }
+
+    /**
+     * Nodes that put something on the page, as opposed to nodes that only hold others.
+     *
+     * `UNKNOWN` counts, and that is the whole subtlety. A first version excluded it as "not real
+     * content", which broke a kind of screen this SDK is meant to handle: a plain `View` with a
+     * background — a splash holding a logo, a chart, anything drawn rather than composed of widgets —
+     * classifies as `UNKNOWN`, because it is not a TextView or an ImageView or a ViewGroup. Excluding
+     * it meant such a screen never satisfied the wait, timed out after five seconds and stored **no
+     * wireframe at all**, where before it stored a correct one immediately. Trading a blank wireframe
+     * on React Native for a missing wireframe on Android is not a fix.
+     *
+     * An empty container is what does not count, and it is the thing being distinguished. Under
+     * `android.R.id.content` a React Native app that has not rendered yet is exactly one
+     * `ReactRootView` — a `ViewGroup` with no children — while any laid-out Android screen has
+     * something that draws. That difference is the signal; "is it a widget" never was.
+     */
+    private fun contentLeaves(node: SkeletonNode?): Int {
+        if (node == null) return 0
+        val self = when (node.type) {
+            NodeType.TEXT, NodeType.IMAGE, NodeType.INPUT,
+            NodeType.BUTTON, NodeType.CARD, NodeType.WEBVIEW,
+            // A plain View that draws. See the kdoc: excluding this cost Android screens their
+            // wireframe entirely.
+            NodeType.UNKNOWN -> 1
+            // Holds others and draws only an outline. Its children are counted below, so a container
+            // with content still answers yes — an empty one, which is what an unrendered React Native
+            // root looks like, does not.
+            NodeType.CONTAINER, NodeType.COMPOSE_HOST -> 0
+        }
+        return self + node.children.sumOf { contentLeaves(it) }
     }
 
     /**

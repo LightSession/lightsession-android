@@ -210,7 +210,38 @@ publishing {
             // Minor, not patch: three public methods leave a public class, and the thread factory
             // narrows to `internal`. Nothing outside this SDK is known to call them, but the
             // signatures are gone.
-            version = "0.11.0"
+            // 0.12.0 waits for a screen to have content before drawing its wireframe, whatever the
+            // screen is rendered by.
+            //
+            // Compose was treated as the only host that fills its tree late. Everything else took a
+            // fast path asking whether the *window* had a size — which is true immediately and says
+            // nothing about whether anything has been drawn into it. Measured on a stock React Native
+            // app: the wireframe went out 238ms before the JS bundle logged `Running "example"`, so
+            // the scan walked an empty `ReactRootView` and stored a blank page. The real screenshot,
+            // which waits, came out perfect — so this was never a capability problem, only a timing
+            // one.
+            //
+            // One path now, asking "is there anything here yet". An Activity already laid out answers
+            // yes on the first frame and is captured with no added delay.
+            //
+            // Minor: an app whose screens render asynchronously starts getting wireframes it never
+            // got, with no code change on its side.
+            // 0.13.0 lets a host report the screen it is on, for a UI toolkit the SDK cannot see into.
+            //
+            // Every other screen in the map is discovered — an Activity resumes, a fragment
+            // destination changes, a Compose NavController reports one. React Native defeats all
+            // three: the whole app is one Activity and its screens are a JavaScript concern the
+            // platform never hears about, so such an app recorded exactly one screen forever.
+            //
+            // `LightSession.setScreen(name)` is the same bargain `withNavigationTracking()` strikes
+            // for Compose — the SDK cannot find the navigator, so the host hands the answer over — and
+            // it routes through the same flow tracking as everything else, so a screen named from
+            // JavaScript gets a wireframe and a heatmap like any other. `ScreenType.REACT_NATIVE`
+            // records where the name came from, kept distinct from "unknown": such a screen is
+            // precisely known, just known from somewhere else.
+            //
+            // Minor: additive public API and a new enum case.
+            version = "0.13.0"
 
             afterEvaluate {
                 from(components["release"])

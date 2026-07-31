@@ -1,6 +1,8 @@
 package com.lightsession.mapper
 
 import android.app.Activity
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.Choreographer
@@ -123,8 +125,8 @@ internal class ComposeSettleDetector(
                     }
 
                     if (elapsed >= timeoutMs) {
-                        // Sem conteúdo depois do teto: capturar geraria um skeleton
-                        // em branco, que é pior que nenhum. Desiste.
+                        // No content by the ceiling: capturing would store a blank skeleton, which
+                        // is worse than storing none. Give up instead.
                         val content = hasContent()
                         Log.w(
                             "ComposeSettle",
@@ -178,7 +180,7 @@ internal class ComposeSettleDetector(
      * `onSettled` não é chamado se a espera for cancelada, se a Activity morrer,
      * ou se estourar o tempo sem a composição produzir nenhum nó.
      *
-     * @param hasContent avaliado só quando a tela parece quieta, não a cada quadro.
+     * @param hasContent evaluated only once the screen looks quiet, not on every frame.
      */
     fun await(
         activity: Activity,
@@ -188,7 +190,27 @@ internal class ComposeSettleDetector(
         cancel()
         val handle = Handle(WeakReference(activity), hasContent, onSettled)
         this.handle = handle
-        handle.start()
+
+        // Started on the main thread, whatever thread asked.
+        //
+        // Everything this touches is main-thread-only: `Choreographer.getInstance()` throws
+        // "The current thread must have a looper!" outright, `ViewTreeObserver` is not synchronised,
+        // and reading a view hierarchy off the main thread is undefined at best. That used to be
+        // satisfied by accident — only Compose hosts came through here, and they are always reported
+        // from the main thread. When every capture path started using this, one that runs on a
+        // background thread began throwing, and the screen lost its wireframe silently: the exception
+        // was caught upstream and the real screenshot arrived five seconds later, covering the hole.
+        //
+        // Asserting the requirement here rather than at each caller, because it is this class's
+        // requirement and a caller cannot be expected to know it.
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            handle.start()
+        } else {
+            Handler(Looper.getMainLooper()).post {
+                // The next `await` may have cancelled this one while the post was in flight.
+                if (this.handle === handle) handle.start()
+            }
+        }
         return handle
     }
 

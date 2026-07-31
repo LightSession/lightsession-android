@@ -100,6 +100,27 @@ data class LightSessionConfig @JvmOverloads constructor(
     val captureRealScreens: Boolean = true,
 
     /**
+     * Whether the host names its own screens, instead of the SDK discovering them.
+     *
+     * Off for a normal Android app, where the platform *is* the answer: an Activity resumes, a
+     * fragment destination changes, a Compose NavController reports one.
+     *
+     * On for React Native, and for anything else where the platform cannot see the screens. An RN app
+     * is a single Activity hosting everything, so with this off the map gets one node named after that
+     * Activity at the top of every session — a screen no user ever navigated to, permanently, since
+     * screens are permanent. With it on the Activity is not reported and `setScreen` is the only
+     * source, which is the truth for such an app.
+     *
+     * Turning this on without calling [LightSession.setScreen] records no screens at all. The SDK
+     * says so in the log once, rather than leaving you to notice an empty map — but it cannot fix it
+     * for you, because there is nothing to fall back to.
+     *
+     * The `lightsession-react-native` package sets this; an app wiring the SDK by hand sets it itself.
+     */
+    val screensReportedByHost: Boolean = false,
+
+
+    /**
      * Count a tab as its own screen.
      *
      * A screen built from tabs is several screens to the person using it, but one

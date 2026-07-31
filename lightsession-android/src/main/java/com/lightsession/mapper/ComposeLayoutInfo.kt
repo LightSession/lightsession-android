@@ -103,12 +103,11 @@ internal sealed class ComposeLayoutInfo {
  * to provide granular detail about the hierarchy if desired.
  */
 /**
- * Índice de semantics por id de nó, calculado uma única vez.
+ * Semantics indexed by node id, built once.
  *
- * O código original chamava `getAllSemanticsNodes()` dentro do laço, uma vez por
- * LayoutNode — numa tela com 200 nós isso é 200 varreduras completas da árvore de
- * semantics, na main thread, durante a navegação. Agrupar por id uma vez torna a
- * busca O(1).
+ * The original called `getAllSemanticsNodes()` inside the loop, once per LayoutNode — on a screen
+ * with 200 nodes that is 200 full walks of the semantics tree, on the main thread, during a
+ * navigation. Grouping by id once makes each lookup O(1).
  */
 internal class SemanticsIndex(owner: SemanticsOwner?) {
   private val byId: Map<Int, List<SemanticsNode>> =
