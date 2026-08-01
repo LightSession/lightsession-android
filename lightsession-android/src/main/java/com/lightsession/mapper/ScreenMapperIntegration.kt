@@ -399,7 +399,20 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
          * platform. Distinct from a missing type: an RN screen is precisely known, just known from
          * somewhere else.
          */
-        REACT_NATIVE
+        REACT_NATIVE,
+
+        /**
+         * A screen a Dart navigator named.
+         *
+         * Flutter has the same problem React Native has and one more. It is one Activity, so nothing
+         * the platform offers distinguishes its screens — that part is identical. It also renders to a
+         * single surface, so unlike React Native there is no view tree underneath either, and the
+         * wireframe and the mask come from the app as well as the name.
+         *
+         * Its own value rather than [REACT_NATIVE] for the reason [REACT_NATIVE] exists: a Flutter
+         * screen labelled as React Native is a lie that reads as a bug to whoever opens the map.
+         */
+        FLUTTER
     }
 
     companion object {
