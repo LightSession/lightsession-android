@@ -79,9 +79,18 @@ internal object SubScreens {
     }
 
     /**
-     * The full screen name for a destination and the part of it in view.
+     * The full screen name for a destination and the parts of it in view, innermost last.
      *
-     * The suffix is dropped when it merely repeats the destination — see [isRedundant].
+     * Plural, and it was the fix for a measured hole in the map. The layers used to be one
+     * slot: opening a dialog *replaced* the tab it was raised from, so a dialog opened from
+     * each of three tabs was one node — `dashboard › dialog-4fab23` three times — and the
+     * heatmaps of three different screens piled onto one wireframe. The tab was even saved
+     * and restored around the modal, so navigation looked right while the identity was
+     * wrong. Now the layers nest: `dashboard › History › dialog-4fab23`.
+     *
+     * A suffix is dropped when it merely repeats the name built so far — see [isRedundant].
+     * That rule working per-layer is also what keeps a modal named like the tab it covers
+     * from stuttering: `dashboard › Filter › Filter` folds to `dashboard › Filter`.
      *
      * Which tab counts as a sub-screen at all is settled before this, by diffing what is
      * selected now against what was selected on arrival: the tab a screen opens on *is* that
@@ -89,11 +98,16 @@ internal object SubScreens {
      * arrival. This is the belt to that brace — a reading taken before the arrival state was
      * known can still produce `home › Home`, and that is noise.
      */
-    fun compose(base: String, sub: SubScreen?): String {
-        if (sub == null) return base
-        if (isRedundant(base, sub.label)) return base
-        return base + SEPARATOR + sub.label
+    fun compose(base: String, subs: List<SubScreen>): String {
+        var name = base
+        for (sub in subs) {
+            if (!isRedundant(name, sub.label)) name += SEPARATOR + sub.label
+        }
+        return name
     }
+
+    /** One part, for the callers and tests that have at most one. */
+    fun compose(base: String, sub: SubScreen?): String = compose(base, listOfNotNull(sub))
 
     private fun isRedundant(base: String, label: String): Boolean {
         val leaf = base.substringAfterLast('/').substringAfterLast(SEPARATOR)
@@ -104,14 +118,4 @@ internal object SubScreens {
             )
     }
 
-    /**
-     * Whether moving from one sub-screen to another is worth reporting.
-     *
-     * Almost every call is a no-op: the tab is re-read after every gesture, and most
-     * gestures are not tab changes. The reads that follow a navigation are not routed here
-     * at all — they establish the destination's default instead, because at that moment the
-     * NavController has already reported the move and counting it again would turn one
-     * navigation into two.
-     */
-    fun shouldReport(previous: SubScreen?, next: SubScreen?): Boolean = previous != next
 }

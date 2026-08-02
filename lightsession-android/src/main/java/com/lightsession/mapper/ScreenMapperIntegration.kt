@@ -133,7 +133,17 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      */
     private var baseScreenOwner: WeakReference<Activity>? = null
 
-    private var currentSubScreen: SubScreen? = null
+    /**
+     * The parts of the current destination in view, as three fixed layers.
+     *
+     * Layers rather than one slot, and the difference was measured on the sample's tabbed
+     * screen: with one slot, a dialog *replaced* the tab it was raised from, so the same
+     * dialog opened from each of three tabs was one node — the tab survived only as saved
+     * state to restore on dismissal, never as part of the name. The order is fixed by what
+     * each layer is: a tab is part of the destination, a declared panel is drawn over the
+     * tab, and a modal is its own window over everything.
+     */
+    private var tabSubScreen: SubScreen? = null
 
     /**
      * Every tab that was already selected when this destination was entered.
@@ -160,14 +170,12 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     private var modalRootView: java.lang.ref.WeakReference<android.view.View>? = null
 
     /**
-     * What was showing underneath the open modal.
-     *
-     * Closing a dialog returns to whatever was behind it, which is not necessarily the
-     * bare destination: dismiss a confirm dialog raised from the History tab and the
-     * reader is back on History, not on the screen's default tab. Reporting the
-     * destination there would record an arrival that never happened.
+     * The modal layer. Its window closing is what clears it, and what was underneath needs
+     * no saving: the tab and declared layers were never displaced, so removing this one
+     * uncovers them — dismiss a confirm dialog raised from the History tab and the name
+     * falls back from `… › History › dialog` to `… › History` by construction.
      */
-    private var subScreenBeneathModal: SubScreen? = null
+    private var modalSubScreen: SubScreen? = null
 
     private var sessionDataManager: SessionDataManager? = null
 
@@ -597,8 +605,8 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     private var touchEventListener: OnTouchEventListener? = null
 
     private var onScreenClickListener: (() -> Unit)? = {
-        // O usuário interagiu antes da tela assentar: ela não é uma tela
-        // "parada" e não vale mapear. Essa é a heurística original.
+        // Touched before it settled, so this is not a screen at rest and is not worth mapping:
+        // whatever is captured now is a state the person made rather than the one they arrived at.
         skeletonGenerator.cancelPendingCapture()
         cancelScreenshot()
     }
@@ -1041,10 +1049,10 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     private fun enterDestination(screenName: String) {
         baseScreen = screenName
         baseScreenOwner = currentActivityWeakRef
-        currentSubScreen = null
+        tabSubScreen = null
+        modalSubScreen = null
         defaultTabs = emptyList()
         modalRootView = null
-        subScreenBeneathModal = null
         // A panel does not survive the destination it was declared on. Its `onDispose` will
         // arrive, but composition teardown races the NavController and can land after the
         // next screen has been reported.
@@ -1065,7 +1073,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      * and treating it as one means the edge shows up in the flow graph, the new name gets
      * an id and a capture, and none of that had to be reimplemented here.
      */
-    private fun applySubScreen(next: SubScreen?) {
+    private fun applySubScreens() {
         val base = baseScreen ?: return
 
         // A sub-screen is a part *of* a base, so the base has to belong to the Activity in front.
@@ -1081,14 +1089,14 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             return
         }
 
-        if (!SubScreens.shouldReport(currentSubScreen, next)) return
-
         val from = lastScreen ?: base
-        val to = SubScreens.compose(base, next)
-        currentSubScreen = next
+        val to = SubScreens.compose(
+            base,
+            listOfNotNull(tabSubScreen, declaredSubScreen, modalSubScreen),
+        )
         if (to == from) {
-            // The suffix resolved back to the bare destination — the reader returned to
-            // the tab this screen arrived on. Recorded, but there is nowhere to move to.
+            // The layers resolved back to the name already current — the reader returned to
+            // the tab this screen arrived on, or a re-read found nothing moved.
             return
         }
 
@@ -1123,10 +1131,11 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         if (next == declaredSubScreen) return
         declaredSubScreen = next
         if (next != null) {
-            applySubScreen(next)
+            applySubScreens()
         } else {
-            // Not simply `applySubScreen(null)`: the destination may have tabs, and naming
-            // the bare screen here would report an arrival somewhere the reader is not.
+            // Not applied directly: the tab layer was frozen while the panel was up, and the
+            // person may have moved the screen underneath in the meantime. A fresh read
+            // updates it from the live tree and applies the layers itself.
             scheduleSubScreenRead()
         }
     }
@@ -1154,8 +1163,8 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             mainHandler.postDelayed({ readModal(view) }, MODAL_SETTLE_MS)
         } else if (modalRootView?.get() === view) {
             modalRootView = null
-            applySubScreen(subScreenBeneathModal)
-            subScreenBeneathModal = null
+            modalSubScreen = null
+            applySubScreens()
         }
     }
 
@@ -1174,8 +1183,8 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         } ?: return
 
         modalRootView = java.lang.ref.WeakReference(view)
-        subScreenBeneathModal = currentSubScreen
-        applySubScreen(modal)
+        modalSubScreen = modal
+        applySubScreens()
     }
 
     private fun scheduleSubScreenRead(baseline: Boolean = false) {
@@ -1192,7 +1201,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         //
         // An in-composition overlay is the opposite case and must keep being read: no
         // window is removed when it closes, so this is the only thing that ever notices.
-        if (currentSubScreen?.kind == SubScreen.Kind.MODAL) return@Runnable
+        if (modalSubScreen != null) return@Runnable
         val activity = currentActivityWeakRef?.get() ?: return@Runnable
 
         // Bail before reading, not just before reporting. `applySubScreen` guards the report for
@@ -1225,11 +1234,13 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         val chosen = tabs.firstOrNull { it !in defaultTabs }
         Log.d("ScreenMapper", "tabs now $tabs, arrived with $defaultTabs, chose $chosen")
 
-        // What the app declared wins over what was read: it is the more specific claim, and
-        // the panel it names is drawn over the tab the read found.
-        val next = declaredSubScreen
-            ?: chosen?.takeIf { trackTabs }?.let { SubScreen(SubScreen.Kind.TAB, it) }
-        applySubScreen(next)
+        // While a declared panel is up the tab layer stays frozen, for the same reason the
+        // modal freezes it: the panel is drawn over the screen, so what this read found is
+        // either hidden content or the panel's own insides — neither is the person moving.
+        if (declaredSubScreen == null) {
+            tabSubScreen = chosen?.takeIf { trackTabs }?.let { SubScreen(SubScreen.Kind.TAB, it) }
+        }
+        applySubScreens()
     }
 
     private fun getOrCreateScreenNode(name: String, type: ScreenType): ScreenNode {
@@ -1415,13 +1426,12 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                 theme = currentTheme
             )
 
-            // Envia os NOMES das telas, não os IDs compostos.
+            // Screen NAMES, not composite ids.
             //
-            // O ID composto embute versão, resolução e tema
-            // (`home_2.1_2_1080_2337_Light`). Mandá-lo como extremidade do fluxo
-            // fazia o servidor registrar uma tela nova por resolução, então o
-            // grafo enchia de nós fantasma duplicados — um por combinação de
-            // aparelho. A identidade da tela é o nome; o resto descreve a captura.
+            // The composite embeds version, resolution and theme — `home_2.1_2_1080_2337_Light`.
+            // Sending it as an edge's endpoint made the server register a new screen per
+            // resolution, so the graph filled with duplicate phantom nodes, one per device
+            // combination. A screen's identity is its name; the rest describes the capture.
             val flowResult = dataSender?.sendNavigationFlow(
                 fromScreen = from,
                 toScreen = to,

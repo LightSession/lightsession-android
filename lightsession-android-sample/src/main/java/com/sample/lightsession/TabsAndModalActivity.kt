@@ -30,7 +30,9 @@ import com.lightsession.LightSession
  *
  * A tab and a modal are not navigations — the destination never changes — but to a person they are
  * places, and a map that cannot tell them apart from the screen underneath cannot answer where people
- * spend their time. The SDK reports them as `TabsAndModalActivity › <part>`.
+ * spend their time. The SDK reports them as `TabsAndModalActivity › <part>`, and the parts nest: a
+ * dialog raised from the History tab is `… › History › <dialog>`, its own node with its own heatmap,
+ * because the clicks that opened it happened on that tab and not on the screen's default.
  *
  * Three mechanisms, and they fail differently, so each is here on purpose:
  *
@@ -110,8 +112,8 @@ class TabsAndModalActivity : ComponentActivity() {
                         text = {
                             Text(
                                 "Its own window, so the SDK sees it as one rather than reading it " +
-                                    "from the view tree. Dismissing should return to " +
-                                    "› ${titles[tab].lowercase()}, not to the first tab.",
+                                    "from the view tree. Expected nested under this tab, and " +
+                                    "dismissing returns to › ${titles[tab].lowercase()}, not to the first tab.",
                             )
                         },
                         confirmButton = {

@@ -1,9 +1,7 @@
 package com.lightsession.mapper
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -92,8 +90,6 @@ class SubScreensTest {
     fun `a declared panel is a sub-screen like any other`() {
         val declared = SubScreen(SubScreen.Kind.DECLARED, "filter-sheet")
         assertEquals("doctors › filter-sheet", SubScreens.compose("doctors", declared))
-        assertTrue(SubScreens.shouldReport(null, declared))
-        assertTrue(SubScreens.shouldReport(declared, null))
     }
 
     @Test
@@ -110,40 +106,76 @@ class SubScreensTest {
         assertEquals("home › Home Feed", SubScreens.compose("home", tab))
     }
 
-    // --------------------------------------------------------- shouldReport
+    // ----------------------------------------------------------- layers
 
     @Test
-    fun `moving between tabs is reported`() {
-        assertTrue(
-            SubScreens.shouldReport(
-                previous = SubScreen(SubScreen.Kind.TAB, "Overview"),
-                next = SubScreen(SubScreen.Kind.TAB, "History"),
+    fun `a dialog keeps the tab it was raised from`() {
+        // The bug this whole arrangement replaced. With one sub-screen slot, the dialog
+        // displaced the tab: opened from each of three tabs it was one node, three
+        // heatmaps piled onto one wireframe, and the tab survived only as state to
+        // restore on dismissal — never as part of the name.
+        val dialog = SubScreen(SubScreen.Kind.MODAL, "dialog-4fab23")
+        val names = listOf("Overview", "History", "Settings").map { tab ->
+            SubScreens.compose(
+                "TabsAndModalActivity",
+                listOf(SubScreen(SubScreen.Kind.TAB, tab), dialog),
+            )
+        }
+        assertEquals(
+            listOf(
+                "TabsAndModalActivity › Overview › dialog-4fab23",
+                "TabsAndModalActivity › History › dialog-4fab23",
+                "TabsAndModalActivity › Settings › dialog-4fab23",
+            ),
+            names,
+        )
+    }
+
+    @Test
+    fun `a dialog over the arrival tab sits on the bare destination`() {
+        // The arrival tab folds into the base — that tab *is* the screen — so a dialog
+        // raised there has no tab layer under it. Consistent, if slightly asymmetric:
+        // `dashboard › dialog` from the default tab, `dashboard › History › dialog` from
+        // any other.
+        assertEquals(
+            "dashboard › dialog-4fab23",
+            SubScreens.compose("dashboard", listOf(SubScreen(SubScreen.Kind.MODAL, "dialog-4fab23"))),
+        )
+    }
+
+    @Test
+    fun `all three layers nest in their fixed order`() {
+        assertEquals(
+            "dashboard › History › filters › dialog-4fab23",
+            SubScreens.compose(
+                "dashboard",
+                listOf(
+                    SubScreen(SubScreen.Kind.TAB, "History"),
+                    SubScreen(SubScreen.Kind.DECLARED, "filters"),
+                    SubScreen(SubScreen.Kind.MODAL, "dialog-4fab23"),
+                ),
             ),
         )
     }
 
     @Test
-    fun `re-reading the same tab is not a change`() {
-        // This runs after every touch, so most reads return what the last one did.
-        val same = SubScreen(SubScreen.Kind.TAB, "Overview")
-        assertFalse(SubScreens.shouldReport(same, same.copy()))
-    }
-
-    @Test
-    fun `opening and closing a modal are both reported`() {
-        val modal = SubScreen(SubScreen.Kind.MODAL, "confirm-delete")
-        assertTrue(SubScreens.shouldReport(null, modal))
-        assertTrue(SubScreens.shouldReport(modal, null))
-    }
-
-    @Test
-    fun `a tab and a modal with the same label are different sub-screens`() {
-        assertTrue(
-            SubScreens.shouldReport(
-                previous = SubScreen(SubScreen.Kind.TAB, "Filter"),
-                next = SubScreen(SubScreen.Kind.MODAL, "Filter"),
+    fun `a layer that repeats the one beneath folds into it`() {
+        // A modal named like the tab it covers must not stutter: the redundancy rule reads
+        // the name built so far, layer by layer, so `Filter › Filter` never happens.
+        assertEquals(
+            "doctors › Filter",
+            SubScreens.compose(
+                "doctors",
+                listOf(
+                    SubScreen(SubScreen.Kind.TAB, "Filter"),
+                    SubScreen(SubScreen.Kind.MODAL, "Filter"),
+                ),
             ),
         )
     }
 
+    @Test
+    fun `no layers leaves the destination alone`() {
+        assertEquals("dashboard", SubScreens.compose("dashboard", emptyList()))
+    }
 }
