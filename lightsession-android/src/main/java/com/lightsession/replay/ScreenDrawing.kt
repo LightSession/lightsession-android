@@ -642,12 +642,12 @@ internal class ScreenDrawing {
         return try {
             val byteArray = captureCurrentScreenOptimized(ScalePresets.ORIGINAL)
             byteArray?.let {
-                // Só o cabeçalho. Isto lia as dimensões decodificando o JPEG inteiro —
-                // alocar ~10 MB e descomprimir uma tela cheia para ler dois inteiros que
-                // estão nos primeiros bytes do arquivo, e que o único chamador
-                // (`ScreenMapperIntegration.takeScreenshot`) descarta, porque prefere as
-                // do `displayMetrics`. `inJustDecodeBounds` mantém o contrato da função
-                // sem tocar em pixel nenhum.
+                // The header only. This used to read the dimensions by decoding the whole JPEG —
+                // allocating around 10 MB and decompressing a full screen to read two integers
+                // that sit in the file's first bytes, and that the one caller
+                // (`ScreenMapperIntegration.takeScreenshot`) throws away anyway, since it prefers
+                // `displayMetrics`. `inJustDecodeBounds` keeps the function's contract without
+                // touching a single pixel.
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(it, 0, it.size, bounds)
                 val dimensions = if (bounds.outWidth > 0 && bounds.outHeight > 0) {

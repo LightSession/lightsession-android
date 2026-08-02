@@ -439,7 +439,8 @@ class SkeletonGenerator {
                     layoutInfo.bounds.right,
                     layoutInfo.bounds.bottom
                 )
-                // Semantics primeiro (confiável em release), nome depois (só existe em debug).
+                // Semantics first — it survives R8 — and the composable's name second, since that
+                // only exists in a debug build.
                 val type = classifyBySemantics(layoutInfo.semanticsNodes)
                     ?: determineComposeNodeType(layoutInfo.name)
                 val color = defaultColors[type] ?: Color.LTGRAY

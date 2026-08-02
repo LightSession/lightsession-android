@@ -12,39 +12,38 @@ import androidx.compose.runtime.snapshots.Snapshot
 import java.lang.ref.WeakReference
 
 /**
- * Espera uma tela Compose terminar de compor, em vez de adivinhar quanto tempo isso leva.
+ * Waits for a Compose screen to finish composing, instead of guessing how long that takes.
  *
- * # O problema
+ * # The problem
  *
- * Para uma Activity, `onActivityResumed` só é chamado depois de measure/layout — a
- * hierarquia já está desenhável e o skeleton pode ser gerado no ato.
+ * For an Activity, `onActivityResumed` runs after measure and layout — the hierarchy is already
+ * drawable and the skeleton can be generated on the spot.
  *
- * Compose não funciona assim. O `OnDestinationChangedListener` do NavController
- * dispara quando o *destino* muda, o que acontece antes da composição emitir
- * qualquer LayoutNode. Capturar nesse instante devolve uma árvore vazia. Pior:
- * falha em silêncio — o bitmap sai válido, só que em branco.
+ * Compose does not work that way. The NavController's `OnDestinationChangedListener` fires when the
+ * *destination* changes, which happens before the composition has emitted a single LayoutNode.
+ * Capturing at that moment returns an empty tree, and it fails silently: the bitmap is valid, just
+ * blank.
  *
- * A tentativa anterior era `postDelayed(1000)` (e `postDelayed(300)` no outro
- * caminho). Nenhum número funciona: é demais para uma tela estática e de menos
- * para uma que busca dados da rede. Quando erra, grava um skeleton errado.
+ * The previous attempt was `postDelayed(1000)`, and `postDelayed(300)` on the other path. No number
+ * works — it is too long for a static screen and too short for one fetching from the network, and
+ * when it is wrong it stores a wrong skeleton rather than none.
  *
- * # A solução
+ * # The solution
  *
- * Não existe callback de "a composição terminou" — porque conceitualmente ela
- * nunca termina, só para de mudar. Então é isso que se observa:
+ * There is no "composition finished" callback, because conceptually it never finishes: it only stops
+ * changing. So that is what gets watched:
  *
- * * [Snapshot.registerApplyObserver] avisa a cada aplicação de estado, ou seja, a
- *   cada recomposição que de fato mudou algo;
- * * `OnDrawListener` avisa a cada desenho;
- * * um frame callback do [Choreographer] verifica, a cada quadro, se as duas
- *   coisas ficaram quietas por [quietMs].
+ * * [Snapshot.registerApplyObserver] fires on every state application — that is, on every
+ *   recomposition that actually changed something;
+ * * `OnDrawListener` fires on every draw;
+ * * a [Choreographer] frame callback checks, each frame, whether both have been quiet for [quietMs].
  *
- * Quando o silêncio dura o suficiente **e** a composição tem ao menos um nó, a
- * tela assentou. Tela rápida é capturada em ~100ms em vez de 1000ms; tela lenta
- * espera o quanto precisar, até [timeoutMs].
+ * When the quiet lasts long enough **and** the composition has at least one node, the screen has
+ * settled. A fast screen is captured in about 100ms rather than 1000ms; a slow one waits as long as
+ * it needs, up to [timeoutMs].
  *
- * O observador de snapshot é só uma escrita de timestamp, então o custo por
- * recomposição é desprezível — nada de varrer a composição a cada quadro.
+ * The snapshot observer only writes a timestamp, so the cost per recomposition is negligible —
+ * nothing walks the composition every frame.
  */
 internal class ComposeSettleDetector(
     private val quietMs: Long = DEFAULT_QUIET_MS,
@@ -52,13 +51,13 @@ internal class ComposeSettleDetector(
 ) {
 
     companion object {
-        /** Silêncio necessário para considerar a tela assentada. */
+        /** How long both signals must stay quiet before the screen counts as settled. */
         const val DEFAULT_QUIET_MS = 120L
 
         /**
-         * Teto absoluto. Uma tela com animação infinita (shimmer, spinner) nunca
-         * fica quieta; passado esse tempo captura-se o que houver, que é melhor
-         * que não ter skeleton nenhum.
+         * The absolute ceiling. A screen with an endless animation — a shimmer, a spinner — never
+         * goes quiet, so past this point whatever is there is captured, which is better than having
+         * no skeleton at all.
          */
         const val DEFAULT_TIMEOUT_MS = 5_000L
     }
@@ -66,9 +65,9 @@ internal class ComposeSettleDetector(
     private var handle: Handle? = null
 
     /**
-     * Uma espera em andamento. Cancelável — o chamador precisa disso porque o
-     * usuário pode navegar de novo, ou tocar na tela (o que, pela heurística do
-     * ScreenMapper, desqualifica a tela para mapeamento).
+     * A wait in progress, and cancellable because the caller needs it to be: the person can navigate
+     * again, or touch the screen — which by the ScreenMapper's own rule disqualifies it from being
+     * mapped, since a screen someone has already changed is no longer the screen they arrived at.
      */
     inner class Handle internal constructor(
         private val activityRef: WeakReference<Activity>,
@@ -92,7 +91,7 @@ internal class ComposeSettleDetector(
             val activity = activityRef.get() ?: return finish(null)
             val root = activity.window?.decorView ?: return finish(null)
 
-            // Qualquer estado aplicado é uma recomposição que mudou algo.
+            // Any applied state is a recomposition that changed something.
             snapshotHandle = Snapshot.registerApplyObserver { _, _ ->
                 lastChangeAt = SystemClock.uptimeMillis()
             }
@@ -175,10 +174,10 @@ internal class ComposeSettleDetector(
     }
 
     /**
-     * Aguarda a tela assentar e então chama [onSettled] na main thread.
+     * Waits for the screen to settle, then calls [onSettled] on the main thread.
      *
-     * `onSettled` não é chamado se a espera for cancelada, se a Activity morrer,
-     * ou se estourar o tempo sem a composição produzir nenhum nó.
+     * `onSettled` is not called if the wait is cancelled, if the Activity goes away, or if the
+     * timeout expires without the composition producing a single node.
      *
      * @param hasContent evaluated only once the screen looks quiet, not on every frame.
      */
