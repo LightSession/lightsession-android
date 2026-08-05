@@ -89,9 +89,11 @@ internal object SubScreenReader {
     /**
      * The label of the currently selected tab in this window, or null.
      *
-     * A tab's label is safe to build a screen name out of, which is what separates this
-     * from the modal case: it is a fixed string in the source ("Overview"), not per-user
-     * content, so it cannot mint a screen per row of data.
+     * A tab's label is *usually* safe to build a screen name out of — "Overview" is a fixed
+     * string in the source. The original version of this comment claimed it always is, and
+     * that was wrong: Twitter's home renders each community the user joined as a sibling
+     * tab, so there the label is per-user data and would mint a screen per row. Form cannot
+     * tell the two apart; [TabCardinality] tells them apart by arithmetic, downstream.
      */
     fun selectedTab(root: View): String? {
         forEachComposeHost(root) { host ->

@@ -179,3 +179,59 @@ class SubScreensTest {
         assertEquals("dashboard", SubScreens.compose("dashboard", emptyList()))
     }
 }
+
+/**
+ * The counter that keeps a tab-per-record screen from minting a node per row.
+ *
+ * The measured case: Twitter's home shows each joined community as a sibling tab of
+ * "For you" and "Following", so the label set is per-user and unbounded. Every test
+ * here is that screen in miniature.
+ */
+class TabCardinalityTest {
+
+    @Test
+    fun `fixed tab rows fit under the limit untouched`() {
+        val cardinality = TabCardinality(limit = 8)
+        for (tab in listOf("For you", "Following", "Overview", "History")) {
+            assertEquals(true, cardinality.accept("home", tab))
+        }
+    }
+
+    @Test
+    fun `a new label past the limit is refused`() {
+        val cardinality = TabCardinality(limit = 2)
+        cardinality.accept("home", "For you")
+        cardinality.accept("home", "Following")
+        assertEquals(false, cardinality.accept("home", "Rust São Paulo"))
+    }
+
+    @Test
+    fun `labels accepted before the limit keep working after it`() {
+        // Identity must be stable: an over-budget screen still names the tabs that were
+        // real, or the same place becomes two screens across one session.
+        val cardinality = TabCardinality(limit = 2)
+        cardinality.accept("home", "For you")
+        cardinality.accept("home", "Following")
+        cardinality.accept("home", "Flutter Brasil")
+        assertEquals(true, cardinality.accept("home", "For you"))
+        assertEquals(true, cardinality.accept("home", "Following"))
+    }
+
+    @Test
+    fun `screens budget independently`() {
+        // One data-shaped screen must not spend another screen's budget: the settings
+        // screen's honest tabs stay named however wild home gets.
+        val cardinality = TabCardinality(limit = 1)
+        cardinality.accept("home", "For you")
+        assertEquals(false, cardinality.accept("home", "Following"))
+        assertEquals(true, cardinality.accept("settings", "General"))
+    }
+
+    @Test
+    fun `the advice fires once per screen`() {
+        val cardinality = TabCardinality(limit = 1)
+        assertEquals(true, cardinality.shouldAdvise("home"))
+        assertEquals(false, cardinality.shouldAdvise("home"))
+        assertEquals(true, cardinality.shouldAdvise("settings"))
+    }
+}

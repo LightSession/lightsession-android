@@ -146,6 +146,13 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     private var tabSubScreen: SubScreen? = null
 
     /**
+     * The backstop for tabs whose labels are rows of data — see [TabCardinality] for the
+     * measured case (Twitter renders each joined community as a tab). Session-lived, like
+     * the map itself.
+     */
+    private val tabCardinality = TabCardinality()
+
+    /**
      * Every tab that was already selected when this destination was entered.
      *
      * A list, and the diff against it is what identifies the reader's choice. A screen can
@@ -1238,9 +1245,36 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         // modal freezes it: the panel is drawn over the screen, so what this read found is
         // either hidden content or the panel's own insides — neither is the person moving.
         if (declaredSubScreen == null) {
-            tabSubScreen = chosen?.takeIf { trackTabs }?.let { SubScreen(SubScreen.Kind.TAB, it) }
+            tabSubScreen = chosen
+                ?.takeIf { trackTabs }
+                ?.takeIf { label -> believeTab(label) }
+                ?.let { SubScreen(SubScreen.Kind.TAB, it) }
         }
         applySubScreens()
+    }
+
+    /**
+     * Whether this tab label can still be part of the screen's identity.
+     *
+     * Refusing drops the tab *layer*, not the screen: the reading falls back to the bare
+     * destination, which is where every over-budget tab's traffic should pool — one node
+     * that means "this screen, some tab", instead of a node per row of whatever the tabs
+     * are made of. A screen the tracker has not named yet cannot be counted against, so it
+     * is believed; the next read has the name.
+     */
+    private fun believeTab(label: String): Boolean {
+        val screen = baseScreen ?: return true
+        if (tabCardinality.accept(screen, label)) return true
+        if (tabCardinality.shouldAdvise(screen)) {
+            Log.w(
+                "ScreenMapper",
+                "$screen has produced more than ${TabCardinality.DEFAULT_LIMIT} distinct tabs — " +
+                    "these labels look like data (one tab per record), not places, so new ones " +
+                    "will not become screens. If some are real places, name them with " +
+                    "LightSession.setSubScreen.",
+            )
+        }
+        return false
     }
 
     private fun getOrCreateScreenNode(name: String, type: ScreenType): ScreenNode {

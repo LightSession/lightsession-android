@@ -13,3 +13,5 @@
 .externalNativeBuild
 .cxx
 local.properties
+# Kotlin daemon session files
+.kotlin/

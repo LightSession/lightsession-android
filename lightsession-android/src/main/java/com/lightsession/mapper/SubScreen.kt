@@ -119,3 +119,64 @@ internal object SubScreens {
     }
 
 }
+
+/**
+ * How many distinct tabs one screen may name before the SDK stops believing them.
+ *
+ * The tab reader's original premise was written down beside it: a tab's label is "a fixed
+ * string in the source ('Overview'), not per-user content, so it cannot mint a screen per
+ * row of data". That premise is false for a whole class of real UI. Twitter's home renders
+ * each community the user joined as a sibling tab of "For you" and "Following" — the label
+ * *is* per-user data, and every user would grow their own set of
+ * `Home › <community>` nodes. Same shape: a trading app with a tab per pinned ticker, a
+ * chat app with a tab per open room.
+ *
+ * Telling those apart from legitimate tabs by looking at the label is not possible —
+ * "Configurações" and "Rust São Paulo" are indistinguishable by form. What does separate
+ * them is arithmetic, the same answer the iOS SDK reached for SwiftUI titles built from
+ * records: a screen's fixed tab row holds a handful of entries, so the count of *distinct*
+ * labels one screen has produced is the tell. Under the limit, tabs are places; past it,
+ * they are rows of data wearing a tab role.
+ *
+ * Labels accepted before the limit keep working forever — switching back to "For you" on an
+ * over-budget screen still names it — because deleting the ones that were right to punish
+ * the ones that were not is the trade the iOS title limit already rejected. The cost of that
+ * choice is order-dependence: open eight communities before ever touching "Following" and
+ * "Following" is the one refused. Accepting it is what keeps this a counter instead of a
+ * classifier.
+ */
+internal class TabCardinality(private val limit: Int = DEFAULT_LIMIT) {
+
+    /** Labels accepted per screen. Bounded by construction: at most [limit] entries each. */
+    private val accepted = HashMap<String, MutableSet<String>>()
+
+    /** Screens already warned about, so the log says it once instead of per read. */
+    private val advised = HashSet<String>()
+
+    /**
+     * Whether [label] may become part of [screen]'s name.
+     *
+     * Never refuses a label it has accepted before, whatever the count — identity must be
+     * stable or the same tab becomes two screens across a session.
+     */
+    fun accept(screen: String, label: String): Boolean {
+        val seen = accepted.getOrPut(screen) { LinkedHashSet() }
+        if (label in seen) return true
+        if (seen.size >= limit) return false
+        seen.add(label)
+        return true
+    }
+
+    /** True the first time [screen] goes over budget; the caller logs on it. */
+    fun shouldAdvise(screen: String): Boolean = advised.add(screen)
+
+    companion object {
+        /**
+         * Well above any fixed tab row — Material guidance caps visible tabs around six, and
+         * the bottom-nav items that also report `Role.Tab` never reach here (they are in the
+         * arrival baseline) — and low enough that a tab-per-record screen trips it within a
+         * user's first minutes rather than after the map is already unreadable.
+         */
+        const val DEFAULT_LIMIT = 8
+    }
+}
