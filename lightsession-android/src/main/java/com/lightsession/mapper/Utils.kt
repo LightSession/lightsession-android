@@ -57,7 +57,23 @@ class Utils {
 
         // The id as a resource name, or its hex value when the id has no name. Last
         // resort, and still stable within a build.
-        else -> destination.displayName
+        //
+        // `displayName` is `@RestrictTo(LIBRARY_GROUP)`, so lint objects and it is right to:
+        // androidx can change or remove it in a minor release without it being a breaking
+        // change for anyone but us. Suppressed here rather than disabled in the lint config,
+        // so that the next call into a restricted API still fails the build.
+        //
+        // Kept rather than replaced because the alternatives are worse than the risk. What it
+        // returns is the id's resource name, which needs `Resources` — a parameter this has no
+        // reason to take otherwise — and the obvious substitutes change the answer: a bare id
+        // or its hex is not the same string, and a screen name is an *identity*, keyed on by
+        // the server and hashed into the on-device cache. Renaming screens to avoid an
+        // annotation would split every affected screen into two rows.
+        //
+        // If it does go: reproduce it as
+        // `runCatching { resources.getResourceName(id) }.getOrElse { "0x" + id.toHexString() }`,
+        // which is what it does, and thread the `Resources` in.
+        else -> @Suppress("RestrictedApi") destination.displayName
     }
 
     /**

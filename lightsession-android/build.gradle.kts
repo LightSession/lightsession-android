@@ -42,6 +42,24 @@ android {
         compose = true
     }
 
+    lint {
+        // Lint gates the build in CI, so it may only fail on something that changed here.
+        //
+        // These two fail on the calendar instead. Both report that a newer version of something
+        // exists — AGP, or a dependency — which becomes true the day it is published and has
+        // nothing to do with the commit under test. Between them they were the *only* errors in
+        // the project (1 error and 55 warnings, then 1 and 46), so leaving them on would mean
+        // either a permanently red pipeline or a lint step nobody gates on.
+        //
+        // Losing them costs the nudge that a dependency has moved on. That is a job for a bot
+        // that opens a pull request you can read and test, not for a check that reddens an
+        // unrelated commit — and upgrading either is a deliberate change with its own testing.
+        //
+        // Errors still abort the build. Nothing else is silenced.
+        disable += "AndroidGradlePluginVersion"
+        disable += "GradleDependency"
+    }
+
     testOptions {
         unitTests {
             // BatchSpool touches android.util.Log, which is not implemented in the

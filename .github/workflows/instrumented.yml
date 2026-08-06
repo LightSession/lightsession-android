@@ -1,0 +1,87 @@
+# The instrumented suite, on a real emulator.
+#
+# This is where the SDK's actual safety argument lives. Masking, capture composition, window
+# geometry and the Compose probes cannot be checked without a running framework, so almost
+# nothing here has a unit-test equivalent — and before this workflow existed they ran only when
+# somebody remembered to plug in a phone. The masking bug fixed in 0.13.1 shipped in a release
+# for exactly that reason.
+name: instrumented
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: instrumented-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  androidTest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    strategy:
+      # Both API levels report, rather than the first failure hiding the second. They fail
+      # differently: API 36 removed `InputManager.getInstance`, which is why the suite needs
+      # Espresso 3.7.0, and that kind of break is per-platform by nature.
+      fail-fast: false
+      matrix:
+        api-level: [34, 36]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Without hardware acceleration the emulator is too slow to finish this suite inside any
+      # sane timeout. The runner has KVM; it just is not readable by the runner user by default.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Instrumented tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: >-
+            -no-window -no-snapshot -noaudio -no-boot-anim
+            -gpu swiftshader_indirect -camera-back none
+          script: |
+            # Three-button navigation, and this is load-bearing rather than a preference.
+            #
+            # `DialogMaskingTest` checks that a dialog's mask lands on its text. The error it
+            # guards against is `(statusBar - navBar) / 2`, and under gesture navigation both
+            # bars are the same height — so the error is exactly zero and the test passes
+            # without having tested anything. That is how the bug reached a release in the
+            # first place. Three-button navigation makes the bars asymmetric and the check real.
+            adb shell cmd overlay enable com.android.internal.systemui.navbar.threebutton
+            adb shell cmd overlay disable com.android.internal.systemui.navbar.gestural
+            sleep 5
+
+            # Printed so a run can be read after the fact: if the overlay ever stops applying,
+            # the placement cases go quietly green and this line is the only thing that says so.
+            adb shell cmd overlay list android | grep navbar || true
+
+            ./gradlew :lightsession-android:connectedDebugAndroidTest
+
+      - name: Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: androidTest-reports-api${{ matrix.api-level }}
+          path: |
+            lightsession-android/build/reports/androidTests/
+            lightsession-android/build/outputs/androidTest-results/
+          retention-days: 14
