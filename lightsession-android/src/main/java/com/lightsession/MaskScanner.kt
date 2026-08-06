@@ -1,7 +1,9 @@
 package com.lightsession
 
 import android.graphics.Rect
+import android.text.Layout
 import android.util.Log
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
@@ -113,13 +115,42 @@ internal class MaskScanner {
      * A `TextView` box is as wide as its layout, which for a centred or short line is
      * mostly empty space. Masking the box hides more of the screen than the text
      * occupies, and a replay full of oversized blocks is harder to read than it needs to
-     * be. Falls back to the whole view when the layout is not available — covering too
-     * much is the right way to be wrong here.
+     * be. Falls back to the whole view when the line geometry is not available — covering
+     * too much is the right way to be wrong here.
+     *
+     * ## Where the text actually is
+     *
+     * The origin below is not `padding` — it is what `TextView.onDraw` translates by:
+     *
+     * ```java
+     * canvas.translate(compoundPaddingLeft, extendedPaddingTop + voffsetText);
+     * ```
+     *
+     * Three things separate that from `paddingLeft`/`paddingTop`, and the last one is the
+     * expensive one. A compound drawable widens the left padding. `maxLines` with an
+     * ellipsis makes the extended padding differ from the plain one. And **any vertical
+     * gravity other than TOP shifts the text down inside its box** — which is the default
+     * for a button, for a list row with a `minHeight`, and for the title and message of an
+     * AppCompat `AlertDialog`.
+     *
+     * Measured, on a 900×300 `TextView` with `gravity=center_vertical` holding one line:
+     *
+     * ```
+     * ink   132..169      mask (before)  0..71      the two do not overlap at all
+     * ink    18..55       mask (top gravity control) 0..71   covered
+     * ```
+     *
+     * A mask 132 pixels above its text is not a cosmetic fault. It produces a frame that
+     * looks masked — there is a grey block on it — while leaving the text perfectly
+     * legible underneath, which passes a glance and ships.
      */
     private fun addTextRects(view: TextView, into: MutableList<Rect>) {
         if (view.text.isNullOrEmpty() && view.hint.isNullOrEmpty()) return
 
-        val layout = view.layout ?: run {
+        // An empty field showing its hint draws from `mHintLayout`, which `getLayout` does not
+        // return, so there is no line geometry to read. The whole field is covered instead: it is
+        // about to hold what someone types, and that is the capture that matters.
+        val layout = view.layout?.takeIf { !view.text.isNullOrEmpty() } ?: run {
             addViewRect(view, into)
             return
         }
@@ -127,19 +158,53 @@ internal class MaskScanner {
         val location = IntArray(2)
         view.getLocationOnScreen(location)
 
+        val originX = location[0] + view.compoundPaddingLeft - view.scrollX
+        val originY = location[1] + view.extendedPaddingTop + verticalOffset(view, layout) -
+            view.scrollY
+
+        // The text is clipped to its view, so the mask is too. Without this a scrolled field
+        // reports the lines above and below the visible ones and covers whatever is next to it.
+        val clip = Rect(
+            location[0],
+            location[1],
+            location[0] + view.width,
+            location[1] + view.height,
+        )
+
         for (line in 0 until layout.lineCount) {
             val bounds = Rect()
             layout.getLineBounds(line, bounds)
-            val left = location[0] + view.paddingLeft + layout.getLineLeft(line).toInt()
-            val right = location[0] + view.paddingLeft + layout.getLineRight(line).toInt()
             val rect = Rect(
-                left,
-                location[1] + view.paddingTop + bounds.top,
-                right,
-                location[1] + view.paddingTop + bounds.bottom,
+                originX + layout.getLineLeft(line).toInt(),
+                originY + bounds.top,
+                originX + layout.getLineRight(line).toInt(),
+                originY + bounds.bottom,
             )
-            if (!rect.isEmpty) into.add(rect)
+            // `intersect` narrows the rect to the overlap and answers false when there is none.
+            if (rect.intersect(clip)) into.add(rect)
         }
+    }
+
+    /**
+     * What `TextView.getVerticalOffset` would return, rebuilt from public API.
+     *
+     * The framework's own is package-private, so this mirrors it rather than calls it — same
+     * three branches, same `>> 1`, and the same `getBoxHeight` built from the *measured* height
+     * and the extended padding.
+     *
+     * Not mirrored: the optical-inset term, which only applies under
+     * `android:layoutMode="opticalBounds"`. A parent using it would shift this by the inset,
+     * and reflecting into `isLayoutModeOptical` to find out costs more than the case is worth.
+     */
+    private fun verticalOffset(view: TextView, layout: Layout): Int {
+        val gravity = view.gravity and Gravity.VERTICAL_GRAVITY_MASK
+        if (gravity == Gravity.TOP) return 0
+
+        val boxHeight = view.measuredHeight - view.extendedPaddingTop - view.extendedPaddingBottom
+        val textHeight = layout.height
+        if (textHeight >= boxHeight) return 0
+
+        return if (gravity == Gravity.BOTTOM) boxHeight - textHeight else (boxHeight - textHeight) shr 1
     }
 
     private fun addViewRect(view: View, into: MutableList<Rect>) {

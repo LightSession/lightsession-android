@@ -1,0 +1,57 @@
+# Everything that can be checked without a device.
+#
+# Fast enough to run on every push, so it is the gate that has to stay green. The instrumented
+# suite lives in `instrumented.yml` because it needs an emulator and several minutes.
+name: build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+# A second push to the same branch makes the first run pointless.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # AGP 8.7.3 needs 17. The library itself compiles to JVM 11, which 17 targets fine.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # `assembleDebugAndroidTest` is here on purpose, and it is the least obvious of these.
+      # It compiles the instrumented sources — around 3,000 lines that otherwise only ever get
+      # compiled when somebody plugs in a phone — so a refactor that breaks the test suite fails
+      # here, in two minutes, instead of being discovered on the day someone needs the suite.
+      #
+      # The sample app is built for the same reason from the other side: it consumes the
+      # library's public API, so a signature that changed without meaning to shows up as a
+      # compile error in a consumer rather than in a release.
+      - name: Compile, unit test and lint
+        run: >
+          ./gradlew
+          :lightsession-android:assembleDebug
+          :lightsession-android:testDebugUnitTest
+          :lightsession-android:assembleDebugAndroidTest
+          :lightsession-android:lintDebug
+          :lightsession-android-sample:assembleDebug
+
+      - name: Reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          path: |
+            lightsession-android/build/reports/
+          retention-days: 14

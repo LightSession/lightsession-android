@@ -299,14 +299,27 @@ class ColourSamplingCostTest {
             "dominant(histogram) %.1f ms")
             .format(meanMs, dominantMs, pullMs, meanFastMs, dominantFastMs, histogramMs))
 
-        // Generous, because this runs once per screen mapped and not per frame. The number in
-        // the log is the one worth reading; this only fails if something is wildly wrong.
-        // The per-pixel JNI path is the one being retired, so it is not held to a budget.
-        // What has to be affordable is the array path, since it is what would ship.
-        assertTrue("mean over the array took %.1f ms".format(meanFastMs), meanFastMs < 40)
+        // Held against the path being retired rather than against a millisecond budget.
+        //
+        // These were `meanFastMs < 40` and `histogramMs < 60`, which measure the machine as
+        // much as the code: a shared CI emulator is several times slower than the phone those
+        // numbers came from, so the test would fail for having been run somewhere busy. A ratio
+        // is taken on one machine in one run and cancels that out — it is also the claim
+        // actually being made, and the shape `MaskingCostTest` already uses.
+        //
+        // A quarter is deliberately loose. Measured on device the array path is over ten times
+        // cheaper than reaching across JNI per pixel; this only fires if that advantage has
+        // largely gone, which is the thing worth knowing. The number in the log is still what is
+        // worth reading.
         assertTrue(
-            "dominant over a histogram took %.1f ms".format(histogramMs),
-            histogramMs < 60,
+            "mean over the array took %.1f ms against %.1f ms per pixel — the array path has "
+                .format(meanFastMs, meanMs) + "stopped being the cheap one",
+            meanFastMs < meanMs / 4,
+        )
+        assertTrue(
+            "dominant over a histogram took %.1f ms against %.1f ms per pixel"
+                .format(histogramMs, dominantMs),
+            histogramMs < dominantMs / 4,
         )
         // Same answer, cheaper — a faster reduction that disagreed would be no use.
         val card = Rect(60, 1000, 1020, 1600)

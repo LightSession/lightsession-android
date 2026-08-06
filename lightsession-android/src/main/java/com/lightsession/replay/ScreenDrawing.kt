@@ -11,11 +11,10 @@ import android.graphics.Rect
 import android.util.Base64
 import kotlin.coroutines.resume
 import android.util.Log
-import android.view.Gravity
 import android.view.PixelCopy
 import android.view.View
-import android.view.WindowManager
 import com.lightsession.mapper.SkeletonScreenGenerator
+import curtains.phoneWindow
 import java.io.ByteArrayOutputStream
 import com.lightsession.Masking
 import com.lightsession.ScreenGeometry
@@ -73,30 +72,21 @@ internal class ScreenDrawing {
 
     private var globalScaleFactor = ScalePresets.MEDIUM_QUALITY
 
-    /**
-     * Data class to encapsulate WindowManager reflection results.
-     *
-     * @property views List of views obtained from WindowManagerGlobal
-     * @property params List of layout parameters corresponding to the views
-     */
-    private data class WindowManagerData(
-        val views: List<View>?,
-        val params: List<WindowManager.LayoutParams>?
-    )
-
     /** I KNOW I KNOW BUT IT WAS THE ONLY WAY IT WORKED
-     * Gets views and their parameters from WindowManagerGlobal using reflection.
-     * This function is marked as lint suppressed due to the use of private APIs.
+     * Every window this process has attached, furthest back first.
      *
-     * Uses Java reflection to access:
-     * - WindowManagerGlobal.getInstance()
-     * - WindowManagerGlobal.mViews field
-     * - WindowManagerGlobal.mParams field
+     * `WindowManagerGlobal.mViews` is private, hence the reflection and the lint suppression.
+     * The order is the order windows were added, which is their z-order.
      *
-     * @return WindowManagerData containing views and parameters, or null if reflection fails
+     * `mParams` used to be read alongside this and is not any more. Its only reader was a
+     * function that re-derived each window's position from `gravity` — a guess that disagreed
+     * with `getLocationOnScreen` by half the difference between the status bar and the
+     * navigation bar. Reading one less private field is the small half of that fix.
+     *
+     * @return the attached roots, or null if the reflection fails
      */
     @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-    private fun getWindowManagerViewsAndParams(): WindowManagerData? {
+    private fun getWindowManagerViews(): List<View>? {
         return try {
             val windowManagerClass = Class.forName("android.view.WindowManagerGlobal")
             val getInstanceMethod = windowManagerClass.getMethod("getInstance")
@@ -104,21 +94,16 @@ internal class ScreenDrawing {
 
             val mViewsField =
                 windowManagerClass.getDeclaredField("mViews").apply { isAccessible = true }
-            val mParamsField =
-                windowManagerClass.getDeclaredField("mParams").apply { isAccessible = true }
 
             @Suppress("UNCHECKED_CAST")
             val views = mViewsField[windowManagerInstance] as? List<View>
-
-            @Suppress("UNCHECKED_CAST")
-            val params = mParamsField[windowManagerInstance] as? List<WindowManager.LayoutParams>
 
             if (views.isNullOrEmpty()) {
                 Log.w("ScreenCaptureUtils", "No views found from WindowManagerGlobal.")
                 return null
             }
 
-            WindowManagerData(views, params)
+            views
         } catch (e: Throwable) {
             Log.w("ScreenCaptureUtils", "Failed to access WindowManagerGlobal via reflection", e)
             null
@@ -200,8 +185,19 @@ internal class ScreenDrawing {
     @Volatile
     private var surfaceCaptureRequired = false
 
-    /** One window to copy, and where on the screen its pixels belong. */
-    private class SurfaceLayer(val window: android.view.Window, val bounds: Rect)
+    /**
+     * One window to copy, where on the screen its pixels belong, and the root to mask from.
+     *
+     * The root travels with the layer because the mask for a window has to be drawn while that
+     * window is the top of the picture — see [maskWindow]. Deriving it later from the `Window`
+     * is not reliable: `peekDecorView` can answer null for a window being torn down, and the
+     * copy loop would then silently skip masking one.
+     */
+    private class SurfaceLayer(
+        val window: android.view.Window,
+        val root: View,
+        val bounds: Rect,
+    )
 
     /**
      * Every window that can be copied, furthest back first.
@@ -215,13 +211,17 @@ internal class ScreenDrawing {
      * `WindowManagerGlobal.mViews` is in the order windows were added, which is their
      * z-order, so drawing them in sequence stacks them the way the compositor did.
      *
-     * A window is reached through `DialogWindowProvider`, a public Compose interface
-     * implemented by `DialogLayout`, `ModalBottomSheetDialogLayout` and the modal rail's
-     * layout. It is on a *child* of the dialog's decor view, hence the search.
+     * A window is reached two ways, in order. `DialogWindowProvider` is a public Compose
+     * interface implemented by `DialogLayout`, `ModalBottomSheetDialogLayout` and the modal
+     * rail's layout; it sits on a *child* of the dialog's decor view, hence the search. Failing
+     * that, Curtains reflects `DecorView.mWindow`, which is what catches a platform
+     * `AlertDialog` — Compose implements no interface on those and they were being masked
+     * without being drawn. See [findDialogWindow].
      *
      * A `Popup` — a dropdown, a tooltip — has no `Window` at all: `PopupLayout` is added to
-     * the WindowManager directly. Those cannot be copied and are left out, which is the same
-     * answer as before for them.
+     * the WindowManager directly, and it is not a decor view either, so neither route reaches
+     * it. Those cannot be copied and are left out, which is the same answer as before for them.
+     * [maskUncomposited] is what stops that from becoming a leak.
      */
     private fun surfaceLayers(baseWindow: android.view.Window?): List<SurfaceLayer> {
         val layers = mutableListOf<SurfaceLayer>()
@@ -229,11 +229,15 @@ internal class ScreenDrawing {
         if (baseWindow != null) {
             val screen = ScreenGeometry.size()
             layers.add(
-                SurfaceLayer(baseWindow, Rect(0, 0, screen.width, screen.height)),
+                SurfaceLayer(
+                    baseWindow,
+                    baseWindow.decorView,
+                    Rect(0, 0, screen.width, screen.height),
+                ),
             )
         }
 
-        for (root in getWindowManagerViewsAndParams()?.views.orEmpty()) {
+        for (root in getWindowManagerViews().orEmpty()) {
             if (root.visibility != View.VISIBLE || root.width <= 0 || root.height <= 0) continue
             if (root === baseWindow?.decorView) continue
             val window = findDialogWindow(root) ?: continue
@@ -242,6 +246,7 @@ internal class ScreenDrawing {
             layers.add(
                 SurfaceLayer(
                     window,
+                    root,
                     Rect(
                         location[0],
                         location[1],
@@ -255,10 +260,25 @@ internal class ScreenDrawing {
     }
 
     private fun findDialogWindow(view: View): android.view.Window? {
+        composeDialogWindow(view)?.let { return it }
+        // A dialog that is not Compose's — a platform `AlertDialog`, a
+        // `MaterialAlertDialogBuilder` one, anything extending `Dialog` — implements no such
+        // interface, and used to be left out here while `maskScreen` went on covering its text.
+        // The result was grey blocks over a frame the dialog was absent from. Measured on API 36
+        // in `DialogGeometryProbeTest`: four rectangles, no dialog.
+        //
+        // Curtains reaches the window by reflecting `DecorView.mWindow`, which narrows this to
+        // exactly the windows that have one: a `PopupWindow`, a Compose `Popup` and a toast are
+        // not decor views, so they still answer null and are still left out — which is the right
+        // answer for them, since they have no `Window` for `PixelCopy` to read.
+        return runCatching { view.phoneWindow }.getOrNull()
+    }
+
+    private fun composeDialogWindow(view: View): android.view.Window? {
         if (view is androidx.compose.ui.window.DialogWindowProvider) return view.window
         if (view !is android.view.ViewGroup) return null
         for (index in 0 until view.childCount) {
-            findDialogWindow(view.getChildAt(index))?.let { return it }
+            composeDialogWindow(view.getChildAt(index))?.let { return it }
         }
         return null
     }
@@ -307,27 +327,17 @@ internal class ScreenDrawing {
                 mainHandler.post { onResult(null) }
                 return@copyLayers
             }
-            // Masks are drawn after the copies rather than into them, because a copy is the
-            // screen exactly as rendered — unmasked. Same canvas transform as the software
-            // path, so the rectangles stay in screen coordinates.
+            // Each layer masked itself on the way past; what is left is the windows nothing
+            // copied, which have to be covered somewhere or they are not covered at all.
             mainHandler.post {
-                val canvas = getCanvasFromPool()
-                canvas.setBitmap(target)
-                if (effectiveScale != 1.0f) canvas.scale(effectiveScale, effectiveScale)
-                runCatching {
-                    maskScreen(canvas, getWindowManagerViewsAndParams()?.views.orEmpty())
-                }.onFailure {
-                    // A frame whose masks could not be computed must not ship: the copy is
-                    // the real screen, and unmasked is the one state it may never be in.
-                    Log.e("ScreenCaptureUtils", "masking failed; dropping frame", it)
-                    canvas.setBitmap(null)
-                    returnCanvasToPool(canvas)
+                val masked = withCaptureCanvas(target, effectiveScale) { canvas ->
+                    maskUncomposited(canvas, layers)
+                }
+                if (!masked) {
                     recycleBitmap(target)
                     onResult(null)
                     return@post
                 }
-                canvas.setBitmap(null)
-                returnCanvasToPool(canvas)
                 onResult(target)
             }
         }
@@ -394,7 +404,16 @@ internal class ScreenDrawing {
                     returnCanvasToPool(canvas)
                     recycleBitmap(destination)
                 }
-                copyLayers(layers, index + 1, target, scale, onDone)
+                // This layer's own masks, now, before the next one is copied over it. Doing it
+                // for all the layers at the end is what put the screen's masks on top of the
+                // dialog. Back on the main thread because the scan walks live Views.
+                mainHandler.post {
+                    if (!withCaptureCanvas(target, scale) { maskWindow(it, layer.root) }) {
+                        onDone(false)
+                        return@post
+                    }
+                    copyLayers(layers, index + 1, target, scale, onDone)
+                }
             }, copyHandler())
         }
 
@@ -434,9 +453,7 @@ internal class ScreenDrawing {
 
     fun captureToBitmap(scaleFactor: Float = globalScaleFactor): Bitmap? {
         return try {
-            val windowData = getWindowManagerViewsAndParams() ?: return null
-            val views = windowData.views!!
-            val params = windowData.params
+            val views = getWindowManagerViews() ?: return null
 
             val effectiveScale = scaleFactor.coerceIn(0.1f, 1.0f)
             val screen = ScreenGeometry.size()
@@ -454,23 +471,19 @@ internal class ScreenDrawing {
                 canvas.scale(effectiveScale, effectiveScale)
             }
 
-            processViewsOptimized(views, params, canvas, effectiveScale)
-
-            // Masking happens here, and the position is the point.
+            // Draws the windows *and* masks each one as it goes, so a window on top covers the
+            // masks of the one below it. The canvas carries only the single
+            // `scale(effectiveScale)` transform when a mask is drawn, and that is the point:
+            // rectangles are in *screen* coordinates and the transform is what maps them, so
+            // there is no conversion against the scale factor to get wrong.
             //
-            // The canvas still carries the single `scale(effectiveScale)` transform, and
-            // `processViewsOptimized` leaves it balanced, so this draws in *screen*
-            // coordinates — which is the space the rectangles are already in. No
-            // conversion against the scale factor, which is where a mask would silently
-            // land on the wrong pixels at anything other than full quality.
-            //
-            // And it is before the encode, which is what makes it a privacy control
-            // rather than a rendering choice: the unmasked pixels exist only in this
+            // All of it happens before the encode, which is what makes masking a privacy
+            // control rather than a rendering choice: the unmasked pixels exist only in this
             // bitmap, on this thread, and are overwritten before anything reads them.
             //
-            // Every capture path goes through here — replay frames and the screen map's
-            // screenshots both — so none of them can be written without masking.
-            maskScreen(canvas, views)
+            // Every capture path masks — replay frames and the screen map's screenshots both —
+            // so none of them can be written without it.
+            processViewsOptimized(views, canvas, effectiveScale)
 
             // Detach so the canvas can be reused without holding the bitmap.
             canvas.setBitmap(null)
@@ -525,26 +538,81 @@ internal class ScreenDrawing {
     }
 
     /**
-     * Covers whatever [Masking] says to cover, across every window.
+     * Covers whatever [Masking] says to cover, for **one** window.
      *
-     * One traversal per window, because a dialog is a separate window with its own
-     * hierarchy and the text inside it is no less sensitive than the text behind it.
+     * ## Why one window, and why the caller controls when
      *
-     * Failures are swallowed on purpose, with one exception: if the *scan* throws, the
-     * frame is dropped rather than shipped unmasked. A traversal that fails is a
-     * traversal that found nothing, and "found nothing" is indistinguishable from "there
-     * was nothing to mask" — shipping the frame would be treating an error as an
+     * This used to take every window at once and paint the union in a single pass after the
+     * whole screen had been composited. That is wrong in one specific way: a rectangle
+     * belonging to a window *underneath* landed on top of the window above it. With a dialog
+     * open the effect is unmistakable — measured, the centre pixel of a plain white dialog
+     * came back `#9E9E9E`, the mask fill, because the list behind it was covered in
+     * rectangles and they were painted last.
+     *
+     * The obvious repair is to clip the lower window's rectangles against the upper window's
+     * bounds. It is a trap. A Compose `Dialog` with `usePlatformDefaultWidth = false` has a
+     * full-screen decor view that is almost entirely transparent, so clipping against it would
+     * *unmask* the whole screen behind — turning an eyesore into a leak.
+     *
+     * So nothing is clipped and nothing is dropped. Each window's masks are drawn while that
+     * window is the top of the picture, and the next window is composited over them. Paint
+     * order alone, which cannot under-mask by construction.
+     *
+     * ## Failure
+     *
+     * The scan is allowed to throw, and callers drop the frame when it does. A traversal that
+     * fails is a traversal that found nothing, and "found nothing" is indistinguishable from
+     * "there was nothing to mask" — shipping the frame would be treating an error as an
      * all-clear. Losing one frame of a replay is cheap; leaking a screen is not.
      */
-    private fun maskScreen(canvas: Canvas, views: List<View>) {
+    private fun maskWindow(canvas: Canvas, root: View) {
         if (!Masking.enabled) return
+        if (root.visibility != View.VISIBLE || root.width <= 0 || root.height <= 0) return
+        Masking.draw(canvas, masker.scan(root, Masking.text, Masking.images))
+    }
 
-        val rects = ArrayList<Rect>(32)
-        for (view in views) {
-            if (view.visibility != View.VISIBLE || view.width <= 0 || view.height <= 0) continue
-            rects.addAll(masker.scan(view, Masking.text, Masking.images))
+    /**
+     * Covers the windows that were never copied into the frame.
+     *
+     * `PixelCopy` needs a `Window`, and [surfaceLayers] can only reach one through
+     * `DialogWindowProvider` — which is Compose's interface. A platform `AlertDialog`, a
+     * `PopupWindow`, a `Spinner`'s dropdown: none of them are composited, and all of them
+     * publish text.
+     *
+     * They are masked anyway, at the end, and the result is a grey block over content the
+     * frame does not contain. That is the artefact this cannot fix from here — but it is the
+     * right way round. Skipping them would mean a frame with a dialog's text uncovered on the
+     * screen behind it, which is the failure that matters.
+     */
+    private fun maskUncomposited(canvas: Canvas, composited: List<SurfaceLayer>) {
+        if (!Masking.enabled) return
+        for (view in getWindowManagerViews().orEmpty()) {
+            if (composited.any { it.root === view }) continue
+            maskWindow(canvas, view)
         }
-        Masking.draw(canvas, rects)
+    }
+
+    /**
+     * Runs [block] against a canvas over [bitmap] carrying the capture's scale, and says whether
+     * it survived.
+     *
+     * The scale is the reason this exists rather than a bare `Canvas(bitmap)`: mask rectangles
+     * are in screen pixels and the transform is what maps them onto a frame captured at
+     * anything other than full quality. Getting that wrong is the mistake `MaskingTest`'s
+     * coordinate case exists to catch.
+     */
+    private fun withCaptureCanvas(bitmap: Bitmap, scale: Float, block: (Canvas) -> Unit): Boolean {
+        val canvas = getCanvasFromPool()
+        canvas.setBitmap(bitmap)
+        if (scale != 1.0f) canvas.scale(scale, scale)
+        val outcome = runCatching { block(canvas) }
+        canvas.setBitmap(null)
+        returnCanvasToPool(canvas)
+        outcome.onFailure {
+            // The copy is the real screen, and unmasked is the one state it may never be in.
+            Log.e("ScreenCaptureUtils", "masking failed; dropping frame", it)
+        }
+        return outcome.isSuccess
     }
 
     /**
@@ -699,45 +767,48 @@ internal class ScreenDrawing {
     }
 
     /**
-     * Processes and draws views on the canvas in an optimized way.
+     * Draws every attached window into the canvas, masking each as it goes.
      *
-     * This method performs several optimizations:
-     * 1. Filters out invisible views (visibility != VISIBLE, alpha <= 0.1f, zero dimensions)
-     * 2. Filters out very small views when using low scale factors
-     * 3. Calculates proper view positions based on WindowManager.LayoutParams
-     * 4. Applies dimming effect to layered views for depth perception
-     * 5. Uses object pooling for Paint objects to reduce garbage collection
+     * ## Where a window goes
      *
-     * @param views List of views to process and draw
-     * @param params Layout parameters for positioning the views
-     * @param canvas Canvas to draw the views on
-     * @param scaleFactor Scale factor being used (affects minimum view size filter)
+     * `getLocationOnScreen`, which for a decor view is `mAttachInfo.mWindowLeft/mWindowTop` —
+     * the window frame's origin, set by `ViewRootImpl` from the relayout frame. It is also the
+     * space `MaskScanner` reports in and the space `PixelCopy` copies, so all three agree.
+     *
+     * `calculateViewPositionOriginal` was here and re-derived the origin from
+     * `LayoutParams.gravity` instead, centring in `ScreenGeometry.size()` — the whole display.
+     * `Dialog` sets `Gravity.CENTER`, and the window manager centres a dialog in the display
+     * *minus the system bars*, so the two differ by `(statusBar - navBar) / 2`. Measured on a
+     * 1080×2400 device with three-button navigation, bars 63 and 126: the dialog really sat at
+     * y=906 and was drawn at y=937, while its mask stayed at 906. Thirty-one pixels of glyph
+     * left showing under the bottom edge of a rectangle that looked like it had covered them.
+     *
+     * The gesture-navigation case is why this survived: with both bars 63 the error is zero,
+     * so the bug is invisible on exactly the devices most people test on.
+     *
+     * ## Why the mask is drawn here rather than afterwards
+     *
+     * So that the next window covers it. See [maskWindow].
      */
     private fun processViewsOptimized(
         views: List<View>,
-        params: List<WindowManager.LayoutParams>?,
         canvas: Canvas,
         scaleFactor: Float,
     ) {
-        val visibleViews = views.filterIndexed { index, view ->
-            view.visibility == View.VISIBLE &&
-                    view.width > 0 && view.height > 0 &&
-                    view.alpha > 0.1f
-        }
-
         val minViewSize = if (scaleFactor <= 0.25f) 50 else 0
-        val significantViews = visibleViews.filter { view ->
-            view.width >= minViewSize || view.height >= minViewSize
+        val significantViews = views.filter { view ->
+            view.visibility == View.VISIBLE &&
+                view.width > 0 && view.height > 0 &&
+                view.alpha > 0.1f &&
+                (view.width >= minViewSize || view.height >= minViewSize)
         }
 
+        val location = IntArray(2)
         significantViews.forEachIndexed { index, view ->
             canvas.save()
 
-            val originalIndex = views.indexOf(view)
-            val layoutParams = params?.getOrNull(originalIndex)
-            val (x, y) = calculateViewPositionOriginal(view, layoutParams)
-
-            canvas.translate(x.toFloat(), y.toFloat())
+            view.getLocationOnScreen(location)
+            canvas.translate(location[0].toFloat(), location[1].toFloat())
             view.draw(canvas)
 
             if (index < significantViews.size - 1) {
@@ -750,69 +821,10 @@ internal class ScreenDrawing {
             }
 
             canvas.restore()
-        }
-    }
 
-    /**
-     * Calculates the original position of a view on the screen.
-     *
-     * Determines view position based on WindowManager.LayoutParams gravity and coordinates:
-     * - Uses layoutParams.x and layoutParams.y as primary position
-     * - Falls back to gravity-based positioning (CENTER_HORIZONTAL, RIGHT, CENTER_VERTICAL, BOTTOM)
-     * - Applies bounds checking to ensure views stay within screen boundaries
-     * - Handles edge cases where layout parameters are null or invalid
-     *
-     * @param view The view whose position needs to be calculated
-     * @param layoutParams WindowManager layout parameters containing positioning info
-     * @return Pair of (x, y) coordinates for the view position
-     */
-    private fun calculateViewPositionOriginal(
-        view: View,
-        layoutParams: WindowManager.LayoutParams?,
-    ): Pair<Int, Int> {
-        val screen = ScreenGeometry.size()
-        val screenWidth = screen.width
-        val screenHeight = screen.height
-
-        return try {
-            if (layoutParams != null) {
-                val x = when {
-                    layoutParams.x != 0 -> layoutParams.x
-                    layoutParams.gravity and Gravity.CENTER_HORIZONTAL == Gravity.CENTER_HORIZONTAL ->
-                        (screenWidth - view.width) / 2
-
-                    layoutParams.gravity and Gravity.RIGHT == Gravity.RIGHT ->
-                        screenWidth - view.width
-
-                    else -> 0
-                }
-
-                val y = when {
-                    layoutParams.y != 0 -> layoutParams.y
-                    layoutParams.gravity and Gravity.CENTER_VERTICAL == Gravity.CENTER_VERTICAL ->
-                        (screenHeight - view.height) / 2
-
-                    layoutParams.gravity and Gravity.BOTTOM == Gravity.BOTTOM ->
-                        screenHeight - view.height
-
-                    else -> 0
-                }
-
-                // Validation to avoid invalid positions
-                var resHeight = 0
-                if (screenHeight - view.height > 0) {
-                    resHeight = screenHeight - view.height
-                }
-                Pair(
-                    x.coerceIn(0, screenWidth - view.width),
-                    y.coerceIn(0, resHeight)
-                )
-            } else {
-                Pair((screenWidth - view.width) / 2, (screenHeight - view.height) / 2)
-            }
-        } catch (e: Throwable) {
-            Log.w("ScreenCaptureUtils", "Failed to calculate view position", e)
-            Pair(0, 0)
+            // Outside the translate: rectangles are already in screen coordinates, and the
+            // canvas here carries nothing but the capture's scale.
+            maskWindow(canvas, view)
         }
     }
 
