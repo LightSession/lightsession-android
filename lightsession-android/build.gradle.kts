@@ -241,7 +241,55 @@ publishing {
             // precisely known, just known from somewhere else.
             //
             // Minor: additive public API and a new enum case.
-            version = "0.13.0"
+            // 0.13.1 puts the masks where the text is.
+            //
+            // Reported from an app as "the rectangle sits a few pixels above the text in a dialog,
+            // and the masks from the screen behind get mixed into it". Both were real, they had
+            // different causes, and looking for them turned up two more. Measured in
+            // `DialogMaskingTest` on a 1080×2400 device with three-button navigation:
+            //
+            //  * The software capture path placed a dialog window by re-deriving its position from
+            //    `LayoutParams.gravity`, centring in the whole display. The window manager centres a
+            //    dialog in the display *minus the system bars*, so the two differ by
+            //    `(statusBar - navBar) / 2` — here 31 pixels. The dialog was drawn 31 low while its
+            //    mask stayed where the dialog really was, leaving the bottoms of the glyphs showing
+            //    under a rectangle that looked like it had covered them. Windows are now placed by
+            //    `getLocationOnScreen`, which is what the mask, `PixelCopy` and the surface path
+            //    already agreed on. Under gesture navigation both bars are 63 and the error is
+            //    exactly zero, which is how it survived: it is invisible on the devices most people
+            //    test on.
+            //
+            //  * Masks were unioned across every window and painted in one pass after the whole
+            //    screen was composited, so a rectangle belonging to a window *underneath* landed on
+            //    top of the window above it. Measured: the centre of a plain white dialog came back
+            //    `#9E9E9E`, the mask fill. Each window's masks are now drawn while that window is
+            //    the top of the picture and the next is composited over them. Paint order only —
+            //    nothing is clipped and nothing is dropped, so this cannot under-mask. Clipping the
+            //    lower window's rectangles against the upper window's bounds is the obvious repair
+            //    and it is a trap: a Compose `Dialog` with `usePlatformDefaultWidth = false` has a
+            //    full-screen, almost entirely transparent decor view, and clipping against it would
+            //    unmask the screen behind.
+            //
+            //  * `MaskScanner` built a `TextView`'s rectangle from `paddingTop`, while
+            //    `TextView.onDraw` translates by `extendedPaddingTop + getVerticalOffset()`. Any
+            //    vertical gravity other than TOP shifts the text down inside its box — the default
+            //    for a button, a list row with a `minHeight`, and the title and message of an
+            //    AppCompat `AlertDialog`. Measured on a 900×300 view with `center_vertical`: ink at
+            //    132..169, mask at 0..71. The two did not overlap at all, so the frame carried a
+            //    grey block and perfectly legible text. `compoundPaddingLeft` and the scroll offset
+            //    were missing for the same reason, and the rectangles are now clipped to the view.
+            //
+            //  * `findDialogWindow` recognised a window only through `DialogWindowProvider`, which
+            //    is Compose's interface, so a platform `AlertDialog` was masked and never
+            //    composited — four grey rectangles on a frame the dialog was absent from. It now
+            //    falls back to Curtains. A `Popup` still has no `Window` and still cannot be copied;
+            //    `maskUncomposited` is what keeps that an eyesore rather than a leak.
+            //
+            // Patch rather than minor. Nothing new is reported and no signature changes: the same
+            // screens, with the covering landing where it was always supposed to. The one judgement
+            // call is that a platform dialog now appears in captures it used to be missing from,
+            // which is a correction rather than a new layer.
+            version = "0.13.1"
 
             afterEvaluate {
                 from(components["release"])
