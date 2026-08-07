@@ -349,7 +349,19 @@ publishing {
             // Patch. Nothing new is reported and no signature changes — screens that were storing
             // a blank wireframe store their real one. See `getCompositionContexts`, and the CI
             // matrix that now runs the suite on two Compose versions rather than one.
-            version = "0.14.1"
+            // 0.15.0 stops reporting a destination whose whole content is another NavHost. An app
+            // with a nested NavHost had a `home/manager` route rendering a scaffold whose own
+            // NavHost starts at `dashboard`; both controllers are tracked, so the map grew a node
+            // for the shell as well as for the screen inside it — with 20 interactions on
+            // `dashboard` against 0 on `home/manager` across every session, and a wireframe that
+            // was `dashboard` caught before its data arrived. Minor rather than patch: an existing
+            // consumer with nested NavHosts stops reporting screens it used to report, and its
+            // edges change shape, with no code change on their side. Screens are permanent, so a
+            // shell already in a project's map stays until it is deleted.
+            //
+            // The report of a Compose destination is now held for two frames, which is what makes
+            // the shell recognisable at all — see `PendingReport`.
+            version = "0.15.0"
 
             afterEvaluate {
                 from(components["release"])

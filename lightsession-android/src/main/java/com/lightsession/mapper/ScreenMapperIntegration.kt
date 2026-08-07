@@ -35,6 +35,7 @@ import curtains.phoneWindow
 import curtains.touchEventInterceptors
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlin.coroutines.resume
 import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
@@ -62,6 +63,60 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         val controller: WeakReference<NavController>,
         val owner: WeakReference<Activity>,
     )
+
+    /**
+     * A Compose destination reported to the map, held back long enough to see whether it is a screen
+     * or the shell around one.
+     *
+     * An app with a nested NavHost has a destination whose entire content is another NavHost — a
+     * `home/manager` route rendering a scaffold whose start destination is `dashboard`. Both
+     * controllers are tracked, so both were reported, and the outer one arrived first: a node nobody
+     * ever navigated to, whose wireframe is the inner screen caught before its data loaded. Measured
+     * in production it had 20 interactions on `dashboard` against **0** on `home/manager` across
+     * every session — not a little-used screen, a screen where there is nothing to do.
+     *
+     * It cannot be recognised when it arrives. The signal that it is a shell is a *different*
+     * NavController registering while it is current, which only a nested NavHost does, and that
+     * registration happens from a `LaunchedEffect` in the composition the destination just caused —
+     * a frame later. So the map report waits [SHELL_GRACE_FRAMES] frames, and [dropAsShell] cancels
+     * it if that registration arrives.
+     *
+     * `from` is carried because dropping the shell has to reconnect what it stood between: the edge
+     * is `login -> dashboard`, not `login -> home/manager -> dashboard`.
+     */
+    private class PendingReport(
+        val screenName: String,
+        val route: String,
+        val from: String?,
+        val controller: NavController?,
+        val job: kotlinx.coroutines.Job,
+    )
+
+    private var pendingReport: PendingReport? = null
+
+    /**
+     * What the map last decided, as `from -> to`, whether or not anything was sent.
+     *
+     * Recorded because the decision and the send are separable and only the decision can be checked
+     * cheaply: everything downstream of [report] is gated on [Recording] and needs a live
+     * `CacheManager`, so a test that wanted to observe the wire would have to own the singleton's
+     * one-shot `init`. The interesting half is here anyway — dropping a shell has to reconnect the
+     * edge around it, and this is that answer.
+     */
+    internal var lastDecidedEdge: Pair<String?, String>? = null
+        private set
+
+    /** Routes the map has decided are shells. */
+    internal val knownShellRoutes: Set<String> get() = shellRoutes
+
+    /**
+     * Routes already known to be shells, so the grace period is paid once rather than per visit.
+     *
+     * Not persisted deliberately. A route's shape is a property of the build, but persisting it means
+     * a stale entry survives an app update that turned a shell into a real screen, and the cost of
+     * relearning is one grace period per process.
+     */
+    private val shellRoutes = mutableSetOf<String>()
 
     /**
      * Activity classes the integration advice has already been logged for.
@@ -449,6 +504,21 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
          * that an ordinary reader of the screen is still on it.
          */
         private const val SCREENSHOT_SETTLE_MS = 5_500L
+
+        /**
+         * How long a Compose destination waits before it is reported, in frames.
+         *
+         * Frames rather than milliseconds because the thing being waited for is a frame: a nested
+         * NavHost registers its controller from a `LaunchedEffect`, which runs after the composition
+         * the destination change caused. One frame is the mechanism; two is the margin, and on a
+         * 60 Hz screen it is about 33 ms — below what anyone can see, and paid once per route since
+         * [shellRoutes] remembers the answer.
+         *
+         * A wall-clock timeout was the alternative and is worse in both directions: long enough to
+         * be safe on a slow device is long enough to feel, and short enough not to feel gambles on
+         * frame rate. This waits for the event instead of guessing how long it takes.
+         */
+        private const val SHELL_GRACE_FRAMES = 2
 
         /**
          * How long after a touch ends before the sub-screen is re-read.
@@ -908,9 +978,16 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         pruneComposeControllers()
         if (registeredComposeControllers.any { it.controller.get() == navController }) return
 
+        // A destination held back by another controller is the shell hosting this one. Checked
+        // before the listener is attached, because attaching fires it immediately with the current
+        // destination — and that report has to find `lastScreen` already reconnected.
+        pendingReport?.let { pending ->
+            if (pending.controller !== navController) dropAsShell(pending)
+        }
+
         val listener =
             NavController.OnDestinationChangedListener { _, destination, _ ->
-                handleComposeNavigation(destination)
+                handleComposeNavigation(destination, navController)
             }
 
         navController.addOnDestinationChangedListener(listener)
@@ -1025,16 +1102,83 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         enterDestination(screenName)
     }
 
-    override fun handleComposeNavigation(destination: NavDestination) {
+    override fun handleComposeNavigation(destination: NavDestination) =
+        handleComposeNavigation(destination, controller = null)
+
+    /**
+     * A Compose destination arrived. Whether it is reported is decided a few frames from now.
+     *
+     * The delay exists for nested NavHosts; see [PendingReport] for what it buys and why nothing
+     * shorter works. Everything a delay could break is kept out of it: [enterDestination] still runs
+     * synchronously, so the base screen, the tab reader and the modal layer see the destination the
+     * instant it lands, exactly as before. What waits is the part that cannot be taken back — the
+     * node, the flow edge, the breadcrumb and the screenshot.
+     *
+     * A destination arriving while another is pending flushes that one first, because it proves the
+     * pending one was real: a shell is superseded by its own nested controller registering, not by a
+     * later navigation.
+     */
+    internal fun handleComposeNavigation(destination: NavDestination, controller: NavController?) {
         val route = destination.route ?: "unknown_route"
         val screenName = utils.extractScreenNameFromRoute(route)
+
+        // A known shell is not reported at all, and does not become the screen either — reporting is
+        // what was wrong with it, but so was standing between two screens in `lastScreen`.
+        if (route in shellRoutes) {
+            Log.d("ScreenMapper", "Compose destination '$route' is a known shell; not reporting it.")
+            return
+        }
+
+        // Whatever was pending survived without a nested controller appearing, so it was a screen.
+        flushPendingReport()
+
+        val from = lastScreen
+        enterDestination(screenName)
+
+        // Deliberately not `scopeFor(activity)`, which is what the sends use. A lifecycle scope
+        // belongs to work *about* an Activity and dies with it — and the first version of this took
+        // it from `currentActivityWeakRef`, so whenever that reference had gone stale the scope was
+        // already cancelled and the navigation was never reported at all. Silently: no throw, no
+        // log, one screen missing from the map. The process-lived scope is right for the same reason
+        // the send's is not — a navigation that happened has to be reported even if the Activity
+        // that saw it is on its way out. Main, because `Choreographer.getInstance()` is per-thread.
+        val job = fallbackScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            withFrames(SHELL_GRACE_FRAMES)
+            // Cleared first: the flush below is also reachable from `flushPendingReport`, and a
+            // report that ran twice is a duplicate edge.
+            if (pendingReport?.job === coroutineContext[kotlinx.coroutines.Job]) {
+                pendingReport = null
+                report(screenName, route, from)
+            }
+        }
+
+        pendingReport = PendingReport(screenName, route, from, controller, job)
+    }
+
+    /**
+     * Sends what a settled Compose destination is owed: its node, and either its edge or its place as
+     * the session's first screen.
+     */
+    private fun report(screenName: String, route: String, from: String?) {
+        lastDecidedEdge = from to screenName
 
         getOrCreateScreenNode(screenName, ScreenType.COMPOSE).apply {
             routes.add(route)
         }
 
-        if (lastScreen != null) {
-            trackNavigationFlow(lastScreen!!, screenName)
+        // Nothing below this can run before `init`: the sends reach `cacheManager`, which is
+        // `lateinit`, and the throw lands on whatever coroutine got here rather than on a caller.
+        // Reachable because `withNavigationTracking` is a composition-time call and an app is free to
+        // compose before it starts the SDK — and now also because the report is deferred, which
+        // widens the window from "the same frame" to "a few frames later, possibly past teardown".
+        // A navigation from before there was anywhere to send it is a navigation with no session.
+        if (application == null) {
+            Log.d("ScreenMapper", "Not initialised; '$screenName' recorded locally and not sent.")
+            return
+        }
+
+        if (from != null) {
+            trackNavigationFlow(from, screenName)
         } else {
             // First screen - send it as initial screen without navigation flow
             val activity = currentActivityWeakRef?.get()
@@ -1042,7 +1186,58 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                 sendInitialScreen(screenName, ScreenType.COMPOSE, activity)
             }
         }
-        enterDestination(screenName)
+    }
+
+    /** Reports a pending destination now, if one is waiting. */
+    private fun flushPendingReport() {
+        val pending = pendingReport ?: return
+        pendingReport = null
+        pending.job.cancel()
+        report(pending.screenName, pending.route, pending.from)
+    }
+
+    /**
+     * A nested NavController registered, so whatever is pending is the shell around it.
+     *
+     * Dropping it has two halves and the second is easy to miss: the shell is not reported, *and*
+     * `lastScreen` goes back to what preceded it, so the destination this nested controller is about
+     * to report connects to the screen the person actually came from.
+     */
+    private fun dropAsShell(pending: PendingReport) {
+        pendingReport = null
+        pending.job.cancel()
+        shellRoutes += pending.route
+        lastScreen = pending.from
+        Log.d(
+            "ScreenMapper",
+            "Compose destination '${pending.route}' hosts a nested NavHost; treating it as a shell " +
+                "and reconnecting ${pending.from} to whatever it reports next.",
+        )
+    }
+
+    /**
+     * Suspends for [count] frames, driven by the `Choreographer`.
+     *
+     * Not `withFrameNanos`, which was the first attempt and throws: it reads a `MonotonicFrameClock`
+     * out of the coroutine context, and the context here is a lifecycle scope on
+     * `Dispatchers.Main`, which carries none. That is an `IllegalStateException` on every Compose
+     * navigation, so the mistake was not a small one.
+     *
+     * `postFrameCallback` also asks for a frame rather than waiting for one that may never come: an
+     * idle screen produces no frames, and a wait for the next one would hang until something else
+     * caused a redraw.
+     */
+    private suspend fun withFrames(count: Int) {
+        val choreographer = android.view.Choreographer.getInstance()
+        repeat(count) {
+            kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
+                val callback = android.view.Choreographer.FrameCallback {
+                    continuation.resume(Unit)
+                }
+                choreographer.postFrameCallback(callback)
+                continuation.invokeOnCancellation { choreographer.removeFrameCallback(callback) }
+            }
+        }
     }
 
     /**
