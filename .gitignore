@@ -1,17 +1,27 @@
 *.iml
 .gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
+local.properties
 .DS_Store
 /build
 /captures
 .externalNativeBuild
 .cxx
-local.properties
 # Kotlin daemon session files
 .kotlin/
+
+# The IDE's own directory, all of it.
+#
+# Only six paths under it were ignored before, so the other sixteen files were tracked — and
+# they are not project configuration, they are a record of what one machine was doing. Which
+# device you last deployed to, which devices the device manager knows about, four files of
+# Copilot migration state. They change by opening the project, so every `git status` had
+# something in it that nobody wrote, and switching branches failed on files the IDE had
+# regenerated in the meantime.
+#
+# Nothing here is needed to build: Gradle is the build, and it is what CI runs. A fresh clone
+# opens in Android Studio and the IDE writes these itself.
+#
+# JetBrains does suggest sharing `codeStyles/` and `inspectionProfiles/` across a team, and
+# that is a fair argument — un-ignore those two specifically if it ever comes up. It is not
+# worth the noise for the sake of one inspection profile nobody has edited.
+.idea/
