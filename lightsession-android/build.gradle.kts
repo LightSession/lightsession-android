@@ -307,7 +307,15 @@ publishing {
             // screens, with the covering landing where it was always supposed to. The one judgement
             // call is that a platform dialog now appears in captures it used to be missing from,
             // which is a correction rather than a new layer.
-            version = "0.13.1"
+
+            // 0.14.0 stops believing a screen's tabs past the eighth distinct label. The tab
+            // reader's premise — that a tab label is a fixed string in the source and so cannot
+            // mint a screen per record — is false wherever rows of data wear a tab role, which
+            // Twitter's home does with one tab per joined community. Minor rather than patch
+            // because it changes what an existing consumer reports without any code change on
+            // their side: on a screen with many dynamic tabs, names stop appearing that used to.
+            // See `TabCardinality`.
+            version = "0.14.0"
 
             afterEvaluate {
                 from(components["release"])
