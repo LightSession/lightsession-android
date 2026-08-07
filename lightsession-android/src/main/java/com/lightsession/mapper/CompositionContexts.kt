@@ -94,14 +94,37 @@ private fun CompositionContext.composersField(): Field? {
     return field
 }
 
+/**
+ * Both shapes a slot table stores a [CompositionContext] in, because Compose changed which.
+ *
+ * Asking only "which datum *holds* one in a field" was right for Compose 1.7, where the
+ * `ComposerImpl$CompositionContextHolder.ref` wrapper was there to find. That class is gone on
+ * the 2026.02.01 BOM and the context sits in `data` unwrapped, so the question matched nothing:
+ * `LazyColumn` and `Scaffold` contributed no nodes, and a screen built from them stored a
+ * wireframe of one rect — the frame around an empty page. Silently, and only against a Compose
+ * newer than the one this module compiles against, which is every real consumer.
+ *
+ * Both are asked, and neither is preferred: a reflective walk over another library's internals
+ * cannot know which shape it is looking at from a version number, only from what is in front of
+ * it. That means 1.7 answers twice, once per route to the same composition — deduplicated by
+ * `Composer` in `computeLayoutInfos`, which is the level that can see a whole scan. Doing it
+ * here would not work; this function is called per group, and the two routes sit in different
+ * ones.
+ */
 @OptIn(UiToolingDataApi::class)
 internal fun Group.getCompositionContexts(): Sequence<CompositionContext> =
     data.asSequence()
         .filterNotNull()
-        .mapNotNull { holder ->
-            holder.compositionContextField()
-                ?.let { runCatching { it.get(holder) as? CompositionContext }.getOrNull() }
+        .flatMap { datum ->
+            sequenceOf(
+                // The context itself, stored directly.
+                datum as? CompositionContext,
+                // Or a wrapper around it.
+                datum.compositionContextField()
+                    ?.let { runCatching { it.get(datum) as? CompositionContext }.getOrNull() },
+            )
         }
+        .filterNotNull()
 
 @Suppress("UNCHECKED_CAST")
 internal fun CompositionContext.tryGetComposers(): Iterable<Composer> {

@@ -120,6 +120,20 @@ dependencies {
     // real Dialog, ModalBottomSheet or TabRow on device and read back what the framework
     // actually publishes, instead of trusting a reading of the Compose source.
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.11.00"))
+
+    // The Compose above is a floor, not what this SDK runs against. A consumer brings its
+    // own BOM, and `ui-tooling-data` is declared without a version precisely so it follows
+    // the consumer's — which means the skeleton scan, built on tooling-data, has to keep
+    // working on Compose newer than this module has ever compiled against. It did not: an
+    // app on the 2026.02.01 BOM stored wireframes containing one rect, and every test here
+    // passed the whole time because they all run on the version above.
+    //
+    // -Pls.composeBomUnderTest=<bom> raises only the androidTest *runtime* classpath. Main
+    // stays compiled against the declared BOM, and that asymmetry is the point: it is the
+    // exact shape of a published AAR meeting a newer app.
+    providers.gradleProperty("ls.composeBomUnderTest").orNull?.let { bom ->
+        androidTestRuntimeOnly(platform("androidx.compose:compose-bom:$bom"))
+    }
     // Espresso 3.6.1 reflects on `InputManager.getInstance()`, removed in Android 16, so
     // every instrumented test errors out on an API 36 device before reaching its body.
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
@@ -315,7 +329,19 @@ publishing {
             // because it changes what an existing consumer reports without any code change on
             // their side: on a screen with many dynamic tabs, names stop appearing that used to.
             // See `TabCardinality`.
-            version = "0.14.0"
+
+            // 0.14.1 makes the wireframe see subcompositions again on current Compose. The scan
+            // found them by looking for the `ComposerImpl$CompositionContextHolder` wrapper, which
+            // Compose has since stopped creating — so on the 2026.02.01 BOM every `LazyColumn` and
+            // `Scaffold` screen stored a wireframe of one rect, the outline of a blank page, while
+            // the screenshot layer beside it was correct. This module compiles against Compose
+            // 1.7.0 and `ui-tooling-data` follows the consumer's version, so the break belonged to
+            // every consumer newer than this module and to none of its own tests: all 61 passed.
+            //
+            // Patch. Nothing new is reported and no signature changes — screens that were storing
+            // a blank wireframe store their real one. See `getCompositionContexts`, and the CI
+            // matrix that now runs the suite on two Compose versions rather than one.
+            version = "0.14.1"
 
             afterEvaluate {
                 from(components["release"])

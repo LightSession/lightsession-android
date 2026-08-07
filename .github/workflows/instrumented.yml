@@ -28,6 +28,19 @@ jobs:
       fail-fast: false
       matrix:
         api-level: [34, 36]
+        # The Compose version is a second axis, for the same reason the first one exists.
+        #
+        # This module compiles against its own BOM, but `ui-tooling-data` is declared without a
+        # version so it follows the *consumer's* — and the skeleton scan is built on it. When
+        # Compose dropped `ComposerImpl$CompositionContextHolder`, the reflective walk stopped
+        # finding subcompositions: every `LazyColumn` and `Scaffold` screen stored a wireframe
+        # containing a single rect, in a shipped release, while all 61 tests here stayed green.
+        # They ran on the old BOM, which was the only Compose they had ever seen.
+        #
+        # `default` is this module's declared BOM; the pinned one is a current release. When a
+        # newer Compose ships, raise the pin rather than replacing `default` — the pair is the
+        # test, and one version alone is what made this bug invisible.
+        compose-bom: [default, '2026.02.01']
 
     steps:
       - uses: actions/checkout@v4
@@ -74,13 +87,20 @@ jobs:
             # the placement cases go quietly green and this line is the only thing that says so.
             adb shell cmd overlay list android | grep navbar || true
 
-            ./gradlew :lightsession-android:connectedDebugAndroidTest
+            # `default` means "no override", which is not the same as passing an empty version:
+            # an empty -P would resolve a BOM coordinate ending in a colon and fail the build.
+            if [ "${{ matrix.compose-bom }}" = "default" ]; then
+              ./gradlew :lightsession-android:connectedDebugAndroidTest
+            else
+              ./gradlew :lightsession-android:connectedDebugAndroidTest \
+                -Pls.composeBomUnderTest=${{ matrix.compose-bom }}
+            fi
 
       - name: Reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: androidTest-reports-api${{ matrix.api-level }}
+          name: androidTest-reports-api${{ matrix.api-level }}-compose-${{ matrix.compose-bom }}
           path: |
             lightsession-android/build/reports/androidTests/
             lightsession-android/build/outputs/androidTest-results/

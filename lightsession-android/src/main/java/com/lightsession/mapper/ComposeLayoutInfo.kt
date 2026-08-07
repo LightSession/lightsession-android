@@ -25,6 +25,7 @@ package com.lightsession.mapper
 
 import android.view.View
 import android.view.ViewGroup
+import androidx.compose.runtime.Composer
 import androidx.compose.ui.InternalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.LayoutInfo
@@ -41,6 +42,8 @@ import androidx.compose.ui.tooling.data.UiToolingDataApi
 import androidx.compose.ui.tooling.data.asTree
 import androidx.compose.ui.unit.IntRect
 import com.lightsession.mapper.ComposeLayoutInfo.AndroidViewInfo
+import java.util.Collections
+import java.util.IdentityHashMap
 import kotlin.collections.asSequence
 import kotlin.collections.filter
 import kotlin.collections.firstOrNull
@@ -130,31 +133,44 @@ internal fun Group.computeLayoutInfos(
    * layout node.
    */
   semantics: SemanticsIndex = SemanticsIndex.EMPTY,
+  /**
+   * Composers already walked in this scan, so each subcomposition is reported once.
+   *
+   * A subcomposition is reachable by two routes and Compose 1.7 publishes both: the
+   * `CompositionContextHolder` wrapper and the context itself, in *different* groups.
+   * Deduplicating inside `getCompositionContexts` cannot see that — it is called per group — so
+   * the same `LazyColumn` was walked twice and every item drawn on top of itself, 185 rects
+   * where 58 were right.
+   *
+   * Scan-scoped: the default argument makes it once per entry, and every recursive call below
+   * passes the same set along. A fresh one per level would defeat it entirely.
+   */
+  visited: MutableSet<Composer> = Collections.newSetFromMap(IdentityHashMap()),
 ): Sequence<ComposeLayoutInfo> {
   val callChain = this.name?.let { parentCallChain + CallGroupInfo(it, this.location) } ?: parentCallChain
 
   // Things that we want to consider children of the current node, but aren't actually child nodes
   // as reported by Group.children.
-  val irregularChildren = subComposedChildren(callChain, semantics) + androidViewChildren()
+  val irregularChildren = subComposedChildren(callChain, semantics, visited) + androidViewChildren()
 
   // Certain composables produce an internal structure that is hard to read if we report it exactly.
   // Instead, we use heuristics to recognize subtrees that match certain expected structures and
   // aggregate them somewhat before reporting.
-  tryParseSubcomposition(callChain, irregularChildren, semantics)
+  tryParseSubcomposition(callChain, irregularChildren, semantics, visited)
     ?.let { return it }
-  tryParseAndroidView(callChain, irregularChildren, semantics)
+  tryParseAndroidView(callChain, irregularChildren, semantics, visited)
     ?.let { return it }
 
   // This is an intermediate group that doesn't represent a LayoutNode, so we flatten by just
   // reporting its children without reporting a new subtree.
   if (this !is NodeGroup) {
     return children.asSequence()
-      .flatMap { it.computeLayoutInfos(callChain, semantics) } + irregularChildren
+      .flatMap { it.computeLayoutInfos(callChain, semantics, visited) } + irregularChildren
   }
 
   val children = children.asSequence()
     // This node will "consume" the name, so reset it name to empty for children.
-    .flatMap { it.computeLayoutInfos(semantics = semantics) }
+    .flatMap { it.computeLayoutInfos(semantics = semantics, visited = visited) }
 
   val semanticsId = (this.node as? LayoutInfo)?.semanticsId
   val semanticsNodes = semantics.nodesFor(semanticsId)
@@ -176,15 +192,23 @@ internal fun Group.computeLayoutInfos(
  * The compositionData val is marked as internal, and not intended for public consumption.
  * The returned [SubcompositionInfo]s should be collated by [tryParseSubcomposition].
  */
-private fun Group.subComposedChildren(callChain: List<CallGroupInfo>, semantics: SemanticsIndex): Sequence<ComposeLayoutInfo.SubcompositionInfo> =
+private fun Group.subComposedChildren(
+  callChain: List<CallGroupInfo>,
+  semantics: SemanticsIndex,
+  visited: MutableSet<Composer>,
+): Sequence<ComposeLayoutInfo.SubcompositionInfo> =
   getCompositionContexts()
     .flatMap { it.tryGetComposers().asSequence() }
+    // The composer, not the context, is what identifies a subcomposition: two routes to the
+    // same composition hand back two context objects but the same composer.
+    .filter { visited.add(it) }
     .map { subcomposer ->
       ComposeLayoutInfo.SubcompositionInfo(
         name = callChain.firstOrNull()?.name.orEmpty(),
         callChain = callChain,
         bounds = box,
-        children = subcomposer.compositionData.asTree().computeLayoutInfos(semantics = semantics)
+        children = subcomposer.compositionData.asTree()
+          .computeLayoutInfos(semantics = semantics, visited = visited)
       )
     }
 
@@ -231,12 +255,13 @@ data class CallGroupInfo(
 private fun Group.tryParseSubcomposition(
   callChain: List<CallGroupInfo>,
   irregularChildren: Sequence<ComposeLayoutInfo>,
-  semantics: SemanticsIndex
+  semantics: SemanticsIndex,
+  visited: MutableSet<Composer>,
 ): Sequence<ComposeLayoutInfo>? {
   if (this.name != "SubcomposeLayout") return null
 
   val (subcompositions, regularChildren) =
-    (children.asSequence().flatMap { it.computeLayoutInfos(callChain, semantics) } + irregularChildren)
+    (children.asSequence().flatMap { it.computeLayoutInfos(callChain, semantics, visited) } + irregularChildren)
       .partition { it is ComposeLayoutInfo.SubcompositionInfo }
       .let {
         // There's no type-safe partition operator so we just cast.
@@ -287,13 +312,14 @@ private fun Group.tryParseSubcomposition(
 private fun Group.tryParseAndroidView(
   callChain: List<CallGroupInfo>,
   irregularChildren: Sequence<ComposeLayoutInfo>,
-  semantics: SemanticsIndex
+  semantics: SemanticsIndex,
+  visited: MutableSet<Composer>,
 ): Sequence<ComposeLayoutInfo>? {
   if (this.name != "AndroidView") return null
   if (this !is CallGroup) return null
 
   val (androidViews, regularChildren) =
-    (children.asSequence().flatMap { it.computeLayoutInfos(callChain, semantics) } + irregularChildren)
+    (children.asSequence().flatMap { it.computeLayoutInfos(callChain, semantics, visited) } + irregularChildren)
       .partition { it is AndroidViewInfo }
       .let {
         // There's no type-safe partition operator so we just cast.
