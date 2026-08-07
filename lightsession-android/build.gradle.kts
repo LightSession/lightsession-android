@@ -131,9 +131,17 @@ dependencies {
     // -Pls.composeBomUnderTest=<bom> raises only the androidTest *runtime* classpath. Main
     // stays compiled against the declared BOM, and that asymmetry is the point: it is the
     // exact shape of a published AAR meeting a newer app.
-    providers.gradleProperty("ls.composeBomUnderTest").orNull?.let { bom ->
-        androidTestRuntimeOnly(platform("androidx.compose:compose-bom:$bom"))
-    }
+    //
+    // `default` and blank both mean "leave the declared BOM alone", so that a caller always has
+    // something to pass. The alternative is a caller that has to *omit* the flag for one case,
+    // which in the emulator workflow meant a shell conditional — and that action runs its script
+    // one line per `sh -c`, so the `if` died on its own first line and took every instrumented
+    // run with it. A sentinel here costs one `takeIf`; a branch in the caller cost the pipeline.
+    providers.gradleProperty("ls.composeBomUnderTest").orNull
+        ?.takeIf { it.isNotBlank() && it != "default" }
+        ?.let { bom ->
+            androidTestRuntimeOnly(platform("androidx.compose:compose-bom:$bom"))
+        }
     // Espresso 3.6.1 reflects on `InputManager.getInstance()`, removed in Android 16, so
     // every instrumented test errors out on an API 36 device before reaching its body.
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")

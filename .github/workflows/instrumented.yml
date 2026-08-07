@@ -87,14 +87,18 @@ jobs:
             # the placement cases go quietly green and this line is the only thing that says so.
             adb shell cmd overlay list android | grep navbar || true
 
-            # `default` means "no override", which is not the same as passing an empty version:
-            # an empty -P would resolve a BOM coordinate ending in a colon and fail the build.
-            if [ "${{ matrix.compose-bom }}" = "default" ]; then
-              ./gradlew :lightsession-android:connectedDebugAndroidTest
-            else
-              ./gradlew :lightsession-android:connectedDebugAndroidTest \
-                -Pls.composeBomUnderTest=${{ matrix.compose-bom }}
-            fi
+            # One command per line, and it has to stay that way.
+            #
+            # `android-emulator-runner` does not hand this block to a shell. It splits it on
+            # newlines and runs each line as its own `sh -c`, so nothing here can span lines: an
+            # `if`/`else`/`fi` fails on its own first line with "end of file unexpected", which
+            # is what happened to every emulator job the first time this ran. A `\` continuation
+            # breaks the same way. If something ever needs a conditional, put it where it can be
+            # expressed — a `${{ }}` expression, a prior step, or the build script.
+            #
+            # `default` is understood by the build script as "leave the declared BOM alone", so
+            # the flag is passed unconditionally and there is nothing to branch on.
+            ./gradlew :lightsession-android:connectedDebugAndroidTest -Pls.composeBomUnderTest=${{ matrix.compose-bom }}
 
       - name: Reports
         if: always()
