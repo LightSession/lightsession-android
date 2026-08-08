@@ -22,6 +22,19 @@ interface DataSender {
         skeleton: SkeletonFrame?,
         width: Int,
         height: Int,
+        /**
+         * Pixels per dp on this device.
+         *
+         * Sent because [width] and [height] cannot answer the question the screen map asks of
+         * them. They are resolution; the map draws each screen at a size meant to say how big the
+         * device is; density is the only thing that converts one into the other — and low density
+         * is exactly what a large screen has.
+         *
+         * Measured on the two devices this came from: a 1080x2400 phone at 2.625 is 411x914 dp,
+         * a 2560x1600 tablet at 2.0 is 1280x800 dp. In pixels the tablet's *height* is the
+         * smaller number, so the map drew the physically larger device as the shorter card.
+         */
+        density: Float,
         appVersionCode: Int,
         appVersionName: String,
         theme: String
