@@ -185,8 +185,39 @@ class ModalSkeletonTest {
             sheetContent.size >= 3,
         )
         Log.i(TAG, "sheet content in the bottom half: ${sheetContent.size} rects")
+        sheet.rects.forEachIndexed { index, rect ->
+            Log.i(
+                TAG,
+                "  [$index] ${rect.kind} ${if (rect.stroke) "outline" else "FILL   "} " +
+                    "${rect.left},${rect.top} ${rect.right - rect.left}x${rect.bottom - rect.top}",
+            )
+        }
 
-        // The assertion. A `ModalBottomSheet` sits against the bottom, so anything the wireframe
+        // The scrim, and the window's own root containers, are gone.
+        //
+        // They arrive at full size because a `ModalBottomSheet`'s window is the whole display, and
+        // the scrim is a *filled* node — so `Recolour` sampled its whole area, which is the dimmed
+        // page behind the sheet, and painted a flat mid-grey over everything above it. Keeping the
+        // palette instead would be worse: `IMAGE` is `#2196F3`, a full-screen blue.
+        //
+        // Zero-area rectangles go with them. Compose bounds can be degenerate — measured here,
+        // `CONTAINER 0,1854 0x420` — and the server's renderer clips them to nothing, so they cost
+        // bytes to say nothing.
+        val fullFrame = sheet.rects.filter {
+            it.left <= 0 && it.top <= 0 && it.right >= screen.width && it.bottom >= screen.height
+        }
+        assertTrue(
+            "the modal's wireframe still carries ${fullFrame.size} full-screen rectangle(s) — its " +
+                "window's own furniture, not the modal: " +
+                fullFrame.joinToString { "${it.kind}${if (it.stroke) " outline" else " fill"}" },
+            fullFrame.isEmpty(),
+        )
+        assertTrue(
+            "a rectangle with no area reached the payload",
+            sheet.rects.none { it.right <= it.left || it.bottom <= it.top },
+        )
+
+        // A `ModalBottomSheet` sits against the bottom, so anything the wireframe
         // placed in the top half came from the page behind — which is the whole defect.
         //
         // Rectangles that span the screen are exempt: the sheet's own window may be full-screen,
