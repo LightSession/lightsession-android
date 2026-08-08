@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -297,30 +298,60 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     /**
      * Captures the current screen's wireframe in whichever mode is configured.
      *
+     * ## When a modal is up, the modal is the screen
+     *
+     * A windowed modal has its own view tree, and the generator only ever walked the Activity's —
+     * so `doctor/detail/{id} › Página inferior` was created correctly and then filled with a
+     * wireframe of the page *behind* the sheet. The screenshot layer showed the sheet over a dimmed
+     * page; the wireframe beside it showed the page with no sheet on it anywhere.
+     *
+     * [modalRootView] is the window `readModal` recognised, and it is set before the report that
+     * leads here — so by the time this runs, the right root is already in hand.
+     *
+     * Only for a *windowed* modal. A tab or a declared sub-screen is drawn inside the Activity's own
+     * composition, so its wireframe is the Activity's and always was.
+     *
      * @param onComplete receives null when there was nothing to capture — a screen
-     *   that never laid out, or a composition that never settled.
+     *   that never laid out, a composition that never settled, or a modal dismissed before its own
+     *   wireframe could be taken.
      */
     private fun captureWireframe(activity: Activity, onComplete: (Wireframe?) -> Unit) {
+        val overlay = modalRootView?.get()?.takeIf { it.isAttachedToWindow }
+
         when (wireframeMode) {
-            LightSessionConfig.WireframeMode.RECTS ->
-                skeletonGenerator.generateSkeletonFrame(activity) { frame ->
+            LightSessionConfig.WireframeMode.RECTS -> {
+                val handle = { frame: SkeletonFrame? ->
                     if (frame == null || !trueColourWireframes) {
                         onComplete(frame?.let { Wireframe(skeleton = it) })
-                        return@generateSkeletonFrame
-                    }
-                    recolourFromScreen(frame) { coloured ->
-                        onComplete(Wireframe(skeleton = coloured))
+                    } else {
+                        // Sampled from a capture that composites the dialog windows over the base,
+                        // so a modal's rectangles are coloured from the pixels of the modal itself.
+                        recolourFromScreen(frame) { coloured ->
+                            onComplete(Wireframe(skeleton = coloured))
+                        }
                     }
                 }
+                if (overlay != null) {
+                    skeletonGenerator.generateOverlaySkeletonFrame(activity, overlay, handle)
+                } else {
+                    skeletonGenerator.generateSkeletonFrame(activity, handle)
+                }
+            }
 
-            LightSessionConfig.WireframeMode.BITMAP ->
-                skeletonGenerator.generateSkeletonBitmap(activity) { bitmap ->
+            LightSessionConfig.WireframeMode.BITMAP -> {
+                val handle = { bitmap: Bitmap? ->
                     onComplete(
                         bitmap?.let {
                             Wireframe(bitmapBase64 = skeletonGenerator.bitmapToBase64(it))
                         }
                     )
                 }
+                if (overlay != null) {
+                    skeletonGenerator.generateOverlaySkeletonBitmap(activity, overlay, handle)
+                } else {
+                    skeletonGenerator.generateSkeletonBitmap(activity, handle)
+                }
+            }
         }
     }
 
