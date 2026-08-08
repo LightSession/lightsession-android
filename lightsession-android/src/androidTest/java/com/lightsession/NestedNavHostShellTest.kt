@@ -122,6 +122,25 @@ class NestedNavHostShellTest {
                 "shells were ${mapper.knownShellRoutes}",
             "home/manager" in mapper.knownShellRoutes,
         )
+
+        // Waited for, not asserted on the spot.
+        //
+        // Classing the shell and closing the edge over it are two different events: the first
+        // happens when the outer controller reports a destination that turns out to host a NavHost,
+        // the second only when the *inner* controller reports `dashboard`. Asserting the edge
+        // immediately after the shell appeared was reading the first and expecting the second, and
+        // it failed exactly as often as the inner report happened to be late — reliably when this
+        // test ran alone, rarely when the suite had warmed everything up first.
+        //
+        // The old failure also said the wrong thing. `expected (login, dashboard) but was
+        // (null, login)` reads as "the edge closed over the wrong screens", which sends a reader
+        // into the shell logic; what had actually happened is that no second edge existed yet. A
+        // timeout here names that.
+        awaitUntil("the edge to close over the dropped shell") {
+            mapper.lastDecidedEdge?.second == "dashboard"
+        }
+        // The pair, now that it is this test's own. The `from` cannot be inherited from whatever ran
+        // before: this test navigated `login` itself, so `login -> dashboard` is the edge it made.
         assertEquals(
             "the edge has to close over the dropped shell",
             "login" to "dashboard",
