@@ -361,7 +361,29 @@ publishing {
             //
             // The report of a Compose destination is now held for two frames, which is what makes
             // the shell recognisable at all — see `PendingReport`.
-            version = "0.15.0"
+
+            // 0.16.0 draws a modal, rather than the page behind it. `SkeletonGenerator` only ever
+            // walked `activity.window.decorView`, and a dialog or a bottom sheet is its own window
+            // with its own view tree — so a sub-screen like `doctor/detail/{id} › Página inferior`
+            // was created correctly and then filled with a wireframe of the page underneath. Seen
+            // on the screen map: the screenshot layer showed the sheet over a dimmed page, and the
+            // wireframe beside it showed the page, with no sheet on it anywhere.
+            //
+            // The mapper already held the answer — `readModal` records the modal's root before the
+            // report that leads to a capture — so this is mostly a matter of passing it. What had
+            // to move with it: the settle detector watched the Activity's decor, which would settle
+            // on the first quiet frame of the screen *behind* a sheet; and `frameFrom` reported the
+            // scanned root's own size, which held only while that root was a full-screen Activity.
+            // It reports the display now, the space `getLocationOnScreen` already puts every
+            // rectangle in. That one never broke, because `ls-api` overwrites both fields with the
+            // payload's dimensions before rendering — the SDK's answer was wrong and unread.
+            //
+            // Minor rather than patch: an existing consumer's modal sub-screens start showing a
+            // different picture with no code change on their side. Screens are permanent and the
+            // capture is once per screen per install, so a wireframe already stored for a modal
+            // stays wrong until the app's version changes. Additive public API on
+            // `SkeletonGenerator` for the overlay forms. See `ModalSkeletonTest`.
+            version = "0.16.0"
 
             afterEvaluate {
                 from(components["release"])
