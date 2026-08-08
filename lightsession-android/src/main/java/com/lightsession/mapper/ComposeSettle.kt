@@ -73,6 +73,18 @@ internal class ComposeSettleDetector(
         private val activityRef: WeakReference<Activity>,
         private val hasContent: () -> Boolean,
         private val onSettled: (Activity) -> Unit,
+        /**
+         * The window whose draws mean "something is still changing", or null for the Activity's.
+         *
+         * A dialog or a bottom sheet is its own window with its own `ViewTreeObserver`, so waiting
+         * on the Activity's draws says nothing about whether the sheet has finished composing —
+         * it would settle on the first quiet frame of the screen *behind* the sheet.
+         *
+         * Weak, because the wait runs for up to five seconds and the window it is waiting on can be
+         * dismissed inside them. Holding it strongly would keep a dismissed window's whole view
+         * tree alive for the rest of the wait.
+         */
+        private val observedRef: WeakReference<View>? = null,
     ) {
         private val startedAt = SystemClock.uptimeMillis()
 
@@ -89,7 +101,13 @@ internal class ComposeSettleDetector(
 
         internal fun start() {
             val activity = activityRef.get() ?: return finish(null)
-            val root = activity.window?.decorView ?: return finish(null)
+            // No fallback when a window was named and has gone: settling on the Activity instead
+            // would produce a picture of the screen behind the thing the caller asked about, which
+            // is the exact confusion this parameter exists to remove.
+            val root = when (observedRef) {
+                null -> activity.window?.decorView
+                else -> observedRef.get()?.takeIf { it.isAttachedToWindow }
+            } ?: return finish(null)
 
             // Any applied state is a recomposition that changed something.
             snapshotHandle = Snapshot.registerApplyObserver { _, _ ->
@@ -180,14 +198,22 @@ internal class ComposeSettleDetector(
      * timeout expires without the composition producing a single node.
      *
      * @param hasContent evaluated only once the screen looks quiet, not on every frame.
+     * @param observed the window to watch for drawing, when it is not the Activity's own — a
+     *   dialog or a bottom sheet. See [Handle.observedRef].
      */
     fun await(
         activity: Activity,
         hasContent: () -> Boolean,
         onSettled: (Activity) -> Unit,
+        observed: View? = null,
     ): Handle {
         cancel()
-        val handle = Handle(WeakReference(activity), hasContent, onSettled)
+        val handle = Handle(
+            WeakReference(activity),
+            hasContent,
+            onSettled,
+            observed?.let { WeakReference(it) },
+        )
         this.handle = handle
 
         // Started on the main thread, whatever thread asked.

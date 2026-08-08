@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.drawable.*
+import com.lightsession.ScreenGeometry
 import android.os.Build
 import android.util.Base64
 import android.util.Log
@@ -135,18 +136,44 @@ class SkeletonGenerator {
      */
     private fun <T> awaitDrawableRoot(
         activity: Activity,
+        overlayRoot: View?,
         produce: (Activity, View) -> T?,
         onComplete: (T?) -> Unit,
     ) {
+        // Weak, and the flag rather than the view is what the lambdas capture: the wait can run
+        // for five seconds, and a sheet dismissed inside them must not be kept alive by this.
+        val wantsOverlay = overlayRoot != null
+        val overlay = overlayRoot?.let { java.lang.ref.WeakReference(it) }
+
+        // Null once an overlay was asked for and has gone. Falling back to the Activity would
+        // quietly produce a wireframe of the screen *behind* the sheet — which is the picture this
+        // parameter exists to stop producing, so producing nothing is the honest answer.
+        fun root(current: Activity): View? =
+            if (wantsOverlay) overlay?.get()?.takeIf { it.isAttachedToWindow }
+            else current.window?.decorView?.rootView
+
+        // Answered here rather than left to the wait, because the wait cannot answer it. Its
+        // contract is that `onSettled` may simply never run — for a cancelled wait, a dead
+        // Activity, or a timeout with no content — and it has no way to say "there was nothing to
+        // wait for". That is tolerable when the *screen* is gone, since there is nobody left to
+        // report to. It is not tolerable here: the Activity is alive, a caller is holding a
+        // callback for a sub-screen, and a window dismissed between the report and this call is an
+        // ordinary race rather than an error. Failing fast turns a five-second silence into null.
+        if (wantsOverlay && root(activity) == null) {
+            Log.d("SkeletonGenerator", "overlay window went away before its wireframe was taken")
+            onComplete(null)
+            return
+        }
+
         settleDetector.await(
             activity = activity,
+            observed = overlayRoot,
             hasContent = {
-                val root = activity.window?.decorView?.rootView
+                val root = root(activity)
                 root != null && root.width > 0 && root.height > 0 && contentCount(root) > 0
             },
             onSettled = { settled ->
-                val root = settled.window?.decorView?.rootView
-                onComplete(root?.let { produce(settled, it) })
+                onComplete(root(settled)?.let { produce(settled, it) })
             },
         )
     }
@@ -217,7 +244,37 @@ class SkeletonGenerator {
      * [SkeletonFrame].
      */
     fun generateSkeletonFrame(activity: Activity, onComplete: (SkeletonFrame?) -> Unit) {
-        awaitDrawableRoot(activity, ::generateSkeletonFrameSync, onComplete)
+        awaitDrawableRoot(activity, null, ::generateSkeletonFrameSync, onComplete)
+    }
+
+    /**
+     * The wireframe of an overlay window alone — a dialog, a bottom sheet.
+     *
+     * ## Why the Activity's tree is not the answer for these
+     *
+     * A modal is its own window with its own view tree, and this class only ever walked
+     * `activity.window.decorView`. So a sub-screen like `doctor/detail/{id} › Página inferior` was
+     * created correctly and then filled with a wireframe of the screen *behind* the sheet: the
+     * screenshot layer showed the sheet over a dimmed page, and the wireframe beside it showed the
+     * page with no sheet anywhere on it.
+     *
+     * Passing the modal's root makes the picture describe the modal. Nothing else has to change:
+     * [scanViewHierarchy] positions every rectangle with `getLocationOnScreen`, so the rectangles
+     * come out in screen coordinates already and land exactly where the sheet is.
+     *
+     * The screen behind is deliberately absent rather than dimmed. A sub-screen *is* the modal —
+     * it is what the person is looking at and interacting with — and drawing the page underneath
+     * would put the two screens' geometry in one picture, which is the confusion being fixed.
+     *
+     * @param overlayRoot the modal window's root view. When it has been dismissed by the time the
+     *   composition settles, `onComplete` receives null: no wireframe is better than the wrong one.
+     */
+    fun generateOverlaySkeletonFrame(
+        activity: Activity,
+        overlayRoot: View,
+        onComplete: (SkeletonFrame?) -> Unit,
+    ) {
+        awaitDrawableRoot(activity, overlayRoot, ::generateSkeletonFrameSync, onComplete)
     }
 
     /**
@@ -228,7 +285,16 @@ class SkeletonGenerator {
      * not.
      */
     fun generateSkeletonBitmap(activity: Activity, onComplete: (Bitmap?) -> Unit) {
-        awaitDrawableRoot(activity, ::generateSkeletonBitmapSync, onComplete)
+        awaitDrawableRoot(activity, null, ::generateSkeletonBitmapSync, onComplete)
+    }
+
+    /** [generateOverlaySkeletonFrame], drawn here. See its kdoc, and [bitmapFrom] for the cost. */
+    fun generateOverlaySkeletonBitmap(
+        activity: Activity,
+        overlayRoot: View,
+        onComplete: (Bitmap?) -> Unit,
+    ) {
+        awaitDrawableRoot(activity, overlayRoot, ::generateSkeletonBitmapSync, onComplete)
     }
 
     /** Aborts a wait in progress — a new navigation, or the user touching the screen. */
@@ -254,12 +320,36 @@ class SkeletonGenerator {
         val rects = ArrayList<SkeletonRect>(64)
         flattenForWire(skeletonTree, rects)
 
+        val screen = canvasSize(rootView)
         return SkeletonFrame(
-            width = rootView.width,
-            height = rootView.height,
+            width = screen.width,
+            height = screen.height,
             background = backgroundColor,
             rects = rects,
         )
+    }
+
+    /**
+     * The canvas a frame's rectangles belong on: the display, not the root that was scanned.
+     *
+     * [scanViewHierarchy] positions everything with `getLocationOnScreen`, so the rectangles are in
+     * *screen* coordinates whatever tree they came from. Reporting the scanned root's own size was
+     * right only while the two happened to be the same thing — a full-screen Activity — and became
+     * visibly wrong the moment an overlay window could be scanned: a platform dialog's decor
+     * measures around 735×525 while its rectangles reach y≈1431.
+     *
+     * It never broke, and that is worth being uneasy about rather than reassured by. `ls-api`'s
+     * `capture_bytes` overwrites these two fields with the payload's own dimensions before
+     * rendering, so the frame's answer was discarded either way. This makes the two agree instead
+     * of leaving the SDK's number wrong and unread.
+     *
+     * Falls back to the root's size when the display cannot be read, which is what a unit test with
+     * an unattached view gets.
+     */
+    private fun canvasSize(rootView: View): android.util.Size {
+        val screen = runCatching { ScreenGeometry.size() }.getOrNull()
+        return if (screen != null && screen.width > 0 && screen.height > 0) screen
+        else android.util.Size(rootView.width, rootView.height)
     }
 
     /**
@@ -295,7 +385,10 @@ class SkeletonGenerator {
         if (rootView.width == 0 || rootView.height == 0) return null
 
         val skeletonTree = scanViewHierarchy(rootView) ?: return null
-        val bitmap = createBitmap(rootView.width, rootView.height)
+        // The display, for the reason in [canvasSize]: a bitmap the size of a dialog's decor would
+        // clip away every rectangle the scan placed in screen coordinates outside it.
+        val screen = canvasSize(rootView)
+        val bitmap = createBitmap(screen.width, screen.height)
         val canvas = Canvas(bitmap)
 
         canvas.drawColor(backgroundColor)
