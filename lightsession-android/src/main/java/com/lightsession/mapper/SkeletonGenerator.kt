@@ -274,7 +274,7 @@ class SkeletonGenerator {
         overlayRoot: View,
         onComplete: (SkeletonFrame?) -> Unit,
     ) {
-        awaitDrawableRoot(activity, overlayRoot, ::generateSkeletonFrameSync, onComplete)
+        awaitDrawableRoot(activity, overlayRoot, ::overlayFrameSync, onComplete)
     }
 
     /**
@@ -294,7 +294,7 @@ class SkeletonGenerator {
         overlayRoot: View,
         onComplete: (Bitmap?) -> Unit,
     ) {
-        awaitDrawableRoot(activity, overlayRoot, ::generateSkeletonBitmapSync, onComplete)
+        awaitDrawableRoot(activity, overlayRoot, ::overlayBitmapSync, onComplete)
     }
 
     /** Aborts a wait in progress — a new navigation, or the user touching the screen. */
@@ -305,6 +305,10 @@ class SkeletonGenerator {
     private fun generateSkeletonFrameSync(activity: Activity, rootView: View): SkeletonFrame? =
         frameFrom(rootView, getWindowBackgroundColor(activity))
 
+    /** The modal alone: its window's own full-size furniture is dropped. See [coversAllOf]. */
+    private fun overlayFrameSync(activity: Activity, rootView: View): SkeletonFrame? =
+        frameFrom(rootView, getWindowBackgroundColor(activity), overlay = true)
+
     /**
      * The scan and the serialisation, without the Activity.
      *
@@ -313,7 +317,11 @@ class SkeletonGenerator {
      * `SkeletonCostTest` time this path against [bitmapFrom] over the *same* hierarchy — the only
      * honest comparison between them.
      */
-    internal fun frameFrom(rootView: View, backgroundColor: Int): SkeletonFrame? {
+    internal fun frameFrom(
+        rootView: View,
+        backgroundColor: Int,
+        overlay: Boolean = false,
+    ): SkeletonFrame? {
         if (rootView.width == 0 || rootView.height == 0) return null
 
         val skeletonTree = scanViewHierarchy(rootView) ?: return null
@@ -325,9 +333,32 @@ class SkeletonGenerator {
             width = screen.width,
             height = screen.height,
             background = backgroundColor,
-            rects = rects,
+            rects = if (overlay) rects.filterNot { it.coversAllOf(screen) } else rects,
         )
     }
+
+    /**
+     * Whether a rectangle is the whole canvas.
+     *
+     * Used to drop a modal window's own furniture from its wireframe, and only there. A
+     * `ModalBottomSheet`'s window is the whole display — measured in `ModalSkeletonTest` — so its
+     * root containers and, more visibly, its **scrim** all arrive at full size.
+     *
+     * The scrim is the one that ruined the picture. It is a filled node, so [Recolour] sampled it,
+     * and what it sampled was the whole screen — which is the dimmed page *behind* the sheet. The
+     * result was a flat mid-grey covering everything above the sheet, painted before the sheet's own
+     * children because paint order is pre-order. Keeping the palette colour instead would be worse,
+     * not better: `IMAGE` is `#2196F3`, so it would be a full-screen blue.
+     *
+     * Dropping it is the right answer rather than colouring it differently, because a scrim is not
+     * part of the modal. It is the *previous* screen being dimmed, and a sub-screen's wireframe is
+     * supposed to be the modal alone.
+     *
+     * Deliberately not applied to an ordinary screen. There a full-frame fill is usually the page's
+     * own background, which is a real surface and correct to sample.
+     */
+    private fun SkeletonRect.coversAllOf(canvas: android.util.Size): Boolean =
+        left <= 0 && top <= 0 && right >= canvas.width && bottom >= canvas.height
 
     /**
      * The canvas a frame's rectangles belong on: the display, not the root that was scanned.
@@ -361,7 +392,13 @@ class SkeletonGenerator {
      * here would change the image with nothing to announce it.
      */
     private fun flattenForWire(node: SkeletonNode, into: MutableList<SkeletonRect>) {
-        if (node.color != Color.TRANSPARENT) {
+        // A rectangle with no area draws nothing anywhere — `ls_media::skeleton`'s `clip` returns
+        // `None` for it — so sending one costs bytes to say nothing, and puts a row nobody can
+        // point at in front of whoever is reading the geometry. Compose bounds can be degenerate:
+        // measured on a bottom sheet, `CONTAINER 0,1854 0x420`. Descent continues, because a node
+        // being empty says nothing about its children.
+        val hasArea = node.rect.width() > 0 && node.rect.height() > 0
+        if (hasArea && node.color != Color.TRANSPARENT) {
             into.add(
                 SkeletonRect(
                     left = node.rect.left,
@@ -380,8 +417,16 @@ class SkeletonGenerator {
     private fun generateSkeletonBitmapSync(activity: Activity, rootView: View): Bitmap? =
         bitmapFrom(rootView, getWindowBackgroundColor(activity))
 
+    /** [overlayFrameSync], drawn here. */
+    private fun overlayBitmapSync(activity: Activity, rootView: View): Bitmap? =
+        bitmapFrom(rootView, getWindowBackgroundColor(activity), overlay = true)
+
     /** The same scan as [frameFrom], drawing here instead. See its kdoc. */
-    internal fun bitmapFrom(rootView: View, backgroundColor: Int): Bitmap? {
+    internal fun bitmapFrom(
+        rootView: View,
+        backgroundColor: Int,
+        overlay: Boolean = false,
+    ): Bitmap? {
         if (rootView.width == 0 || rootView.height == 0) return null
 
         val skeletonTree = scanViewHierarchy(rootView) ?: return null
@@ -393,7 +438,7 @@ class SkeletonGenerator {
 
         canvas.drawColor(backgroundColor)
 
-        renderTreeToCanvas(skeletonTree, canvas)
+        renderTreeToCanvas(skeletonTree, canvas, if (overlay) screen else null)
         return bitmap
     }
 
@@ -906,9 +951,18 @@ class SkeletonGenerator {
         return null
     }
 
-    private fun renderTreeToCanvas(node: SkeletonNode, canvas: Canvas) {
-        if (node.color == Color.TRANSPARENT) {
-            node.children.forEach { renderTreeToCanvas(it, canvas) }
+    private fun renderTreeToCanvas(
+        node: SkeletonNode,
+        canvas: Canvas,
+        /** Non-null for an overlay, to drop its window's full-size furniture. See [coversAllOf]. */
+        dropAtSizeOf: android.util.Size? = null,
+    ) {
+        val furniture = dropAtSizeOf != null &&
+            node.rect.left <= 0 && node.rect.top <= 0 &&
+            node.rect.right >= dropAtSizeOf.width && node.rect.bottom >= dropAtSizeOf.height
+
+        if (node.color == Color.TRANSPARENT || furniture || node.rect.isEmpty) {
+            node.children.forEach { renderTreeToCanvas(it, canvas, dropAtSizeOf) }
             return
         }
 
@@ -934,7 +988,7 @@ class SkeletonGenerator {
         canvas.drawRect(node.rect, paint)
 
         node.children.forEach { child ->
-            renderTreeToCanvas(child, canvas)
+            renderTreeToCanvas(child, canvas, dropAtSizeOf)
         }
     }
 }

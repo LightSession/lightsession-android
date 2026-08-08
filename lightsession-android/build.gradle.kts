@@ -383,7 +383,27 @@ publishing {
             // capture is once per screen per install, so a wireframe already stored for a modal
             // stays wrong until the app's version changes. Additive public API on
             // `SkeletonGenerator` for the overlay forms. See `ModalSkeletonTest`.
-            version = "0.16.0"
+            // 0.16.1 drops a modal window's own furniture from its wireframe — above all the
+            // scrim. 0.16.0 started scanning the modal's window, and a `ModalBottomSheet`'s window
+            // is the whole display, so the scrim arrived as a full-screen *filled* node. `Recolour`
+            // therefore sampled it, and what it sampled was the whole screen: the dimmed page
+            // behind the sheet. The result was a flat mid-grey covering everything above the sheet,
+            // painted before the sheet's own children because paint order is pre-order. Keeping the
+            // palette instead would have been worse — `IMAGE` is `#2196F3`, a full-screen blue.
+            //
+            // Dropped rather than recoloured, because a scrim is not part of the modal: it is the
+            // previous screen being dimmed, and a sub-screen's wireframe is the modal alone. Only
+            // for overlay frames — on an ordinary screen a full-frame fill is usually the page's own
+            // background, a real surface that is correct to sample. Zero-area rectangles go with
+            // them; Compose bounds can be degenerate, and the server clips such a rectangle to
+            // nothing, so it costs bytes to say nothing.
+            //
+            // Measured on a bottom sheet: 17 rectangles became 9, and every survivor lies inside
+            // the sheet.
+            //
+            // Patch, on the reasoning of 0.14.1: nothing new is reported and no signature changes —
+            // a screen that was storing a wireframe of the wrong thing stores the right one.
+            version = "0.16.1"
 
             afterEvaluate {
                 from(components["release"])
