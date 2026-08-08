@@ -403,7 +403,25 @@ publishing {
             //
             // Patch, on the reasoning of 0.14.1: nothing new is reported and no signature changes —
             // a screen that was storing a wireframe of the wrong thing stores the right one.
-            version = "0.16.1"
+            // 0.17.0 reports the device's pixel density with a screen.
+            //
+            // The screen map draws each capture at a size proportional to its pixels, which reads
+            // as a statement about how big the device is and is not one. Pixel count is resolution;
+            // density is the factor that turns it into inches, and low density is exactly what a
+            // large screen has. Measured on the two devices this was reported from: a 1080×2400
+            // phone at 2.625 is 411×914 dp, a 2560×1600 tablet at 2.0 is 1280×800 dp — three times
+            // the area, and yet its pixel *height* is the smaller number. The map drew the
+            // physically larger device as the shorter card, which is what somebody noticed.
+            //
+            // Nothing here could fix that alone: `width` and `height` were faithful, and no third
+            // number existed anywhere in the capture path to make them mean size. `density` now
+            // travels with them, `ls-api` stores it — backfilling what it can from the densities
+            // already in `ls_sessions.device_info` — and the flow divides by it.
+            //
+            // Minor. `DataSender.sendScreenData` takes a parameter it did not, so anything
+            // implementing that public interface has to be recompiled; and the payload gains a
+            // field, which an older server ignores rather than rejecting.
+            version = "0.17.0"
 
             afterEvaluate {
                 from(components["release"])

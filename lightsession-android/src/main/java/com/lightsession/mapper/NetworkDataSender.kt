@@ -60,6 +60,7 @@ class NetworkDataSender : DataSender {
         skeleton: SkeletonFrame?,
         width: Int,
         height: Int,
+        density: Float,
         appVersionCode: Int,
         appVersionName: String,
         theme: String
@@ -81,6 +82,14 @@ class NetworkDataSender : DataSender {
                 skeleton?.let { put("skeleton", it.toJson()) }
                 put("width", width)
                 put("height", height)
+                // A double on the wire: `JSONObject` has no Float overload, and the server parses
+                // it back into an f32. Sent unconditionally — "absent" on this field means an SDK
+                // too old to know it, which the server stores as NULL and treats differently from
+                // any number, so omitting it when it looks ordinary would be a lie.
+                //
+                // Only here, not on `updateScreenshot`: that one replaces the image of a capture
+                // row this call already created, and the row carries the density.
+                put("density", density.toDouble())
                 put("appVersionCode", appVersionCode)
                 put("appVersionName", appVersionName)
                 put("theme", theme)

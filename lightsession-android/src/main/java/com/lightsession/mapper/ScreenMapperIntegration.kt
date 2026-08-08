@@ -1649,6 +1649,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                                     skeleton = wireframe.skeleton,
                                     width = screenWidth,
                                     height = screenHeight,
+                                    density = ScreenGeometry.density,
                                     appVersionCode = appVersionCode,
                                     appVersionName = appVersionName,
                                     theme = currentTheme
@@ -1761,6 +1762,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                                     skeleton = wireframe.skeleton,
                                     width = screenWidth,
                                     height = screenHeight,
+                                    density = ScreenGeometry.density,
                                     appVersionCode = appVersionCode,
                                     appVersionName = appVersionName,
                                     theme = currentTheme
