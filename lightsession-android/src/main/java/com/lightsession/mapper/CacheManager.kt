@@ -1,6 +1,7 @@
 package com.lightsession.mapper
 
 import android.content.Context
+import androidx.core.content.edit
 
 /**
  * What this install has already reported, so it is not reported again.
@@ -50,7 +51,7 @@ class CacheManager(context: Context) {
     }
 
     private fun updateAppVersion(version: String) {
-        prefs.edit().putString(KEY_APP_VERSION, version).apply()
+        prefs.edit { putString(KEY_APP_VERSION, version) }
     }
 
     fun isScreenSent(screenId: String): Boolean {
@@ -67,12 +68,12 @@ class CacheManager(context: Context) {
         // One edit, not two. Both sets used to be committed separately, so a process death
         // between them left a screen marked sent but not captured — which is the pair of
         // states that makes the SDK re-capture forever.
-        val editor = prefs.edit()
-        editor.putStringSet(KEY_SENT_SCREENS, getSentScreens() + screenId)
-        if (fullyCaptured) {
-            editor.putStringSet(KEY_CAPTURED_SCREENS, getCapturedScreens() + screenId)
+        prefs.edit {
+            putStringSet(KEY_SENT_SCREENS, getSentScreens() + screenId)
+            if (fullyCaptured) {
+                putStringSet(KEY_CAPTURED_SCREENS, getCapturedScreens() + screenId)
+            }
         }
-        editor.apply()
     }
 
     fun isFlowSent(flowKey: String): Boolean {
@@ -81,15 +82,15 @@ class CacheManager(context: Context) {
     }
 
     fun markFlowAsSent(flowKey: String) = synchronized(writeLock) {
-        prefs.edit().putStringSet(KEY_SENT_FLOWS, getSentFlows() + flowKey).apply()
+        prefs.edit { putStringSet(KEY_SENT_FLOWS, getSentFlows() + flowKey) }
     }
 
     private fun clearAllCache() {
-        prefs.edit()
-            .remove(KEY_SENT_SCREENS)
-            .remove(KEY_SENT_FLOWS)
-            .remove(KEY_CAPTURED_SCREENS)
-            .apply()
+        prefs.edit {
+            remove(KEY_SENT_SCREENS)
+            remove(KEY_SENT_FLOWS)
+            remove(KEY_CAPTURED_SCREENS)
+        }
     }
 
     // Read through `+` at every call site rather than mutated: `getStringSet` may return

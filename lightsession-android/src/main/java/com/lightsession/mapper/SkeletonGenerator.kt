@@ -33,6 +33,9 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.tooling.data.UiToolingDataApi
 import androidx.compose.ui.tooling.data.asTree
 import androidx.core.view.children
+import androidx.core.view.isNotEmpty
+import androidx.core.util.size
+import androidx.core.graphics.toColorInt
 import java.io.ByteArrayOutputStream
 import androidx.core.graphics.createBitmap
 
@@ -56,14 +59,14 @@ class SkeletonGenerator {
     }
 
     private val defaultColors: Map<NodeType, Int> = mapOf(
-        NodeType.CONTAINER to Color.parseColor("#E0E0E0"),
-        NodeType.TEXT to Color.parseColor("#4CAF50"),
-        NodeType.IMAGE to Color.parseColor("#2196F3"),
-        NodeType.INPUT to Color.parseColor("#FF9800"),
-        NodeType.BUTTON to Color.parseColor("#9C27B0"),
-        NodeType.UNKNOWN to Color.parseColor("#757575"),
-        NodeType.CARD to Color.parseColor("#FFEB3B"),
-        NodeType.WEBVIEW to Color.parseColor("#00BCD4"),
+        NodeType.CONTAINER to "#E0E0E0".toColorInt(),
+        NodeType.TEXT to "#4CAF50".toColorInt(),
+        NodeType.IMAGE to "#2196F3".toColorInt(),
+        NodeType.INPUT to "#FF9800".toColorInt(),
+        NodeType.BUTTON to "#9C27B0".toColorInt(),
+        NodeType.UNKNOWN to "#757575".toColorInt(),
+        NodeType.CARD to "#FFEB3B".toColorInt(),
+        NodeType.WEBVIEW to "#00BCD4".toColorInt(),
         NodeType.COMPOSE_HOST to Color.TRANSPARENT
     )
 
@@ -638,7 +641,7 @@ class SkeletonGenerator {
     }
 
     private fun SparseArray<*>.findComposition(): Composition? {
-        for (i in 0 until size()) {
+        for (i in 0 until size) {
             val value = valueAt(i)
             if (value is Composition) {
                 return value
@@ -726,10 +729,10 @@ class SkeletonGenerator {
                         Pair(defaultColors[type] ?: Color.LTGRAY, Paint.Style.FILL)
                     }
                     type == NodeType.CONTAINER && isLeaf -> {
-                        Pair(Color.parseColor("#E0E0E0"), Paint.Style.FILL)
+                        Pair("#E0E0E0".toColorInt(), Paint.Style.FILL)
                     }
                     type == NodeType.CONTAINER && !isLeaf -> {
-                        Pair(Color.parseColor("#BDBDBD"), Paint.Style.STROKE)
+                        Pair("#BDBDBD".toColorInt(), Paint.Style.STROKE)
                     }
                     else -> {
                         Pair(defaultColors[type] ?: Color.LTGRAY, Paint.Style.FILL)
@@ -857,7 +860,7 @@ class SkeletonGenerator {
         if (view is android.widget.Button) return NodeType.BUTTON
         if (view is TextView) return NodeType.TEXT
         if (view is ImageView) return NodeType.IMAGE
-        if (view is ViewGroup && view.childCount > 0) return NodeType.CONTAINER
+        if (view is ViewGroup && view.isNotEmpty()) return NodeType.CONTAINER
         return if (view is ViewGroup) NodeType.CONTAINER else NodeType.UNKNOWN
     }
 
@@ -876,14 +879,17 @@ class SkeletonGenerator {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             view.backgroundTintList?.defaultColor?.let {
-                if (it != 0 && it != Color.TRANSPARENT) {
+                // `Color.TRANSPARENT` *is* 0, so the second half of what was here could never
+                // decide anything. Kept as one test rather than dropped entirely: "no colour" is
+                // the thing being excluded, and 0 is how the framework says it.
+                if (it != Color.TRANSPARENT) {
                     return Pair(it, Paint.Style.FILL)
                 }
             }
         }
 
         extractColorFromDrawable(view.background)?.let { extracted ->
-            if (extracted != 0 && extracted != Color.TRANSPARENT) {
+            if (extracted != Color.TRANSPARENT) {
                 return Pair(extracted, Paint.Style.FILL)
             }
         }
@@ -892,7 +898,7 @@ class SkeletonGenerator {
             getThemeColor(view.context, android.R.attr.colorPrimary)?.let {
                 return Pair(it, Paint.Style.FILL)
             }
-            return Pair(Color.parseColor("#6200EE"), Paint.Style.FILL)
+            return Pair("#6200EE".toColorInt(), Paint.Style.FILL)
         }
 
         if (view is TextView) {

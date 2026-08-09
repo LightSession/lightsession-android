@@ -2,6 +2,7 @@ package com.lightsession
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import android.util.Log
 import java.util.UUID
 
@@ -90,7 +91,7 @@ internal class Identity(private val prefs: SharedPreferences) {
         }
         if (trimmed == this.userId) return false
         this.userId = trimmed
-        prefs.edit().putString(USER_ID, trimmed).apply()
+        prefs.edit { putString(USER_ID, trimmed) }
         Log.d(TAG, "identified")
         return true
     }
@@ -106,11 +107,14 @@ internal class Identity(private val prefs: SharedPreferences) {
     fun reset() {
         userId = null
         anonymousId = mint()
-        prefs.edit().remove(USER_ID).putString(ANONYMOUS_ID, anonymousId).apply()
+        prefs.edit {
+            remove(USER_ID)
+            putString(ANONYMOUS_ID, anonymousId)
+        }
         Log.d(TAG, "reset; new anonymous id minted")
     }
 
     private fun mint(): String = UUID.randomUUID().toString().also {
-        prefs.edit().putString(ANONYMOUS_ID, it).apply()
+        prefs.edit { putString(ANONYMOUS_ID, it) }
     }
 }

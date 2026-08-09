@@ -13,7 +13,9 @@ import kotlin.coroutines.resume
 import android.util.Log
 import android.view.PixelCopy
 import android.view.View
-import com.lightsession.mapper.SkeletonScreenGenerator
+import androidx.core.view.isVisible
+import androidx.core.graphics.withSave
+import androidx.core.graphics.createBitmap
 import curtains.phoneWindow
 import java.io.ByteArrayOutputStream
 import com.lightsession.Masking
@@ -68,7 +70,6 @@ internal class ScreenDrawing {
     private val canvasPool = mutableListOf<Canvas>()
     private val byteArrayPool = mutableListOf<ByteArrayOutputStream>()
     private val bitmapPool = java.util.concurrent.ConcurrentLinkedQueue<Bitmap>()
-    private val skeletonGenerator = SkeletonScreenGenerator()
 
     private var globalScaleFactor = ScalePresets.MEDIUM_QUALITY
 
@@ -661,7 +662,7 @@ internal class ScreenDrawing {
             }
             if (!candidate.isRecycled) candidate.recycle()
         }
-        return Bitmap.createBitmap(width, height, config)
+        return createBitmap(width, height, config)
     }
 
     /** Returns a bitmap to the pool. Idempotent-safe: a recycled one is dropped. */
@@ -797,7 +798,7 @@ internal class ScreenDrawing {
     ) {
         val minViewSize = if (scaleFactor <= 0.25f) 50 else 0
         val significantViews = views.filter { view ->
-            view.visibility == View.VISIBLE &&
+            view.isVisible &&
                 view.width > 0 && view.height > 0 &&
                 view.alpha > 0.1f &&
                 (view.width >= minViewSize || view.height >= minViewSize)
@@ -805,22 +806,21 @@ internal class ScreenDrawing {
 
         val location = IntArray(2)
         significantViews.forEachIndexed { index, view ->
-            canvas.save()
+            canvas.withSave {
+                view.getLocationOnScreen(location)
+                canvas.translate(location[0].toFloat(), location[1].toFloat())
+                view.draw(canvas)
 
-            view.getLocationOnScreen(location)
-            canvas.translate(location[0].toFloat(), location[1].toFloat())
-            view.draw(canvas)
-
-            if (index < significantViews.size - 1) {
-                val paint = getPaintFromPool()
-                paint.color = Color.BLACK
-                paint.alpha =
-                    (calculateDimmingAlphaOptimized(significantViews.size - 1 - index) * 255).toInt()
-                canvas.drawRect(0f, 0f, view.width.toFloat(), view.height.toFloat(), paint)
-                returnPaintToPool(paint)
+                if (index < significantViews.size - 1) {
+                    val paint = getPaintFromPool()
+                    paint.color = Color.BLACK
+                    paint.alpha =
+                        (calculateDimmingAlphaOptimized(significantViews.size - 1 - index) * 255)
+                            .toInt()
+                    canvas.drawRect(0f, 0f, view.width.toFloat(), view.height.toFloat(), paint)
+                    returnPaintToPool(paint)
+                }
             }
-
-            canvas.restore()
 
             // Outside the translate: rectangles are already in screen coordinates, and the
             // canvas here carries nothing but the capture's scale.
@@ -828,110 +828,10 @@ internal class ScreenDrawing {
         }
     }
 
-    /**
-     * Generates a random screen Skeleton and returns as Byarray.
-     *
-     * Uses the same optimizations as screen capture:
-     * - Reuse of Object Pools
-     * - Bitmap configuration based on scalefactor
-     * - Optimized compression
-     *
-     * @param scalefactor scale factor to resize skeleton (0.1f to 1.0f)
-     * @param width personalized width (optional, uses screen dimensions by default)
-     * @Param Height Personalized Height (optional, uses screen dimensions by default)
-     * @return bytearray containing the Skeleton Screen in JPEG format, or null in case of error
-     */
-    fun generateRandomSkeletonScreen(
-        scaleFactor: Float = globalScaleFactor,
-        width: Int? = null,
-        height: Int? = null
-    ): ByteArray? {
-        return try {
-            val screen = ScreenGeometry.size()
-            val screenWidth = width ?: screen.width
-            val screenHeight = height ?: screen.height
-
-            // Synchronizes the scalefactor between the two classes
-            skeletonGenerator.setGlobalScaleFactor(scaleFactor)
-
-            val bitmap = skeletonGenerator.generateRandomSkeleton(
-                screenWidth,
-                screenHeight,
-                scaleFactor
-            )
-
-            val compressionQuality = calculateCompressionQuality(scaleFactor)
-            val result = convertBitmapToByteArrayOptimized(bitmap, compressionQuality)
-
-            if (!bitmap.isRecycled) bitmap.recycle()
-
-            result
-        } catch (e: Throwable) {
-            Log.w("ScreenCaptureUtils", "Failed to generate skeleton screen", e)
-            null
-        }
-    }
-
-    /**
-     * Generates a random skeleton screen and returns both Base64 and dimensions.
-     *
-     * @param scaleFactor scale factor to resize skeleton (0.1f to 1.0f)
-     * @param width personalized width (optional, uses screen dimensions by default)
-     * @param height personalized height (optional, uses screen dimensions by default)
-     * @return Pair<String?, Pair<Int, Int>?> - (Base64 string, (width, height)) or (null, null) on error
-     */
-    fun generateRandomSkeletonScreenAsBase64(
-        scaleFactor: Float = globalScaleFactor,
-        width: Int? = null,
-        height: Int? = null
-    ): Pair<String?, Pair<Int, Int>?> {
-        return try {
-            val byteArray = generateRandomSkeletonScreen(ScalePresets.ORIGINAL, width, height)
-            byteArray?.let {
-                val bitmap = BitmapFactory.decodeByteArray(it, 0, it.size)
-                val dimensions = Pair(bitmap.width, bitmap.height)
-                val base64 = Base64.encodeToString(it, Base64.NO_WRAP)
-                bitmap.recycle()
-                Pair(base64, dimensions)
-            } ?: Pair(null, null)
-        } catch (e: Exception) {
-            Log.e("ScreenCaptureUtils", "Failed to generate skeleton with dimensions", e)
-            Pair(null, null)
-        }
-    }
 
 
 
-    /**
-     * Generates a random screen screen and returns as bitmap.
-     *
-     * Similar to the other methods of Skeleton, but returns the Bitmap Raw
-     * For additional processing before compression.
-     *
-     * @param scalefactor scale factor to resize skeleton (0.1f to 1.0f)
-     * @param width personalized width (optional, uses screen dimensions by default)
-     * @Param Height Personalized Height (optional, uses screen dimensions by default)
-     * @return Bitmap of Skeleton Screen, or null in case of error
-     */
-    fun generateRandomSkeletonScreenBitmap(
-        scaleFactor: Float = globalScaleFactor,
-        width: Int? = null,
-        height: Int? = null
-    ): Bitmap? {
-        return try {
-            val screen = ScreenGeometry.size()
-            val screenWidth = width ?: screen.width
-            val screenHeight = height ?: screen.height
 
-            // Keeps the scale factor in step between the two classes
-            skeletonGenerator.setGlobalScaleFactor(scaleFactor)
-
-            skeletonGenerator.generateRandomSkeleton(screenWidth, screenHeight, scaleFactor)
-        } catch (e: Throwable) {
-            Log.w("ScreenCaptureUtils", "Failed to generate skeleton screen bitmap", e)
-            null
-        }
-    }
 
     /**
      * Calculates the dimming alpha value based on the number of layers below.

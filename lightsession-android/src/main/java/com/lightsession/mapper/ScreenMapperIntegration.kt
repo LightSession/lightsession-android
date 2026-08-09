@@ -43,6 +43,59 @@ import java.util.concurrent.ConcurrentHashMap
 import android.view.Window
 import com.lightsession.SessionDataManager
 
+/**
+ * The screen map: what the app's screens are, how people move between them, and what each looks
+ * like.
+ *
+ * Everything the flow graph shows is decided here. A screen gets a name, a node, a wireframe and a
+ * real screenshot; a movement between two screens gets an edge. Nothing downstream re-derives any
+ * of that — the server stores what this sends — so a mistake made here is a mistake in the product.
+ *
+ * ## Finding a screen
+ *
+ * Four sources, and there are four because no single one covers a real app:
+ *
+ *  * **An Activity resumes.** The floor. Works for anything, including an app that predates
+ *    AndroidX.
+ *  * **A fragment destination changes**, read from a `NavHostFragment` through the
+ *    FragmentManager.
+ *  * **A Compose `NavController`**, which the app hands over with `withNavigationTracking()`. It
+ *    cannot be found from the outside, which is why the host has to give it up;
+ *    [COMPOSE_INTEGRATION_GRACE_MS] is how long this waits before concluding one is not coming.
+ *  * **The host says so**, through [handleReportedNavigation]. React Native and Flutter are one
+ *    Activity each and their screens are a JavaScript or Dart concern the platform never hears
+ *    about, so there is nothing to observe and the app reports instead.
+ *
+ * Not every destination is a screen, and not every screen is a destination.
+ *
+ * A **tab**, a **windowed modal** (a dialog or a bottom sheet) and a **declared panel** are each
+ * part of the screen they sit on, so they compose into `destination › part` and get their own node,
+ * capture and edges — including the edges between the tabs themselves. See [applySubScreens].
+ *
+ * A **shell** goes the other way: a destination whose whole content is another `NavHost` is not
+ * reported at all, and the edge closes over it, because the person never sees it as a place. The
+ * decision is held for [SHELL_GRACE_FRAMES] frames, which is what makes it recognisable.
+ *
+ * Two layers, deliberately racing. The **wireframe** goes at navigation time, drawn from the
+ * hierarchy once the composition settles. The **screenshot** goes [SCREENSHOT_SETTLE_MS] later, and
+ * only if nobody has navigated away or touched the screen — the delay is the point, since it waits
+ * for animations, images and network content. Each has its own slot on the server, so neither
+ * displaces the other, and both are captured once per screen per install.
+ *
+ * What feeds it is scattered by nature: an Activity lifecycle callback, a `Window.Callback` per
+ * Activity, Curtains' root-view listener for modals, a navigation listener per controller, and a
+ * public API the host app calls directly. They arrive on different threads at different times and
+ * all describe one thing — where the user is. One instance is what lets them agree.
+ *
+ * Almost none of this is about reading Android. It is about deciding *when* a thing is true: a
+ * navigation that arrives before the screen exists, a modal window that opens before its content is
+ * composed ([MODAL_SETTLE_MS]), a tab read that has to wait for the touch to land
+ * ([SUB_SCREEN_SETTLE_MS]), a screenshot that must not be taken while the user is still moving.
+ * Nearly every delay in this file was measured against a real app rather than chosen, and the
+ * comment beside each one says which.
+ *
+ * @author thisames
+ */
 class ScreenMapperIntegration private constructor() : NavigationHandler {
 
     private var application: Application? = null
