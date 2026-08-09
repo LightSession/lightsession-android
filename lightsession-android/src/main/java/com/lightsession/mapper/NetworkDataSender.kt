@@ -1,6 +1,7 @@
 package com.lightsession.mapper
 
 import android.util.Log
+import com.lightsession.PLATFORM
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -74,6 +75,9 @@ class NetworkDataSender : DataSender {
                 put("screenId", screenId)
                 put("screenName", screenName)
                 put("screenType", screenType.name)
+                // Which platform this came from, checked by the server against the project the key
+                // belongs to. See `PLATFORM`.
+                put("platform", PLATFORM)
                 // The key is left out entirely when absent, rather than relying on
                 // `put(name, null)` to remove it. Both fields are optional on the
                 // server, and "absent" is the state it reads — this way the payload
@@ -140,6 +144,7 @@ class NetworkDataSender : DataSender {
                 put("bitmapBase64", bitmapBase64)
                 put("width", width)
                 put("height", height)
+                put("platform", PLATFORM)
                 put("appVersionCode", appVersionCode)
                 put("appVersionName", appVersionName)
                 put("theme", theme)
@@ -184,6 +189,9 @@ class NetworkDataSender : DataSender {
                 put("from", fromScreen)
                 put("to", toScreen)
                 put("type", transitionType)
+                // The only write with no other hint of where it came from: no screen type, no
+                // device info, no resolution. Without this the server cannot check a flow at all.
+                put("platform", PLATFORM)
                 put("timestamp", timestamp)
                 put("appVersionCode", appVersionCode)
                 put("appVersionName", appVersionName)

@@ -778,6 +778,10 @@ class SessionDataManager(
             "real_frame_count" to frames.count { !it.isRepeatedFrame }.toString(),
             "repeated_signal_count" to frames.count { it.isRepeatedFrame }.toString(),
             "flush_reason" to reason,
+            // Checked by the server against the project this key belongs to, before a single frame
+            // is stored. Serialised with the batch rather than added at upload time, so a batch
+            // recovered from a previous run still says where it came from. See `PLATFORM`.
+            "platform" to PLATFORM,
             "total_batches_sent" to batchNumber.toString(),
             "first_frame_timestamp" to frames.first().timestamp.toString(),
             "last_frame_timestamp" to frames.last().timestamp.toString(),
@@ -891,6 +895,7 @@ class SessionDataManager(
             "app_version" to appVersion,
             "app_info" to Json.encodeToString(getAppInfo()),
             "device_info" to Json.encodeToString(deviceInfo),
+            "platform" to PLATFORM,
             "batch_number" to batchNumber.toString(),
             "timestamp" to System.currentTimeMillis().toString(),
             "breadcrumbs" to Json.encodeToString(breadcrumbs)
