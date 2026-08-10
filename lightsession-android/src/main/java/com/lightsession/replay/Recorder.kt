@@ -301,7 +301,21 @@ internal class Recorder {
             // compositor's schedule. See `ScreenDrawing.captureToBitmapAsync`.
             screenDrawing.captureToBitmapAsync(scale) { bitmap ->
             if (bitmap == null) {
-                onBitmapBytesReady?.invoke(null)
+                // A repeat, not nothing.
+                //
+                // No frame came back — the capture failed, or it was assembled while the screen
+                // was drawing and its masks can no longer be trusted over its pixels. Either way
+                // there is nothing to send, and the question is what to say instead.
+                //
+                // Saying nothing leaves a gap, and `CompositionActivity` records what a gap costs:
+                // the renderer holds the frame before it across the hole, so the artefact lasts
+                // *longer* than the frame that was withheld. A repeat is the signal it already
+                // understands, and it is four bytes.
+                //
+                // Nothing is re-armed here on purpose. The draw that made a frame unusable also
+                // sets `isScreenContentChanged`, so the next tick tries again by itself — and once
+                // the screen settles, the settled frame is the one that gets captured.
+                onBitmapBytesReady?.invoke(REPEATED_FRAME_SIGNAL)
                 return@captureToBitmapAsync
             }
             encoder.execute {

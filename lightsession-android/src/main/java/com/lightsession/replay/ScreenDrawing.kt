@@ -13,6 +13,7 @@ import kotlin.coroutines.resume
 import android.util.Log
 import android.view.PixelCopy
 import android.view.View
+import android.view.ViewTreeObserver
 import androidx.core.view.isVisible
 import androidx.core.graphics.withSave
 import androidx.core.graphics.createBitmap
@@ -72,6 +73,31 @@ internal class ScreenDrawing {
     private val bitmapPool = java.util.concurrent.ConcurrentLinkedQueue<Bitmap>()
 
     private var globalScaleFactor = ScalePresets.MEDIUM_QUALITY
+
+    /**
+     * Whether the screen drew between reading the mask geometry and finishing the copy.
+     *
+     * The safety net for what is left of the gap. [planMasks] reads live Views; `PixelCopy` reads
+     * a surface the compositor produced. Moving the scan to the front made those two nearly
+     * simultaneous, but "nearly" is not a guarantee — a list flung mid-capture can still draw in
+     * between, and then the rectangles describe a layout the copied pixels do not have and text
+     * comes out uncovered.
+     *
+     * Its own listener rather than `Recorder.isScreenContentChanged`, which looks like the same
+     * signal and is not. That one is how the recorder decides there is something worth capturing;
+     * clearing it here to time a window would swallow the change the next tick depends on. It also
+     * lives in a class this one is used by, not the other way round.
+     *
+     * The window it covers is short, which is the whole point of reading the geometry first.
+     * Measured on an emulator at full scale: 10 to 26 ms from arming to the decision. `MaskStalenessTest`
+     * had to drive draws every millisecond to land inside it reliably — at 8 ms apart they mostly
+     * missed, which is a fair description of how rarely this now fires in the wild.
+     */
+    private val drewDuringCapture = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** The draw listeners installed for the current capture, with the roots they sit on. */
+    private var captureWatch: List<Pair<java.lang.ref.WeakReference<View>, ViewTreeObserver.OnDrawListener>> =
+        emptyList()
 
     /** I KNOW I KNOW BUT IT WAS THE ONLY WAY IT WORKED
      * Every window this process has attached, furthest back first.
@@ -222,7 +248,7 @@ internal class ScreenDrawing {
      * A `Popup` — a dropdown, a tooltip — has no `Window` at all: `PopupLayout` is added to
      * the WindowManager directly, and it is not a decor view either, so neither route reaches
      * it. Those cannot be copied and are left out, which is the same answer as before for them.
-     * [maskUncomposited] is what stops that from becoming a leak.
+     * [MaskPlan.uncomposited] is what stops that from becoming a leak.
      */
     private fun surfaceLayers(baseWindow: android.view.Window?): List<SurfaceLayer> {
         val layers = mutableListOf<SurfaceLayer>()
@@ -318,31 +344,152 @@ internal class ScreenDrawing {
             return
         }
 
+        // Read now, on this thread, before a single pixel is copied.
+        //
+        // The scan walks live Views; the copy reads a surface the compositor has already
+        // produced. Those are two different instants, and the gap between them used to be the
+        // whole of `PixelCopy` plus a hop back to the main thread — so on a screen that was
+        // scrolling, the rectangles described a layout the copied pixels did not have, and text
+        // came out uncovered. Reading here puts the geometry a fraction *ahead* of the pixels
+        // instead of a copy behind them, which is as close as the two can be made.
+        //
+        // It also fails cheaper: a scan that throws does so before anything is allocated or
+        // copied. `MaskScanner` throws deliberately rather than returning nothing, because
+        // "found nothing" and "failed" are indistinguishable afterwards and one of them means
+        // shipping an unmasked screen.
+        // Armed before the scan, so the window it covers is exactly the one that matters:
+        // from reading the geometry to the last copy landing.
+        watchForDraws(layers)
+
+        val plan = runCatching { planMasks(layers) }.getOrElse { error ->
+            Log.e("ScreenCaptureUtils", "masking failed; dropping frame", error)
+            stopWatchingForDraws()
+            onResult(null)
+            return
+        }
+
         // ARGB_8888 regardless of scale. PixelCopy rejects destinations it cannot write,
         // and the software path's RGB_565-below-half-scale optimisation is one of them.
         val target = obtainBitmap(width, height, Bitmap.Config.ARGB_8888)
 
-        copyLayers(layers, 0, target, effectiveScale) { copied ->
+        copyLayers(layers, plan, 0, target, effectiveScale) { copied ->
             if (!copied) {
                 recycleBitmap(target)
-                mainHandler.post { onResult(null) }
+                mainHandler.post {
+                    stopWatchingForDraws()
+                    onResult(null)
+                }
                 return@copyLayers
             }
-            // Each layer masked itself on the way past; what is left is the windows nothing
-            // copied, which have to be covered somewhere or they are not covered at all.
-            mainHandler.post {
-                val masked = withCaptureCanvas(target, effectiveScale) { canvas ->
-                    maskUncomposited(canvas, layers)
-                }
-                if (!masked) {
-                    recycleBitmap(target)
+
+            // The net. Something drew while this frame was being assembled, so the pixels and the
+            // rectangles describe different moments and the masks may not be over the text any
+            // more. Nothing here can repair that — the geometry for these pixels is gone — so the
+            // frame does not ship.
+            //
+            // Read on this thread; only add/remove need the main one. Masking is on by default, so
+            // this is checked whenever there is anything to protect.
+            if (Masking.enabled && drewDuringCapture.get()) {
+                Log.d("ScreenCaptureUtils", "screen drew mid-capture; frame not shipped")
+                recycleBitmap(target)
+                mainHandler.post {
+                    stopWatchingForDraws()
                     onResult(null)
-                    return@post
                 }
+                return@copyLayers
+            }
+
+            // Each layer covered itself on the way past; what is left is the windows nothing
+            // copied, which have to be covered somewhere or they are not covered at all.
+            withCaptureCanvas(target, effectiveScale) { canvas ->
+                Masking.draw(canvas, plan.uncomposited)
+            }
+            mainHandler.post {
+                stopWatchingForDraws()
                 onResult(target)
             }
         }
     }
+
+    /**
+     * Starts watching the windows this capture will copy, and clears the flag.
+     *
+     * Main thread. `addOnDrawListener` throws if called from inside a draw pass, which is why
+     * every registration here is wrapped — a capture that cannot arm the watch is not worth
+     * failing, it just loses the net for that frame.
+     */
+    private fun watchForDraws(layers: List<SurfaceLayer>) {
+        drewDuringCapture.set(false)
+        captureWatch = layers.mapNotNull { layer ->
+            val root = layer.root
+            val listener = ViewTreeObserver.OnDrawListener { drewDuringCapture.set(true) }
+            runCatching { root.viewTreeObserver.addOnDrawListener(listener) }
+                .map { java.lang.ref.WeakReference(root) to listener }
+                .getOrNull()
+        }
+    }
+
+    /** Main thread. Idempotent, because a capture can end down several paths. */
+    private fun stopWatchingForDraws() {
+        captureWatch.forEach { (ref, listener) ->
+            ref.get()?.let { runCatching { it.viewTreeObserver.removeOnDrawListener(listener) } }
+        }
+        captureWatch = emptyList()
+    }
+
+    /**
+     * Every rectangle this frame will cover, grouped the way it will be drawn.
+     *
+     * One traversal per window, taken together so that every layer's geometry describes the same
+     * instant. Scanning each layer as its copy landed meant layer 0 was read at one moment and
+     * layer 1 at another, which is a second version of the same defect.
+     *
+     * Main thread only — it reads live Views. Drawing the result is not: rectangles on a bitmap
+     * this class owns touch no View state, which is what lets the copy thread paint them without
+     * coming back here.
+     *
+     * @throws Exception if a scan fails; the caller drops the frame rather than shipping it.
+     */
+    private fun planMasks(layers: List<SurfaceLayer>): MaskPlan {
+        if (!Masking.enabled) return MaskPlan(layers.map { emptyList() }, emptyList())
+
+        val perLayer = layers.map { layer ->
+            if (layer.root.visibility != View.VISIBLE ||
+                layer.root.width <= 0 || layer.root.height <= 0
+            ) {
+                emptyList()
+            } else {
+                masker.scan(layer.root, Masking.text, Masking.images)
+            }
+        }
+
+        val uncomposited = ArrayList<Rect>()
+        for (view in getWindowManagerViews().orEmpty()) {
+            if (layers.any { it.root === view }) continue
+            if (view.visibility != View.VISIBLE || view.width <= 0 || view.height <= 0) continue
+            uncomposited.addAll(masker.scan(view, Masking.text, Masking.images))
+        }
+
+        return MaskPlan(perLayer, uncomposited)
+    }
+
+    /**
+     * The masks for one capture, read before the copy and drawn after it.
+     *
+     * `perLayer` is parallel to the layer list and is painted with its layer, so a window on top
+     * still covers the masks of the one beneath.
+     *
+     * `uncomposited` belongs to the windows [surfaceLayers] could not copy. `PixelCopy` needs a
+     * `Window`, and a `PopupWindow`, a Compose `Popup` and a `Spinner`'s dropdown have none — yet
+     * all of them publish text. They are painted last, over a frame those windows are absent from,
+     * which leaves a grey block over content that is not there. That is the wrong way round
+     * visually and the right way round for the only thing that matters: skipping them would leave
+     * their text uncovered on the screen behind.
+     */
+    private class MaskPlan(
+        val perLayer: List<List<Rect>>,
+        val uncomposited: List<Rect>,
+    )
 
     /**
      * Copies `layers[index]` and everything above it into `target`, then reports.
@@ -356,6 +503,7 @@ internal class ScreenDrawing {
      */
     private fun copyLayers(
         layers: List<SurfaceLayer>,
+        plan: MaskPlan,
         index: Int,
         target: Bitmap,
         scale: Float,
@@ -407,14 +555,16 @@ internal class ScreenDrawing {
                 }
                 // This layer's own masks, now, before the next one is copied over it. Doing it
                 // for all the layers at the end is what put the screen's masks on top of the
-                // dialog. Back on the main thread because the scan walks live Views.
-                mainHandler.post {
-                    if (!withCaptureCanvas(target, scale) { maskWindow(it, layer.root) }) {
-                        onDone(false)
-                        return@post
-                    }
-                    copyLayers(layers, index + 1, target, scale, onDone)
+                // dialog.
+                //
+                // On this thread, not the main one. The rectangles were read before any of this
+                // started, so nothing here reads a View — it is paint on a bitmap this class
+                // owns. The hop that used to be here existed only because the *scan* lived here,
+                // and it was the larger half of the gap between the pixels and the geometry.
+                withCaptureCanvas(target, scale) { canvas ->
+                    Masking.draw(canvas, plan.perLayer[index])
                 }
+                copyLayers(layers, plan, index + 1, target, scale, onDone)
             }, copyHandler())
         }
 
@@ -570,27 +720,6 @@ internal class ScreenDrawing {
         if (!Masking.enabled) return
         if (root.visibility != View.VISIBLE || root.width <= 0 || root.height <= 0) return
         Masking.draw(canvas, masker.scan(root, Masking.text, Masking.images))
-    }
-
-    /**
-     * Covers the windows that were never copied into the frame.
-     *
-     * `PixelCopy` needs a `Window`, and [surfaceLayers] can only reach one through
-     * `DialogWindowProvider` — which is Compose's interface. A platform `AlertDialog`, a
-     * `PopupWindow`, a `Spinner`'s dropdown: none of them are composited, and all of them
-     * publish text.
-     *
-     * They are masked anyway, at the end, and the result is a grey block over content the
-     * frame does not contain. That is the artefact this cannot fix from here — but it is the
-     * right way round. Skipping them would mean a frame with a dialog's text uncovered on the
-     * screen behind it, which is the failure that matters.
-     */
-    private fun maskUncomposited(canvas: Canvas, composited: List<SurfaceLayer>) {
-        if (!Masking.enabled) return
-        for (view in getWindowManagerViews().orEmpty()) {
-            if (composited.any { it.root === view }) continue
-            maskWindow(canvas, view)
-        }
     }
 
     /**
