@@ -55,6 +55,7 @@ class ReplayIntegration(
 
     private fun handleCaptureResult(bitmapBytes: ByteArray?) {
         totalCaptures.incrementAndGet()
+        ReplayStats.recordDelivery()
 
         if (bitmapBytes != null) {
             val timestamp = System.currentTimeMillis()
@@ -69,8 +70,10 @@ class ReplayIntegration(
 
             if (isRepeatedFrame) {
                 repeatedFrameSignals.incrementAndGet()
+                ReplayStats.recordRepeated()
             } else {
                 uniqueCaptures.incrementAndGet()
+                ReplayStats.recordUnique()
             }
 
             sessionDataManager?.addFrame(
