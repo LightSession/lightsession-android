@@ -767,7 +767,7 @@ class SessionDataManager(
         batchNumber: Int,
         reason: String,
         frames: List<FrameData>
-    ) {
+    ) = traced(Tracing.SPOOL) {
         val batchMetadata = mapOf(
             "batch_id" to batchId,
             "session_id" to sessionId,

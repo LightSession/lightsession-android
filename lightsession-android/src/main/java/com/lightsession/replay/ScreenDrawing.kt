@@ -17,6 +17,8 @@ import android.view.ViewTreeObserver
 import androidx.core.view.isVisible
 import androidx.core.graphics.withSave
 import androidx.core.graphics.createBitmap
+import com.lightsession.Tracing
+import com.lightsession.traced
 import curtains.phoneWindow
 import java.io.ByteArrayOutputStream
 import com.lightsession.Masking
@@ -181,6 +183,22 @@ internal class ScreenDrawing {
          * the screen mapper is tracking. See [surfaceLayers] for why it cannot be derived.
          */
         baseWindow: android.view.Window? = null,
+        onResult: (Bitmap?) -> Unit,
+    ) = traced(Tracing.CAPTURE_ATTEMPT) {
+        captureToBitmapAsyncUntraced(scaleFactor, baseWindow, onResult)
+    }
+
+    /**
+     * The body of [captureToBitmapAsync], split out so the trace section can wrap it.
+     *
+     * The section covers the *synchronous* part only, which is the point of it: it counts how often
+     * a capture is attempted. Whether that attempt then took the software path or the surface one
+     * is told apart by which section appears inside it — `capture.software` or `planMasks`, the
+     * latter being reachable only from `captureViaSurface`.
+     */
+    private fun captureToBitmapAsyncUntraced(
+        scaleFactor: Float,
+        baseWindow: android.view.Window?,
         onResult: (Bitmap?) -> Unit,
     ) {
         if (!surfaceCaptureRequired) {
@@ -450,8 +468,8 @@ internal class ScreenDrawing {
      *
      * @throws Exception if a scan fails; the caller drops the frame rather than shipping it.
      */
-    private fun planMasks(layers: List<SurfaceLayer>): MaskPlan {
-        if (!Masking.enabled) return MaskPlan(layers.map { emptyList() }, emptyList())
+    private fun planMasks(layers: List<SurfaceLayer>): MaskPlan = traced(Tracing.PLAN_MASKS) {
+        if (!Masking.enabled) return@traced MaskPlan(layers.map { emptyList() }, emptyList())
 
         val perLayer = layers.map { layer ->
             if (layer.root.visibility != View.VISIBLE ||
@@ -470,7 +488,7 @@ internal class ScreenDrawing {
             uncomposited.addAll(masker.scan(view, Masking.text, Masking.images))
         }
 
-        return MaskPlan(perLayer, uncomposited)
+        MaskPlan(perLayer, uncomposited)
     }
 
     /**
@@ -602,7 +620,16 @@ internal class ScreenDrawing {
     }
     private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
 
-    fun captureToBitmap(scaleFactor: Float = globalScaleFactor): Bitmap? {
+    fun captureToBitmap(scaleFactor: Float = globalScaleFactor): Bitmap? =
+        traced(Tracing.CAPTURE_SOFTWARE) { captureToBitmapUntraced(scaleFactor) }
+
+    /**
+     * The body of [captureToBitmap], split out only so the trace section can wrap it.
+     *
+     * Inlining the section into the function itself does not work: the body returns early in five
+     * places, and `return` is not allowed inside an expression-bodied function.
+     */
+    private fun captureToBitmapUntraced(scaleFactor: Float): Bitmap? {
         return try {
             val views = getWindowManagerViews() ?: return null
 
@@ -990,12 +1017,13 @@ internal class ScreenDrawing {
      * @param quality JPEG compression quality (0-100)
      * @return ByteArray containing the compressed JPEG data
      */
-    private fun convertBitmapToByteArrayOptimized(bitmap: Bitmap, quality: Int): ByteArray {
+    private fun convertBitmapToByteArrayOptimized(bitmap: Bitmap, quality: Int): ByteArray =
+        traced(Tracing.ENCODE) {
         val stream = getByteArrayStreamFromPool()
         bitmap.compress(Bitmap.CompressFormat.JPEG, quality, stream)
         val result = stream.toByteArray()
         returnByteArrayStreamToPool(stream)
-        return result
+        result
     }
 
 
