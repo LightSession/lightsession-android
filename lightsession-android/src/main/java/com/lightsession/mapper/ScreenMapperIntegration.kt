@@ -1333,6 +1333,10 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      * not exist.
      */
     private fun enterDestination(screenName: String) {
+        // The signal the recorder needs: one screen is replacing another, so a frame taken now
+        // would show both. Announced here rather than inferred from composition activity, which
+        // cannot tell a crossfade from a scroll. See [ScreenTransition].
+        ScreenTransition.begin()
         baseScreen = screenName
         baseScreenOwner = currentActivityWeakRef
         tabSubScreen = null
@@ -1387,6 +1391,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         }
 
         Log.d("ScreenMapper", "Sub-screen change: $from -> $to")
+        // Below the early return above, so only an actual change opens the window: this runs on
+        // every sub-screen read, and most reads find nothing moved.
+        ScreenTransition.begin()
         getOrCreateScreenNode(to, screenNodes[base]?.type ?: ScreenType.COMPOSE)
         lastScreen = to
         trackNavigationFlow(from, to)
