@@ -465,7 +465,32 @@ publishing {
             // main thread across twenty seconds and 28% fewer frames delivered by the app. If that
             // is too much for a given audience, `interactionCaptureIntervalMs` is the knob — it has
             // simply never been in effect before.
-            version = "0.18.0"
+            // 0.19.0 recaptures a screen when its content arrives.
+            //
+            // A screen that loads is two screens: the spinner it shows on arrival and the content
+            // it becomes when the data lands. The wireframe was taken from the first one — measured
+            // on a production metrics screen, the settle detector declared it quiet 139 ms after
+            // navigation, because an indeterminate spinner animates on the RenderThread and never
+            // produces the snapshot apply or the draw pass the detector watches. The scan stored
+            // the shell around a spinner: 54 rectangles where the loaded screen measures 98.
+            //
+            // No clock fixes that honestly — the screenshot path's flat 5.5 s wait is a guess about
+            // every app's network — but the data landing is not silent: `isLoading = false` reaching
+            // `collectAsStateWithLifecycle` is a `MutableState` write, and every state write is a
+            // snapshot apply. `LateContent` wakes on exactly that event, the mapper recaptures (the
+            // settle inside the capture absorbs the recomposition), and a skeleton whose geometry
+            // changed is sent again. `ls-api` upserts by slot, so the resend replaces the wireframe
+            // and cannot blank the screenshot beside it. Measured on the miniature of that screen
+            // in `LateContentTest`: 14 rectangles before the flip, 50 after.
+            //
+            // The watch ends on events, never on time: a touch (state applied after it is the
+            // person's edit, not the screen they arrived at), a navigation, the Activity pausing,
+            // or a budget of three examinations — which is what bounds a screen that ticks by
+            // itself, a carousel or a clock.
+            //
+            // Minor. An existing consumer starts resending wireframes it previously sent once, with
+            // no code change on their side. No signature changes; `LateContent` is internal.
+            version = "0.19.0"
 
             afterEvaluate {
                 from(components["release"])
