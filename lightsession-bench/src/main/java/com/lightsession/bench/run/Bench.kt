@@ -175,6 +175,12 @@ internal data class RunConfig(
      * `recording on` is the library, one that stays with the first arm is not.
      */
     val onFirst: Boolean = false,
+    /**
+     * Quiet time between synthetic gestures. See `TouchDriver.pauseMs`.
+     *
+     * Zero measures a finger that never lifts, which is what the first runs did and is not a user.
+     */
+    val gesturePauseMs: Long = 0,
     val settleMs: Long = 1_200,
     val maskText: Boolean = true,
     /** Off is the SDK's default. On makes the mask planner walk and paint image nodes too. */
@@ -241,8 +247,9 @@ internal class BenchRunner(
         if (busy) return@withContext
         busy = true
         try {
+            touch.pauseMs = cfg.gesturePauseMs
             listener.onLog(
-                "arm ${cfg.armSeconds}s · warmup ${cfg.warmupSeconds}s · " +
+                "arm ${cfg.armSeconds}s · pause ${cfg.gesturePauseMs}ms · warmup ${cfg.warmupSeconds}s · " +
                     "order ${if (cfg.onFirst) "on→off" else "off→on"} · " +
                     "maskImages=${cfg.maskImages} · ingest ${cfg.ingestUrl}",
             )

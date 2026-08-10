@@ -87,6 +87,7 @@ class BenchActivity : ComponentActivity() {
     private var ingestUrl = RunConfig().ingestUrl
     private var apiUrl = RunConfig().apiUrl
     private var onFirst = false
+    private var gesturePauseMs = 0L
 
     private fun runConfig() = RunConfig(
         armSeconds = armSeconds,
@@ -94,6 +95,7 @@ class BenchActivity : ComponentActivity() {
         ingestUrl = ingestUrl,
         apiUrl = apiUrl,
         onFirst = onFirst,
+        gesturePauseMs = gesturePauseMs,
     )
 
     /**
@@ -180,6 +182,7 @@ class BenchActivity : ComponentActivity() {
             intent.getStringExtra(EXTRA_INGEST)?.let { ingestUrl = it }
             intent.getStringExtra(EXTRA_API)?.let { apiUrl = it }
             onFirst = intent.getBooleanExtra(EXTRA_ON_FIRST, false)
+            gesturePauseMs = intent.getIntExtra(EXTRA_PAUSE, 0).toLong()
             val leakOnly = intent.getStringExtra(EXTRA_MODE) == MODE_LEAK
             // After the first frame: the workload has to be laid out before the touch driver can
             // aim at it, and `init` should not land in the middle of the first composition.
@@ -581,6 +584,7 @@ class BenchActivity : ComponentActivity() {
         const val EXTRA_INGEST = "ingest"
         const val EXTRA_API = "api"
         const val EXTRA_ON_FIRST = "onFirst"
+        const val EXTRA_PAUSE = "pause"
         const val MODE_LEAK = "leak"
 
         /** Long enough for the first composition and the list's first layout to be done. */
