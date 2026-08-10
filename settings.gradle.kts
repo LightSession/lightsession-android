@@ -23,3 +23,4 @@ rootProject.name = "lightsession-android"
 include(":app")
 include(":lightsession-android")
 include(":lightsession-android-sample")
+include(":lightsession-bench")
