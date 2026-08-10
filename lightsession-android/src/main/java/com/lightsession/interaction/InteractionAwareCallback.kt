@@ -12,8 +12,37 @@ import kotlin.math.pow
 import kotlin.math.sqrt
 
 /**
- * Custom Window.Callback implementation to intercept touch events
- * and track user interactions for session replay and automatic UI element click tracking.
+ * Every touch, as coordinates. The only thing in the SDK that produces interaction data.
+ *
+ * Wraps the Activity's `Window.Callback` so that [dispatchTouchEvent] sees each gesture before the
+ * app does, records where the finger went, and hands the finished gesture to `SessionDataManager`.
+ * Without this there are no taps, no swipes and no heatmap — the touch paths in `Recorder` and
+ * `ScreenMapperIntegration` watch the same events for different reasons (bursting the capture rate,
+ * and cancelling a scheduled screenshot) and neither records anything.
+ *
+ * ## What it does not do
+ *
+ * It does not identify *what* was touched. There is no hit test and no view lookup here: a gesture
+ * is a list of screen coordinates, a duration and a type. This comment used to promise "automatic
+ * UI element click tracking", which never existed — and `InteractionEvent` carried
+ * `targetElement`, `targetElementType` and `resourceId` for it, three fields that were set to null
+ * at the one place they were constructed and read nowhere. They are gone.
+ *
+ * If element tracking is ever wanted, `ACTION_DOWN` is the hook: it already has the coordinates and
+ * the Activity, so the hierarchy can be walked from there.
+ *
+ * ## The type is deliberately coarse
+ *
+ * TAP when the gesture produced one point, SWIPE otherwise — no fling, long press or double tap.
+ * That is what is left of a `GestureDetector.SimpleOnGestureListener` this class extended until
+ * 0.4.0. What survives is enough for a heatmap, which is what the data is for.
+ *
+ * ## Why most of the file is delegation
+ *
+ * `Window.Callback` is a wide interface and implementing it means implementing all of it. Every
+ * method below the touch handling forwards to [originalCallback] unchanged, and each one has to:
+ * dropping any of them would break the host app's menus, key handling or action modes. A wrapper
+ * that swallows what it does not understand is worse than no wrapper.
  */
 class InteractionAwareCallback(
     private val originalCallback: Window.Callback,

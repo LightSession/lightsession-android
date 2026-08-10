@@ -202,16 +202,20 @@ class SessionDataManager(
         override val timestamp: Long,
         override val sequenceNumber: Int,
         override val eventType: String = "interaction",
-        val interactionType: String, // TAP, SWIPE, CLICK
-        val targetElement: String? = null,
-        val targetElementType: String? = null,
-        val resourceId: String? = null,
+        val interactionType: String, // TAP or SWIPE
         val screen: String,
         val screenId: String? = null,
+        /** Where the gesture began. The rest of its path travels in [rawInteractionData]. */
         val coordinates: Coordinates,
         val duration: Long? = null,
-        val path: List<Coordinates>? = null, // For swipe gestures
-        val rawInteractionData: String? = null // Store the original JSON for breadcrumb
+        /**
+         * The gesture as the callback recorded it, and the only source of its points.
+         *
+         * `spoolCrumbs` parses this and copies its keys onto the breadcrumb, so what reaches the
+         * server is this object plus a few fields around it. That is why there is no separate
+         * `path` here: one existed, was filled for every swipe, and was read by nothing.
+         */
+        val rawInteractionData: String? = null
     ) : SessionEvent()
 
     @Serializable
@@ -634,15 +638,11 @@ class SessionDataManager(
                 timestamp = System.currentTimeMillis(),
                 sequenceNumber = globalSequenceCounter.incrementAndGet(),
                 interactionType = type,
-                targetElement = null, // Not available in the current interactionData
-                targetElementType = null,
-                resourceId = null,
                 screen = screen,
                 screenId = screenId,
                 coordinates = coordinates.firstOrNull() ?: Coordinates(0f, 0f),
                 duration = endTime - startTime,
-                path = if (type == "SWIPE" && coordinates.size > 1) coordinates else null,
-                rawInteractionData = interactionData // Store raw data for breadcrumb
+                rawInteractionData = interactionData
             )
 
             interactionBuffer.offer(interaction)
