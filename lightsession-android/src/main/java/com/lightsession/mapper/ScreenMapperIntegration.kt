@@ -297,6 +297,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
     private val skeletonGenerator = SkeletonGenerator()
 
+    /** Fires when content lands on a screen whose wireframe was already taken. See [watchForLateContent]. */
+    private val lateContent = LateContent()
+
     /**
      * Set from `LightSessionConfig.wireframeMode` at [init].
      *
@@ -407,6 +410,121 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             }
         }
     }
+
+    /**
+     * Recaptures a screen whose content arrives after its wireframe was taken.
+     *
+     * ## The gap this closes
+     *
+     * The wireframe is captured when the composition settles, and a loading screen settles almost
+     * immediately: measured on a production `Métricas` screen, 139 ms after navigation — because an
+     * indeterminate spinner animates on the RenderThread, producing no snapshot apply and no
+     * `ViewRootImpl` draw for the settle detector to see. The scan recorded the shell around a
+     * spinner: 54 rectangles against the 98 the loaded screen measures on the same fixture. The
+     * screenshot path papers over the same gap with a flat [SCREENSHOT_SETTLE_MS] wait, which is a
+     * guess about every app's network encoded as a constant in this SDK.
+     *
+     * This is the guess removed. The data landing *is* a snapshot apply — `isLoading = false`
+     * reaching `collectAsStateWithLifecycle` is a `MutableState` write — so [LateContent] wakes on
+     * exactly that event, this recaptures (the settle inside [captureWireframe] absorbs the
+     * recomposition), and a skeleton whose geometry changed is sent again. `ls-api` upserts by
+     * capture slot, so the resend replaces the wireframe and cannot blank the screenshot beside it.
+     *
+     * ## What ends the watch
+     *
+     * Events, never a clock: a touch (the state after it is the person's edit, not the screen they
+     * arrived at), a navigation (the applies now describe the next screen), the Activity pausing,
+     * or [LATE_CONTENT_RESCANS] examinations coming back. An unchanged geometry spends budget too —
+     * that is what bounds a screen that ticks by itself.
+     */
+    private fun watchForLateContent(
+        activity: Activity,
+        screenId: String,
+        screenName: String,
+        screenType: ScreenType,
+        screenWidth: Int,
+        screenHeight: Int,
+        appVersionCode: Int,
+        appVersionName: String,
+        theme: String,
+        sentSkeleton: SkeletonFrame?,
+        rescansLeft: Int = LATE_CONTENT_RESCANS,
+    ) {
+        // BITMAP mode has no geometry to compare, and a screen out of budget has had its chances.
+        if (sentSkeleton == null || rescansLeft <= 0) return
+        val activityRef = java.lang.ref.WeakReference(activity)
+        lateContent.arm {
+            // The apply arrives on whichever thread wrote the state; everything below — the
+            // settle detector, the view walk, [lastScreen] — is main-thread machinery.
+            mainHandler.post {
+                val current = activityRef.get() ?: return@post
+                if (current.isFinishing || current.isDestroyed) return@post
+                // The arm described one screen; an apply belonging to any other must not
+                // overwrite that screen's wireframe with a picture of this one.
+                if (lastScreen != screenName) return@post
+                captureWireframe(current) { wireframe ->
+                    val fresh = wireframe?.skeleton
+                    if (wireframe == null || fresh == null || lastScreen != screenName) {
+                        return@captureWireframe
+                    }
+                    if (sameGeometry(fresh, sentSkeleton)) {
+                        // Applied and settled back to the same layout — a clock tick, a refresh
+                        // that found nothing. Watch again; the budget bounds what this can cost.
+                        watchForLateContent(
+                            current, screenId, screenName, screenType, screenWidth, screenHeight,
+                            appVersionCode, appVersionName, theme, sentSkeleton, rescansLeft - 1,
+                        )
+                        return@captureWireframe
+                    }
+                    scopeFor(current).launch {
+                        val result = dataSender?.sendScreenData(
+                            screenId = screenId,
+                            screenName = screenName,
+                            screenType = screenType,
+                            bitmapBase64 = wireframe.bitmapBase64,
+                            skeleton = fresh,
+                            width = screenWidth,
+                            height = screenHeight,
+                            density = ScreenGeometry.density,
+                            appVersionCode = appVersionCode,
+                            appVersionName = appVersionName,
+                            theme = theme,
+                        )
+                        if (result?.isSuccess == true) {
+                            Log.d(
+                                "ScreenMapper",
+                                "Late content: skeleton replaced for $screenName " +
+                                    "(${sentSkeleton.rects.size} -> ${fresh.rects.size} rects)",
+                            )
+                        } else {
+                            Log.e(
+                                "ScreenMapper",
+                                "Late content: replacement send failed for $screenName",
+                                result?.exceptionOrNull(),
+                            )
+                        }
+                    }
+                    watchForLateContent(
+                        current, screenId, screenName, screenType, screenWidth, screenHeight,
+                        appVersionCode, appVersionName, theme, fresh, rescansLeft - 1,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Geometry and kind only. Recolouring samples the live screen, so colour can waver between
+     * two captures of an identical layout — and a colour-only wobble is not content arriving.
+     */
+    private fun sameGeometry(a: SkeletonFrame, b: SkeletonFrame): Boolean =
+        a.rects.size == b.rects.size &&
+            a.rects.indices.all { i ->
+                val x = a.rects[i]
+                val y = b.rects[i]
+                x.left == y.left && x.top == y.top && x.right == y.right &&
+                    x.bottom == y.bottom && x.kind == y.kind
+            }
 
     /**
      * Reads each widget's real colour out of a capture of the screen.
@@ -590,6 +708,16 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         private const val SCREENSHOT_SETTLE_MS = 5_500L
 
         /**
+         * How many times a screen's wireframe may be re-examined after content arrives late.
+         *
+         * A budget, deliberately not a timeout: the watch ends because its chances ran out or the
+         * user acted, never because a clock guessed the network was done. Loading needs one rescan,
+         * a second data wave needs two; past three the screen is changing by itself — a carousel,
+         * a ticker — and its wireframe is whichever settled state was sent last.
+         */
+        private const val LATE_CONTENT_RESCANS = 3
+
+        /**
          * How long a Compose destination waits before it is reported, in frames.
          *
          * Frames rather than milliseconds because the thing being waited for is a frame: a nested
@@ -770,6 +898,9 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         // whatever is captured now is a state the person made rather than the one they arrived at.
         skeletonGenerator.cancelPendingCapture()
         cancelScreenshot()
+        // Same rule for a watched screen: state applied after a touch is state the person made,
+        // and replacing the arrival wireframe with it would record their edit as the screen.
+        lateContent.cancel()
     }
 
     private fun setupActivityLifecycleCallbacks() {
@@ -792,6 +923,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             }
 
             override fun onActivityPaused(activity: Activity) {
+                lateContent.cancel()
                 originalCallbacks.remove(activity)?.let {
                     activity.window.callback = it
                 }
@@ -1337,6 +1469,8 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         // would show both. Announced here rather than inferred from composition activity, which
         // cannot tell a crossfade from a scroll. See [ScreenTransition].
         ScreenTransition.begin()
+        // A watch armed for the screen being left must not fire on the arriving screen's applies.
+        lateContent.cancel()
         baseScreen = screenName
         baseScreenOwner = currentActivityWeakRef
         tabSubScreen = null
@@ -1700,6 +1834,17 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                         // of replacing the better image — which is what the dropped-wireframe
                         // guard here used to be protecting against.
                         if (wireframe != null) {
+                            // Armed before the send, not on its success. The watch's blind window
+                            // is scan-to-arm; arming on success stretched it across a whole HTTP
+                            // round trip, and data landing inside it — a cached API answering in
+                            // 300 ms — would apply before anyone was listening and never again.
+                            // A resend after a failed first send is harmless: it is just a send.
+                            watchForLateContent(
+                                activity, screenId, to, toNode.type,
+                                screenWidth, screenHeight,
+                                appVersionCode, appVersionName, currentTheme,
+                                wireframe.skeleton,
+                            )
                             scopeFor(activity).launch {
                                 val result = dataSender?.sendScreenData(
                                     screenId = screenId,
@@ -1813,6 +1958,14 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                         // See the same send on the navigation path: with a slot each, a late
                         // wireframe adds a layer rather than displacing the screenshot.
                         if (wireframe != null) {
+                            // Same ordering as the navigation path, for the same blind-window
+                            // reason: the watch must exist before the send's round trip.
+                            watchForLateContent(
+                                activity, screenId, screenName, screenType,
+                                screenWidth, screenHeight,
+                                appVersionCode, appVersionName, currentTheme,
+                                wireframe.skeleton,
+                            )
                             scope.launch {
                                 val result = dataSender?.sendScreenData(
                                     screenId = screenId,
