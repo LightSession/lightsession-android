@@ -421,7 +421,51 @@ publishing {
             // Minor. `DataSender.sendScreenData` takes a parameter it did not, so anything
             // implementing that public interface has to be recompiled; and the payload gains a
             // field, which an older server ignores rather than rejecting.
-            version = "0.17.0"
+            // 0.18.0 records a scroll again.
+            //
+            // The recorder does not capture during a screen transition, because a frame taken
+            // mid-crossfade shows both screens and its masks can be right for neither. Correct, and
+            // unchanged. What was wrong is how a transition was recognised: it asked
+            // `CompositionActivity` whether the composition had changed in the last 120 ms and read
+            // any yes as a transition. That observer fires on every Compose state application, and a
+            // scrolling `LazyColumn` applies state on every frame — so an ordinary scroll was
+            // indistinguishable from a crossfade and the whole scroll was discarded.
+            //
+            // Measured on a Galaxy Tab A7, twenty-second stretches of a list being dragged with
+            // recording on, before and after:
+            //
+            //     pause between gestures    real frames        repeat markers
+            //                  0 ms         1  ->  190         196  ->    6
+            //                800 ms        18  ->  104         148  ->   35
+            //
+            // The 18 before were the quiet seconds between drags, captured on the idle interval —
+            // which is why nobody watching replays had noticed. Every resting state was recorded and
+            // only the motion between them was missing. What was lost was also the worst thing to
+            // lose: `interactionCaptureIntervalMs` accelerates the loop tenfold while a finger is
+            // down, and that acceleration was producing nothing but repeat markers.
+            //
+            // `ScreenTransition` now takes the signal from the screen mapper, which is already told
+            // when a destination changes. Scrolling never announces one. `CompositionActivity` still
+            // closes the window, which is the half it was always good at. There is a two-second cap
+            // for the screen whose composition never settles at all — a loading spinner — which the
+            // old logic suppressed for as long as the user stayed on it.
+            //
+            // Two observability additions came out of finding this. `ReplayStats` makes the unique
+            // and repeated frame counts readable; they had always been collected and only ever
+            // printed from `ReplayIntegration.onTerminate()`, which Android does not call on a real
+            // device, and their ratio is the only thing that distinguishes a working recorder from
+            // one emitting nothing but repeats. And the capture, mask, encode and spool paths now
+            // open `Trace` sections, so the SDK's work is identifiable in a host app's system trace
+            // rather than being unlabelled time inside their main thread.
+            //
+            // Minor. An existing consumer starts reporting frames it was not reporting, with no code
+            // change, and `ReplayStats` is new public API. Nothing is removed and no signature
+            // changes. Expect the recorded stretches to cost more than they did, because until now
+            // they were mostly not being recorded: on that tablet, at a realistic cadence, +240 ms of
+            // main thread across twenty seconds and 28% fewer frames delivered by the app. If that
+            // is too much for a given audience, `interactionCaptureIntervalMs` is the knob — it has
+            // simply never been in effect before.
+            version = "0.18.0"
 
             afterEvaluate {
                 from(components["release"])
