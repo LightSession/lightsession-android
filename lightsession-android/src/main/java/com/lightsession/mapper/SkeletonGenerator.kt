@@ -37,6 +37,8 @@ import androidx.core.view.isNotEmpty
 import androidx.core.util.size
 import androidx.core.graphics.toColorInt
 import java.io.ByteArrayOutputStream
+import com.lightsession.Tracing
+import com.lightsession.traced
 import androidx.core.graphics.createBitmap
 
 class SkeletonGenerator {
@@ -324,15 +326,15 @@ class SkeletonGenerator {
         rootView: View,
         backgroundColor: Int,
         overlay: Boolean = false,
-    ): SkeletonFrame? {
-        if (rootView.width == 0 || rootView.height == 0) return null
+    ): SkeletonFrame? = traced(Tracing.WIREFRAME) {
+        if (rootView.width == 0 || rootView.height == 0) return@traced null
 
-        val skeletonTree = scanViewHierarchy(rootView) ?: return null
+        val skeletonTree = scanViewHierarchy(rootView) ?: return@traced null
         val rects = ArrayList<SkeletonRect>(64)
         flattenForWire(skeletonTree, rects)
 
         val screen = canvasSize(rootView)
-        return SkeletonFrame(
+        SkeletonFrame(
             width = screen.width,
             height = screen.height,
             background = backgroundColor,

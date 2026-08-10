@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The SDK opens sockets to ingest as soon as it flushes. Without this the ON arm would be
+         measuring a recorder whose network half never runs, which is not the thing being measured. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      `usesCleartextTraffic` is not optional here, and leaving it out fails silently.
+
+      Cleartext has been off by default since API 28, so without it the platform blocks every
+      plaintext send. The measurement still runs and still produces numbers — they are just numbers
+      for a recorder whose sends all fail, spool to disk and retry. That is the offline case, not
+      the normal one, and nothing in the output says so.
+
+      It survived several runs because the obvious check passes: `adb shell curl` reaches the ingest
+      fine, since the shell is not the app and is not subject to the app's network policy. The only
+      check that catches it is counting what arrives at the other end.
+    -->
+    <application
+        android:name="com.lightsession.bench.BenchApp"
+        android:allowBackup="false"
+        android:label="LightSession Bench"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <!-- `hardwareAccelerated` is left at its default (on). Turning it off would push every
+             capture down the software path and hide the PixelCopy cost, which is the expensive one. -->
+        <activity
+            android:name="com.lightsession.bench.BenchActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Opened and closed by the leak hunt. Not exported and not a launcher entry: it is a
+             fixture, and starting the app there would record a flow with no beginning. -->
+        <activity
+            android:name="com.lightsession.bench.ScratchActivity"
+            android:exported="false" />
+    </application>
+
+</manifest>
