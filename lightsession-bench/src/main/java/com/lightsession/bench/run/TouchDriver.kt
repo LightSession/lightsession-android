@@ -43,15 +43,32 @@ internal class TouchDriver(private val activity: Activity) {
     var running = false
         private set
 
+    /**
+     * Quiet time between one gesture ending and the next beginning.
+     *
+     * Zero is what this class did originally, and it is not a person: `ACTION_UP` followed 16 ms
+     * later by the next `ACTION_DOWN`, for the whole length of an arm. Nobody scrolls for twenty
+     * unbroken seconds, and the difference matters to what is being measured — the recorder's
+     * "screen is still moving" guard clears 120 ms after the composition goes quiet, so a workload
+     * with no pauses never lets it clear and a workload with realistic ones does.
+     */
+    @Volatile
+    var pauseMs: Long = 0L
+
     private var downTime = 0L
     private var step = 0
     private var direction = -1
     private var lastY = 0f
 
+    /** When the next gesture may start; see [pauseMs]. */
+    private var resumeAtMs = 0L
+
     private val pump = object : Runnable {
         override fun run() {
             if (!running) return
-            runCatching { emit() }
+            if (SystemClock.uptimeMillis() >= resumeAtMs) {
+                runCatching { emit() }
+            }
             // One event per frame. Faster would queue touches the compositor never catches up
             // with, which turns a scroll measurement into a MotionEvent-allocation measurement.
             handler.postDelayed(this, FRAME_MS)
@@ -103,6 +120,7 @@ internal class TouchDriver(private val activity: Activity) {
                 send(MotionEvent.ACTION_UP, lastY)
                 gestures.incrementAndGet()
                 direction = -direction
+                resumeAtMs = SystemClock.uptimeMillis() + pauseMs
                 step = -1 // becomes 0 below
             }
         }
