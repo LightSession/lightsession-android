@@ -30,6 +30,12 @@
         <activity
             android:name="com.sample.lightsession.ComposeActivity"
             android:exported="false" />
+        <!-- The screen that shows a spinner and then becomes itself. Exported so a run can be
+             started straight from the shell: it navigates on its own, because a tap would cancel
+             the very capture it exists to exercise. -->
+        <activity
+            android:name="com.sample.lightsession.LoadingScreenActivity"
+            android:exported="true" />
         <activity
             android:name="com.sample.lightsession.ComposeWithNavigationActivity"
             android:exported="false" />
