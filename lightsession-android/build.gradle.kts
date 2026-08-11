@@ -515,7 +515,30 @@ publishing {
             // rejecting — and ignoring them is exactly the old picture, not a wrong one. Nothing
             // is removed and no signature changes. Requires `ls-media` with `Node.surface` to see
             // any difference; without it the wireframe renders as it did in 0.19.0.
-            version = "0.20.0"
+            // 0.21.0 lets a screen's wireframe get better on a later visit.
+            //
+            // Late content heals the first visit and dies on the first touch; everything after was
+            // the cache's to decide, and `isScreenSent` was a boolean — the first wireframe out was
+            // the screen's picture for the life of the install. A loading screen whose watch a
+            // touch cancelled kept its spinner forever, and every install predating a scanner
+            // improvement held wireframes a newer scan would beat.
+            //
+            // The boolean is now a bar: `CacheManager` remembers the rectangle count of the richest
+            // wireframe ever sent for a screen, a later capture ships only when it carries strictly
+            // more, and a successful send raises the bar. That converges — equal-or-poorer is
+            // silence — and it retires the standing defect that this cache is keyed on *app*
+            // version while wireframe quality moves with *SDK* version: an unknown screen reads
+            // zero, so a legacy install heals each stale wireframe once on the next visit. A revisit
+            // pays only a sub-millisecond hierarchy walk to decide, the recolour capture happening
+            // only after a frame has cleared the bar.
+            //
+            // Measured on the sample across three launches: spinner stored at 37 rects, revisited
+            // and upgraded to 81 when the data arrived, then quiet.
+            //
+            // Minor. An existing consumer starts resending a wireframe it previously sent once, with
+            // no code change on their side. No signature changes; the ratchet is internal, and it
+            // needs no server change — `ls-api` already upserts a capture by slot.
+            version = "0.21.0"
 
             afterEvaluate {
                 from(components["release"])
