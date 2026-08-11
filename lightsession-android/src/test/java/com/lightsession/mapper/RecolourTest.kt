@@ -1,5 +1,7 @@
 package com.lightsession.mapper
 
+import com.lightsession.Masking
+
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -118,6 +120,47 @@ class RecolourTest {
             .rects.single()
         assertEquals("a mixed container must keep its bare outline", null, hollow.surface)
         assertEquals(PALETTE_GREEN, hollow.color)
+    }
+
+    @Test
+    fun `a container full of masked text is not grey`() {
+        // The form. Every field is masked text, so the pixels inside the column, the card and the
+        // screen root are mostly this SDK's own paint — measured on eight fields, `#9C9C9C` over
+        // 83 to 95% of each container's area. Filling those turned the whole screen into one grey
+        // slab, and the slab is not a colour the app has anywhere.
+        val masked = pixels { _, y -> if (y < (H * 9) / 10) Masking.MASK_COLOR else WHITE }
+
+        val container = Recolour.apply(
+            frame(rect(0, 0, W, H, kind = "CONTAINER", stroke = true)), masked, W, H,
+        ).rects.single()
+        assertEquals("a container took the mask for its own surface", null, container.surface)
+        assertEquals(PALETTE_GREEN, container.color)
+
+        // A filled kind is no different: the root of that form is an unstroked CONTAINER, and it
+        // covered the whole screen.
+        val filled = Recolour.apply(
+            frame(rect(0, 0, W, H, kind = "CONTAINER")), masked, W, H,
+        ).rects.single()
+        assertEquals(PALETTE_GREEN, filled.color)
+    }
+
+    @Test
+    fun `the masked thing itself keeps the mask colour`() {
+        // Grey is honestly what a redacted text block looks like, and drawing it that way is what
+        // the wireframe has always done. The rule is about widgets that merely *contain* one.
+        val masked = pixels { _, _ -> Masking.MASK_COLOR }
+        for (kind in listOf("TEXT", "INPUT", "IMAGE")) {
+            val out = Recolour.apply(frame(rect(0, 0, W, H, kind = kind)), masked, W, H).rects.single()
+            // Near, not equal: sampling answers with the histogram bucket's mid-point, so `#9E9E9E`
+            // comes back `#9C9C9C`. That gap is exactly why the mask test in `Recolour` compares
+            // within a bucket instead of by identity.
+            assertTrue(
+                "$kind lost the mask colour it is supposed to show: got ${hex(out.color)}",
+                red(out.color) in 0x96..0xA6 &&
+                    green(out.color) in 0x96..0xA6 &&
+                    blue(out.color) in 0x96..0xA6,
+            )
+        }
     }
 
     @Test

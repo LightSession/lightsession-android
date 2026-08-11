@@ -130,6 +130,11 @@ object Masking {
      * Black reads as a rendering failure — a dead region, a view that did not draw. Grey
      * reads as a deliberate redaction, which is what it is, and it stays visible against
      * both light and dark app themes.
+     *
+     * Written as a literal rather than `Color.rgb`, on the same reasoning `SkeletonFrame.colorToHex`
+     * gives for its bit arithmetic: `android.graphics` is a stub on the JVM, so anything reading
+     * this from a plain unit test would compare against zero and quietly take a different branch on
+     * a developer's machine than on a device. `Recolour` reads it.
      */
-    private val MASK_COLOR = Color.rgb(0x9E, 0x9E, 0x9E)
+    internal const val MASK_COLOR = 0xFF9E9E9E.toInt()
 }

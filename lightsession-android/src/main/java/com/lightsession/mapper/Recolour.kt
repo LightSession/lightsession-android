@@ -1,5 +1,7 @@
 package com.lightsession.mapper
 
+import com.lightsession.Masking
+
 /**
  * Replaces a wireframe's palette colours with the ones actually on screen.
  *
@@ -113,6 +115,16 @@ internal object Recolour {
                 // pure black and paint a black band over the navigation strip.
                 sampled.color == TRANSPARENT -> rect.copy(color = TRANSPARENT, surface = null)
 
+                // The mask is this SDK's own paint, and a widget that merely *contains* masked
+                // text is not that colour. Measured on a form of eight text fields: every
+                // container above a field — the scroll column, the card, the screen root — came
+                // back `#9C9C9C` at 83–95% of its area, because a field is mostly masked text.
+                // Filling them turned the whole screen into one grey slab.
+                //
+                // A rect that *is* the masked thing keeps it: grey is honestly what a masked text
+                // block looks like, and drawing it that way is what the wireframe has always done.
+                isMaskColour(sampled.color) && !bearsMask(rect.kind) -> rect
+
                 // Structure. It only becomes surface when one colour demonstrably covers it —
                 // a red goal card is red to [DOMINANCE] and past it — because the *mean* of a
                 // container is a colour belonging to nothing: a full-screen shell averaged white
@@ -138,6 +150,34 @@ internal object Recolour {
      */
     /** What [sample] found: a colour, and whether it covered [DOMINANCE] of the pixels. */
     private class Sampled(val color: Int, val dominant: Boolean)
+
+    /**
+     * The kinds the mask is drawn *over*, for which grey is the honest colour of the screen.
+     *
+     * Everything else containing grey is containing somebody else's redaction.
+     */
+    private val MASK_BEARING = setOf("TEXT", "INPUT", "IMAGE")
+
+    private fun bearsMask(kind: String) = kind in MASK_BEARING
+
+    /**
+     * Whether a sampled colour is this SDK's own mask.
+     *
+     * Compared in the quantiser's buckets rather than exactly: sampling returns a bucket's
+     * mid-point, so `#9E9E9E` comes back as `#9C9C9C`, and an exact match would never fire. The
+     * window is one bucket per channel, which is the resolution the histogram has anyway.
+     *
+     * Only when masking is on. With it off nothing paints that grey but the app itself, and a
+     * genuinely grey card should be allowed to be grey.
+     */
+    private fun isMaskColour(color: Int): Boolean {
+        if (!Masking.enabled) return false
+        val step = 1 shl LEVELS_SHIFT
+        fun near(a: Int, b: Int) = kotlin.math.abs(a - b) <= step
+        return near((color shr 16) and 0xFF, (Masking.MASK_COLOR shr 16) and 0xFF) &&
+            near((color shr 8) and 0xFF, (Masking.MASK_COLOR shr 8) and 0xFF) &&
+            near(color and 0xFF, Masking.MASK_COLOR and 0xFF)
+    }
 
     private const val TRANSPARENT = 0
 
