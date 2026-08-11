@@ -182,7 +182,20 @@ class LoadingScreenActivity : ComponentActivity() {
                 }
             }
             repeat(3) { index ->
-                Card(Modifier.fillMaxWidth()) {
+                // The first card is red on purpose, mirroring the production goal card that
+                // exposed the recolour gap: a CONTAINER is a stroked rect, stroked rects were
+                // never sampled, and the renderer never filled them — so the most striking
+                // surface on the screen rendered white.
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors = if (index == 0) {
+                        androidx.compose.material3.CardDefaults.cardColors(
+                            containerColor = androidx.compose.ui.graphics.Color(0xFFC62828),
+                        )
+                    } else {
+                        androidx.compose.material3.CardDefaults.cardColors()
+                    },
+                ) {
                     Column(Modifier.padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
