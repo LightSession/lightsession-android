@@ -490,7 +490,32 @@ publishing {
             //
             // Minor. An existing consumer starts resending wireframes it previously sent once, with
             // no code change on their side. No signature changes; `LateContent` is internal.
-            version = "0.19.0"
+            // 0.20.0 gives a container the colour it actually has.
+            //
+            // A wireframe whose most striking element is a red card rendered it white, and the
+            // page around it drifted mauve. Containers are stroked rects and stroked rects were
+            // never sampled — the largest surfaces on every screen were the only ones never asked
+            // about. Pixels no window painted were read as black, because the pooled capture
+            // bitmaps are erased to transparent and transparent RGB is zero: that dragged every
+            // mean toward black and put a black band under the navigation strip.
+            //
+            // Sampling containers is not enough by itself, and this is the half that had to be
+            // measured. Filling every stroked rect with its sampled colour turned the screen
+            // mauve: a full-screen shell contains white cards, one red card and undrawn black,
+            // and the mean of that belongs to nothing. So a stroked rect now carries `surface`
+            // only when one colour covers at least `Recolour.DOMINANCE` of its pixels — a card
+            // that really is red, at 70% and up — and a mixed container keeps its bare outline.
+            //
+            // The frame carries `v: 2`, which also licenses the server to paint biggest-first.
+            // The scan documents pre-order and that does not survive a subcomposition boundary:
+            // two full-screen shells arrived after all of their content, which never mattered
+            // while containers were hollow and erased the whole picture once they were not.
+            //
+            // Minor. The payload gains two fields, which an older server ignores rather than
+            // rejecting — and ignoring them is exactly the old picture, not a wrong one. Nothing
+            // is removed and no signature changes. Requires `ls-media` with `Node.surface` to see
+            // any difference; without it the wireframe renders as it did in 0.19.0.
+            version = "0.20.0"
 
             afterEvaluate {
                 from(components["release"])
