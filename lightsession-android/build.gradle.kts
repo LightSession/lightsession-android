@@ -538,7 +538,21 @@ publishing {
             // Minor. An existing consumer starts resending a wireframe it previously sent once, with
             // no code change on their side. No signature changes; the ratchet is internal, and it
             // needs no server change — `ls-api` already upserts a capture by slot.
-            version = "0.21.0"
+            // 0.21.1 stops the mask becoming a container's colour.
+            //
+            // A form screen came back as one grey slab. The grey is `Masking.MASK_COLOR`, and
+            // 0.20.0 taught containers to adopt whatever colour dominates their pixels — which on
+            // a form is the mask, because a text field is mostly masked text and so is everything
+            // wrapping one. Measured on eight fields: `#9C9C9C` as the sampled surface of the
+            // scroll column at 92% of its area, the Scaffold at 95%, sixty-odd containers filled.
+            //
+            // The mask is this SDK's paint, not the app's, so it never becomes a surface — except
+            // on `TEXT`, `INPUT` and `IMAGE`, which *are* the masked thing and where grey is what
+            // the screen honestly shows.
+            //
+            // Patch, on the reasoning of 0.14.1: nothing new is reported and no signature changes.
+            // A screen that was storing a wireframe of the wrong colour stores the right one.
+            version = "0.21.1"
 
             afterEvaluate {
                 from(components["release"])
