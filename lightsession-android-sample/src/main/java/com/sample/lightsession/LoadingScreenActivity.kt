@@ -95,9 +95,19 @@ class LoadingScreenActivity : ComponentActivity() {
 
     private var loadMs = LOAD_MS
 
+    /**
+     * Which destination to navigate to, with `--es screen form`.
+     *
+     * `performance` is the loading-then-content case. `form` is a screen of text fields, which is
+     * the shape that exposed what masking does to a container's sampled colour: a field is mostly
+     * masked text, so a column of them is mostly mask grey.
+     */
+    private var destination = "performance"
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         loadMs = intent?.getLongExtra("load", LOAD_MS) ?: LOAD_MS
+        destination = intent?.getStringExtra("screen") ?: "performance"
         setContent { Shell() }
     }
 
@@ -125,7 +135,7 @@ class LoadingScreenActivity : ComponentActivity() {
                         composable("route") {
                             LaunchedEffect(Unit) {
                                 delay(ENTER_MS)
-                                nav.navigate("performance")
+                                nav.navigate(destination)
                             }
                             Column(Modifier.fillMaxSize().padding(16.dp)) {
                                 Text("Roteiro", style = MaterialTheme.typography.headlineSmall)
@@ -133,6 +143,7 @@ class LoadingScreenActivity : ComponentActivity() {
                             }
                         }
                         composable("performance") { Metrics() }
+                        composable("form") { FormScreen() }
                     }
                 }
             }
@@ -159,6 +170,47 @@ class LoadingScreenActivity : ComponentActivity() {
                     CircularProgressIndicator(Modifier.align(Alignment.Center))
                 } else {
                     MetricsContent()
+                }
+            }
+        }
+    }
+
+    /**
+     * A form, which is what a screen of text fields does to colour sampling.
+     *
+     * Mirrors the production `doctor/edit/{id}`: a `Scaffold` over a scrolling `Column` of
+     * `OutlinedTextField`s. Every field is masked text, so the pixels inside any container that
+     * wraps several of them are mostly `Masking.MASK_COLOR` — and a container is only supposed to
+     * gain a `surface` when a colour it *actually has* dominates it.
+     */
+    @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+    @Composable
+    private fun FormScreen() {
+        Scaffold(topBar = { TopAppBar(title = { Text("Editar médico") }) }) { padding ->
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                listOf(
+                    "Nome" to "Dra. Helena Vasconcelos",
+                    "CRM" to "123456-SP",
+                    "Especialidade" to "Cardiologia",
+                    "E-mail" to "helena@clinica.com.br",
+                    "Telefone" to "(11) 98888-7777",
+                    "Endereço" to "Av. Paulista, 1000",
+                    "Cidade" to "São Paulo",
+                    "Observações" to "Prefere visitas pela manhã",
+                ).forEach { (label, value) ->
+                    androidx.compose.material3.OutlinedTextField(
+                        value = value,
+                        onValueChange = {},
+                        label = { Text(label) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             }
         }
