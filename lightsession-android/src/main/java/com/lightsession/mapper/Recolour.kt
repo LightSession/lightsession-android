@@ -93,11 +93,6 @@ internal object Recolour {
         val touched = IntArray(BUCKETS)
 
         val recoloured = frame.rects.map { rect ->
-            // An outline is structure, not surface. Sampling a container's whole area would
-            // give the average of its children and paint its border in a colour that belongs
-            // to none of them.
-            if (rect.stroke) return@map rect
-
             val sampled = sample(
                 pixels,
                 bitmapWidth,
@@ -108,10 +103,26 @@ internal object Recolour {
                 (rect.top * scaleY).toInt(),
                 (rect.right * scaleX).toInt(),
                 (rect.bottom * scaleY).toInt(),
-            )
-            // Nothing sampled — a rectangle off screen, or thinner than nothing. Keeping the
-            // palette colour is better than painting it transparent.
-            if (sampled == null) rect else rect.copy(color = sampled)
+            ) ?: return@map rect // off screen, or thinner than nothing: keep the palette
+
+            when {
+                // Every opaque pixel it covers belongs to no window — the strip under the system
+                // bars, in a capture whose pool bitmaps are erased to transparent. The region is
+                // not on the screen, so the rect is not in the picture: transparent is a colour
+                // `blend` treats as "draw nothing". Reading those pixels as RGB used to hand back
+                // pure black and paint a black band over the navigation strip.
+                sampled.color == TRANSPARENT -> rect.copy(color = TRANSPARENT, surface = null)
+
+                // Structure. It only becomes surface when one colour demonstrably covers it —
+                // a red goal card is red to [DOMINANCE] and past it — because the *mean* of a
+                // container is a colour belonging to nothing: a full-screen shell averaged white
+                // cards, one red card and undrawn black into mauve. A mixed container keeps its
+                // bare outline, which is what it always was.
+                rect.stroke ->
+                    if (sampled.dominant) rect.copy(surface = sampled.color) else rect
+
+                else -> rect.copy(color = sampled.color)
+            }
         }
 
         return frame.copy(rects = recoloured)
@@ -125,6 +136,11 @@ internal object Recolour {
      * actually used are reset, since clearing all of them per rectangle costs more than the
      * counting does.
      */
+    /** What [sample] found: a colour, and whether it covered [DOMINANCE] of the pixels. */
+    private class Sampled(val color: Int, val dominant: Boolean)
+
+    private const val TRANSPARENT = 0
+
     private fun sample(
         pixels: IntArray,
         width: Int,
@@ -135,7 +151,7 @@ internal object Recolour {
         top: Int,
         right: Int,
         bottom: Int,
-    ): Int? {
+    ): Sampled? {
         val x0 = left.coerceIn(0, width - 1)
         val y0 = top.coerceIn(0, height - 1)
         // At least one pixel wide and tall. A hairline divider is thinner than the stride and
@@ -147,6 +163,7 @@ internal object Recolour {
         var green = 0L
         var blue = 0L
         var counted = 0
+        var visited = 0
         var used = 0
 
         var y = y0
@@ -155,6 +172,13 @@ internal object Recolour {
             var x = x0
             while (x < x1) {
                 val pixel = pixels[row + x]
+                visited++
+                // A pixel no window painted. The pool erases to transparent, so alpha below full
+                // means "nothing was here" — counting its RGB would count black that nobody drew.
+                if ((pixel ushr 24) and 0xFF != 0xFF) {
+                    x += STRIDE
+                    continue
+                }
                 val r = (pixel shr 16) and 0xFF
                 val g = (pixel shr 8) and 0xFF
                 val b = pixel and 0xFF
@@ -175,7 +199,10 @@ internal object Recolour {
             y += STRIDE
         }
 
-        if (counted == 0) return null
+        if (visited == 0) return null
+        // Pixels existed to look at and none of them were drawn: the region is off the window,
+        // not off the screen edge. See the caller for what transparent means to the renderer.
+        if (counted == 0) return Sampled(TRANSPARENT, dominant = true)
 
         var best = 0
         var bestCount = 0
@@ -194,15 +221,17 @@ internal object Recolour {
             // Mid-bucket rather than its floor, so a white surface comes back white instead of
             // very slightly grey.
             val half = 1 shl (LEVELS_SHIFT - 1)
-            opaque or
+            val colour = opaque or
                 ((((best shr 10) and 0x1F) shl LEVELS_SHIFT) + half shl 16) or
                 ((((best shr 5) and 0x1F) shl LEVELS_SHIFT) + half shl 8) or
                 (((best and 0x1F) shl LEVELS_SHIFT) + half)
+            Sampled(colour, dominant = true)
         } else {
-            opaque or
+            val colour = opaque or
                 ((red / counted).toInt() shl 16) or
                 ((green / counted).toInt() shl 8) or
                 (blue / counted).toInt()
+            Sampled(colour, dominant = false)
         }
     }
 
@@ -221,8 +250,9 @@ internal object Recolour {
      */
     fun glyphSizedRects(frame: SkeletonFrame, minimumSide: Int = MIN_SAFE_SIDE): Int =
         frame.rects.count { rect ->
-            !rect.stroke &&
-                (rect.right - rect.left) < minimumSide &&
+            // Stroked rects count too, now that they carry sampled colours: a glyph-sized
+            // container filled server-side would paint text back exactly as a filled rect would.
+            (rect.right - rect.left) < minimumSide &&
                 (rect.bottom - rect.top) < minimumSide
         }
 

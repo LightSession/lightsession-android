@@ -91,12 +91,51 @@ class RecolourTest {
     }
 
     @Test
-    fun `an outline keeps its palette colour`() {
-        // A container is structure. Sampling its whole area would average its children and
-        // paint the border a colour belonging to none of them.
-        val mixed = pixels { x, _ -> if (x < W / 2) INK else WHITE }
-        val out = Recolour.apply(frame(rect(0, 0, W, H, kind = "CONTAINER", stroke = true)), mixed, W, H)
-        assertEquals(PALETTE_GREEN, out.rects.single().color)
+    fun `a container with a real surface gains one, a mixed one stays an outline`() {
+        // The red goal card: a CONTAINER, hence stroked, hence never sampled — it rendered white.
+        // Most of a card is card: red covers 70% of this fixture, its "children" 30%, so the
+        // dominant rule hands the surface back and the renderer can fill it.
+        val red = 0xFFC62828.toInt()
+        val card = pixels { x, _ -> if (x < (W * 3) / 10) INK else red }
+        val surfaced = Recolour.apply(frame(rect(0, 0, W, H, kind = "CONTAINER", stroke = true)), card, W, H)
+            .rects.single()
+        val got = surfaced.surface
+        assertTrue(
+            "a dominated container should carry its surface: got ${got?.let(::hex)}",
+            got != null && red(got) in 0xB8..0xD8 && green(got) in 0x18..0x38 && blue(got) in 0x18..0x38,
+        )
+
+        // A container whose pixels are a mixture has no surface: filling it with the mean paints
+        // a colour belonging to nothing — a full-screen shell once averaged to mauve this way.
+        val mixed = pixels { x, _ ->
+            when {
+                x < W / 3 -> INK
+                x < (W * 2) / 3 -> red
+                else -> WHITE
+            }
+        }
+        val hollow = Recolour.apply(frame(rect(0, 0, W, H, kind = "CONTAINER", stroke = true)), mixed, W, H)
+            .rects.single()
+        assertEquals("a mixed container must keep its bare outline", null, hollow.surface)
+        assertEquals(PALETTE_GREEN, hollow.color)
+    }
+
+    @Test
+    fun `a region no window painted disappears instead of turning black`() {
+        // The strip under the system bars: the capture's pool bitmaps are erased to transparent
+        // and nothing draws there. Reading those pixels as RGB handed back pure black and drew a
+        // black band over the navigation strip; a fully transparent colour is one `blend` skips.
+        val absent = IntArray(W * H) // alpha 0 everywhere
+        val out = Recolour.apply(frame(rect(0, 0, W, H)), absent, W, H).rects.single()
+        assertEquals("an undrawn region must vanish, not go black", 0, out.color)
+    }
+
+    @Test
+    fun `the glyph guard counts stroked rects too`() {
+        // Stroked rects carry sampled colours now, and the server fills them: a glyph-sized
+        // stroked rect would paint text back exactly as a filled one would.
+        val tiny = frame(rect(0, 0, 8, 8, kind = "CONTAINER", stroke = true))
+        assertEquals(1, Recolour.glyphSizedRects(tiny))
     }
 
     @Test

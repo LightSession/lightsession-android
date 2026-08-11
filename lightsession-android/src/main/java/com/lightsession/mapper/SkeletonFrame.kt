@@ -57,6 +57,14 @@ data class SkeletonFrame(
     val rects: List<SkeletonRect>
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
+        // Wire version. 2 says two things. Rects may carry `surface` — a sampled colour for a
+        // stroked rect that demonstrably has one — and the frame is safe to paint biggest-first,
+        // which is the only order consistent with the screen having been visible: pre-order breaks
+        // across subcompositions, and a full-screen shell emitted last erased everything the
+        // moment containers gained fills. Absent (v1), the renderer keeps list order and bare
+        // outlines, so every frame stored before this field existed keeps its exact picture. A
+        // server that predates the field ignores it and degrades to that same old picture.
+        put("v", 2)
         put("width", width)
         put("height", height)
         put("background", colorToHex(background))
@@ -119,7 +127,18 @@ data class SkeletonRect(
     val kind: String,
     val color: Int,
     /** Outline rather than fill. A filled container hides everything inside it. */
-    val stroke: Boolean
+    val stroke: Boolean,
+    /**
+     * The sampled colour of a stroked rect's own surface, when it demonstrably has one.
+     *
+     * Only set when one colour dominates the rect's pixels — a goal card that is actually red —
+     * never from a mean, because the mean of a container full of mixed children is a colour
+     * belonging to nothing on the screen. Measured on the screen that forced this: a full-screen
+     * shell averaged to mauve `#DBC3CA` out of white cards, one red card and the black of pixels
+     * that were never drawn. The renderer fills a surfaced container and keeps a darkened border;
+     * without this field it draws the outline alone, exactly as it always has.
+     */
+    val surface: Int? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("l", left)
@@ -130,5 +149,6 @@ data class SkeletonRect(
         put("color", SkeletonFrame.colorToHex(color))
         // Omitted when false, which is most nodes. The server defaults it.
         if (stroke) put("stroke", true)
+        surface?.let { put("surface", SkeletonFrame.colorToHex(it)) }
     }
 }
