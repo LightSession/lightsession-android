@@ -32,6 +32,7 @@ class CacheManager(context: Context) {
         private const val KEY_SENT_SCREENS = "sent_screens"
         private const val KEY_SENT_FLOWS = "sent_flows"
         private const val KEY_CAPTURED_SCREENS = "captured_screens"
+        private const val KEY_WIREFRAME_RECTS = "wireframe_rects"
     }
 
     fun handleAppVersionCheck(currentVersion: String) = synchronized(writeLock) {
@@ -76,6 +77,59 @@ class CacheManager(context: Context) {
         }
     }
 
+    /**
+     * How many rectangles the richest wireframe ever sent for this screen carried. 0 = unknown.
+     *
+     * ## The ratchet
+     *
+     * "Sent" used to be the whole memory: a boolean, so whatever wireframe went out first was the
+     * screen's picture for the life of the install. That is exactly wrong for the screens that
+     * matter — a loading screen's first capture is a spinner in a shell (measured: 37 rectangles
+     * against the 81 the loaded screen has), and if a touch killed the late-content watch on that
+     * first visit, the spinner was permanent.
+     *
+     * Remembering the count turns "sent" into a bar to clear. A later capture is sent only when it
+     * carries strictly more rectangles, and a successful send raises the bar. Strictly more is
+     * what makes it converge: a screen whose data varies between visits does not ping-pong,
+     * because equal-or-poorer captures are silence, and the count can only rise as many times as
+     * there are new maxima. It also means an SDK upgrade whose scanner finds more of the screen
+     * heals every stored wireframe by itself on the next visit — which retires the standing defect
+     * that this cache is invalidated by *app* version while wireframe quality changes with *SDK*
+     * version.
+     *
+     * A count and not a hash, deliberately. The question the map asks is "is this a more complete
+     * picture", not "is this a different picture" — a hash resends on every data change forever.
+     *
+     * 0 for a screen sent before this existed, which makes any capture with a single rectangle
+     * "richer": every legacy install resends each stale screen once, records the bar, and goes
+     * quiet. That one send per screen is the healing, not a bug.
+     */
+    fun wireframeRects(screenId: String): Int =
+        getWireframeRects()
+            .firstOrNull { it.startsWith("$screenId|") }
+            ?.substringAfterLast('|')
+            ?.toIntOrNull() ?: 0
+
+    /**
+     * Raises the bar for [screenId] to [rects]; never lowers it.
+     *
+     * Monotonic under any completion order, which matters because sends race: the first capture's
+     * send and a late-content upgrade can complete out of order, and letting the smaller count win
+     * would schedule a pointless re-upgrade on the next visit.
+     */
+    fun recordWireframeRects(screenId: String, rects: Int) = synchronized(writeLock) {
+        val set = getWireframeRects()
+        val current = set.firstOrNull { it.startsWith("$screenId|") }
+        val bar = current?.substringAfterLast('|')?.toIntOrNull() ?: 0
+        if (rects <= bar) return
+        prefs.edit {
+            putStringSet(
+                KEY_WIREFRAME_RECTS,
+                set - setOfNotNull(current) + "$screenId|$rects",
+            )
+        }
+    }
+
     fun isFlowSent(flowKey: String): Boolean {
         val sentFlows = getSentFlows()
         return sentFlows.contains(flowKey)
@@ -85,11 +139,18 @@ class CacheManager(context: Context) {
         prefs.edit { putStringSet(KEY_SENT_FLOWS, getSentFlows() + flowKey) }
     }
 
-    private fun clearAllCache() {
-        prefs.edit {
+    /** Wipes every cache set. Private in spirit — the one internal caller is the ratchet's test,
+     *  which needs a clean install-scoped store and cannot get one any other way. */
+    internal fun clearAllCache() {
+        // `commit`, not `apply`. This runs on an app-version change, right before the first
+        // screens of the new version are captured — if the wipe is still in flight when they are
+        // recorded, the new bar races the old file and can lose. Blocking here costs a disk write
+        // once per upgrade, which is nothing beside getting it wrong.
+        prefs.edit(commit = true) {
             remove(KEY_SENT_SCREENS)
             remove(KEY_SENT_FLOWS)
             remove(KEY_CAPTURED_SCREENS)
+            remove(KEY_WIREFRAME_RECTS)
         }
     }
 
@@ -103,4 +164,7 @@ class CacheManager(context: Context) {
 
     private fun getCapturedScreens(): Set<String> =
         prefs.getStringSet(KEY_CAPTURED_SCREENS, emptySet()) ?: emptySet()
+
+    private fun getWireframeRects(): Set<String> =
+        prefs.getStringSet(KEY_WIREFRAME_RECTS, emptySet()) ?: emptySet()
 }

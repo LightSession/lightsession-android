@@ -371,12 +371,31 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      *   that never laid out, a composition that never settled, or a modal dismissed before its own
      *   wireframe could be taken.
      */
+    /**
+     * The settle-wait and the hierarchy walk, without the recolour.
+     *
+     * Split out because the two halves have very different prices. The walk is under a millisecond
+     * (`SkeletonCostTest`: 0.62 ms for a 117-widget screen); the recolour is a full-resolution
+     * screen capture plus a ten-megabyte `getPixels` crossing. Every decision that might end in
+     * "send nothing" — a revisit whose screen is no richer, a late-content rescan that found the
+     * same layout — should be made on the walk alone, and pay for pixels only once it has decided
+     * to ship them.
+     */
+    private fun scanWireframe(activity: Activity, onComplete: (SkeletonFrame?) -> Unit) {
+        val overlay = modalRootView?.get()?.takeIf { it.isAttachedToWindow }
+        if (overlay != null) {
+            skeletonGenerator.generateOverlaySkeletonFrame(activity, overlay, onComplete)
+        } else {
+            skeletonGenerator.generateSkeletonFrame(activity, onComplete)
+        }
+    }
+
     private fun captureWireframe(activity: Activity, onComplete: (Wireframe?) -> Unit) {
         val overlay = modalRootView?.get()?.takeIf { it.isAttachedToWindow }
 
         when (wireframeMode) {
             LightSessionConfig.WireframeMode.RECTS -> {
-                val handle = { frame: SkeletonFrame? ->
+                scanWireframe(activity) { frame ->
                     if (frame == null || !trueColourWireframes) {
                         onComplete(frame?.let { Wireframe(skeleton = it) })
                     } else {
@@ -386,11 +405,6 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                             onComplete(Wireframe(skeleton = coloured))
                         }
                     }
-                }
-                if (overlay != null) {
-                    skeletonGenerator.generateOverlaySkeletonFrame(activity, overlay, handle)
-                } else {
-                    skeletonGenerator.generateSkeletonFrame(activity, handle)
                 }
             }
 
@@ -420,22 +434,31 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      * immediately: measured on a production `Métricas` screen, 139 ms after navigation — because an
      * indeterminate spinner animates on the RenderThread, producing no snapshot apply and no
      * `ViewRootImpl` draw for the settle detector to see. The scan recorded the shell around a
-     * spinner: 54 rectangles against the 98 the loaded screen measures on the same fixture. The
-     * screenshot path papers over the same gap with a flat [SCREENSHOT_SETTLE_MS] wait, which is a
-     * guess about every app's network encoded as a constant in this SDK.
+     * spinner: 37 rectangles against the 81 the loaded screen has. The screenshot path papers over
+     * the same gap with a flat [SCREENSHOT_SETTLE_MS] wait, which is a guess about every app's
+     * network encoded as a constant in this SDK.
      *
      * This is the guess removed. The data landing *is* a snapshot apply — `isLoading = false`
      * reaching `collectAsStateWithLifecycle` is a `MutableState` write — so [LateContent] wakes on
-     * exactly that event, this recaptures (the settle inside [captureWireframe] absorbs the
-     * recomposition), and a skeleton whose geometry changed is sent again. `ls-api` upserts by
-     * capture slot, so the resend replaces the wireframe and cannot blank the screenshot beside it.
+     * exactly that event, this rescans (the settle inside [scanWireframe] absorbs the
+     * recomposition), and ships when the scan clears the cached bar. `ls-api` upserts by capture
+     * slot, so the resend replaces the wireframe and cannot blank the screenshot beside it.
+     *
+     * ## One rule for what ships
+     *
+     * The decision is [CacheManager.wireframeRects]: send only what carries strictly more
+     * rectangles than the richest wireframe this install ever sent for the screen, and let the
+     * success raise that bar. It used to be a geometry comparison against the frame sent this
+     * visit, which resent on *any* change — a carousel advancing, a clock tick — and paid a
+     * full-resolution recolour capture on every rescan to find that out. Against the bar, a rescan
+     * that finds nothing richer costs one sub-millisecond walk and no pixels at all.
      *
      * ## What ends the watch
      *
      * Events, never a clock: a touch (the state after it is the person's edit, not the screen they
      * arrived at), a navigation (the applies now describe the next screen), the Activity pausing,
-     * or [LATE_CONTENT_RESCANS] examinations coming back. An unchanged geometry spends budget too —
-     * that is what bounds a screen that ticks by itself.
+     * recording stopping, or [LATE_CONTENT_RESCANS] examinations coming back. A rescan that clears
+     * nothing spends budget too — that is what bounds a screen that ticks by itself.
      */
     private fun watchForLateContent(
         activity: Activity,
@@ -447,11 +470,12 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         appVersionCode: Int,
         appVersionName: String,
         theme: String,
-        sentSkeleton: SkeletonFrame?,
+        screenCacheKey: String,
         rescansLeft: Int = LATE_CONTENT_RESCANS,
     ) {
-        // BITMAP mode has no geometry to compare, and a screen out of budget has had its chances.
-        if (sentSkeleton == null || rescansLeft <= 0) return
+        // A bitmap wireframe has no rectangles to count, and a screen out of budget has had its
+        // chances.
+        if (wireframeMode != LightSessionConfig.WireframeMode.RECTS || rescansLeft <= 0) return
         val activityRef = java.lang.ref.WeakReference(activity)
         lateContent.arm {
             // The apply arrives on whichever thread wrote the state; everything below — the
@@ -459,54 +483,25 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             mainHandler.post {
                 val current = activityRef.get() ?: return@post
                 if (current.isFinishing || current.isDestroyed) return@post
+                // Armed while recording, firing after it stopped: the stop contract says no more
+                // screen-map captures, and an apply is exactly a capture about to happen.
+                if (!Recording.enabled) return@post
                 // The arm described one screen; an apply belonging to any other must not
                 // overwrite that screen's wireframe with a picture of this one.
                 if (lastScreen != screenName) return@post
-                captureWireframe(current) { wireframe ->
-                    val fresh = wireframe?.skeleton
-                    if (wireframe == null || fresh == null || lastScreen != screenName) {
-                        return@captureWireframe
-                    }
-                    if (sameGeometry(fresh, sentSkeleton)) {
-                        // Applied and settled back to the same layout — a clock tick, a refresh
-                        // that found nothing. Watch again; the budget bounds what this can cost.
-                        watchForLateContent(
-                            current, screenId, screenName, screenType, screenWidth, screenHeight,
-                            appVersionCode, appVersionName, theme, sentSkeleton, rescansLeft - 1,
+                scanWireframe(current) { frame ->
+                    if (frame == null || lastScreen != screenName) return@scanWireframe
+                    val bar = cacheManager.wireframeRects(screenCacheKey)
+                    if (frame.rects.size > bar) {
+                        shipRicherWireframe(
+                            current, frame, bar, screenId, screenName, screenType,
+                            screenWidth, screenHeight, appVersionCode, appVersionName, theme,
+                            screenCacheKey,
                         )
-                        return@captureWireframe
-                    }
-                    scopeFor(current).launch {
-                        val result = dataSender?.sendScreenData(
-                            screenId = screenId,
-                            screenName = screenName,
-                            screenType = screenType,
-                            bitmapBase64 = wireframe.bitmapBase64,
-                            skeleton = fresh,
-                            width = screenWidth,
-                            height = screenHeight,
-                            density = ScreenGeometry.density,
-                            appVersionCode = appVersionCode,
-                            appVersionName = appVersionName,
-                            theme = theme,
-                        )
-                        if (result?.isSuccess == true) {
-                            Log.d(
-                                "ScreenMapper",
-                                "Late content: skeleton replaced for $screenName " +
-                                    "(${sentSkeleton.rects.size} -> ${fresh.rects.size} rects)",
-                            )
-                        } else {
-                            Log.e(
-                                "ScreenMapper",
-                                "Late content: replacement send failed for $screenName",
-                                result?.exceptionOrNull(),
-                            )
-                        }
                     }
                     watchForLateContent(
                         current, screenId, screenName, screenType, screenWidth, screenHeight,
-                        appVersionCode, appVersionName, theme, fresh, rescansLeft - 1,
+                        appVersionCode, appVersionName, theme, screenCacheKey, rescansLeft - 1,
                     )
                 }
             }
@@ -514,17 +509,104 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     }
 
     /**
-     * Geometry and kind only. Recolouring samples the live screen, so colour can waver between
-     * two captures of an identical layout — and a colour-only wobble is not content arriving.
+     * Rescans a screen the install has already sent, and ships only past the bar.
+     *
+     * The `isScreenSent` gate used to be the end of the story: one boolean, so whatever wireframe
+     * went out first was the screen's picture for the life of the install. The screens that most
+     * needed a second look were exactly the ones that never got one — a first visit whose watch a
+     * touch cancelled stored the spinner permanently, and every install that predates `surface`
+     * sampling holds wireframes a newer scanner would improve.
+     *
+     * So a revisit pays one settle-wait and one sub-millisecond walk, compares against
+     * [CacheManager.wireframeRects], and ships only strictly richer — then arms [LateContent], so
+     * a revisit that lands on the spinner still catches the data when it arrives. Both paths
+     * converge to silence: once the bar is the loaded screen, every later visit scans, matches
+     * and sends nothing.
      */
-    private fun sameGeometry(a: SkeletonFrame, b: SkeletonFrame): Boolean =
-        a.rects.size == b.rects.size &&
-            a.rects.indices.all { i ->
-                val x = a.rects[i]
-                val y = b.rects[i]
-                x.left == y.left && x.top == y.top && x.right == y.right &&
-                    x.bottom == y.bottom && x.kind == y.kind
+    private fun upgradeWireframeIfRicher(
+        activity: Activity,
+        screenId: String,
+        screenName: String,
+        screenType: ScreenType,
+        screenWidth: Int,
+        screenHeight: Int,
+        appVersionCode: Int,
+        appVersionName: String,
+        theme: String,
+        screenCacheKey: String,
+    ) {
+        if (wireframeMode != LightSessionConfig.WireframeMode.RECTS) return
+        scanWireframe(activity) { frame ->
+            if (frame == null || !Recording.enabled) return@scanWireframe
+            val bar = cacheManager.wireframeRects(screenCacheKey)
+            if (frame.rects.size > bar) {
+                shipRicherWireframe(
+                    activity, frame, bar, screenId, screenName, screenType,
+                    screenWidth, screenHeight, appVersionCode, appVersionName, theme,
+                    screenCacheKey,
+                )
+            } else {
+                Log.d(
+                    "ScreenMapper",
+                    "Wireframe for $screenName already at $bar rect(s); scanned ${frame.rects.size}, nothing to upgrade",
+                )
             }
+            // The reason a revisit scans poor is usually that its content has not arrived yet.
+            watchForLateContent(
+                activity, screenId, screenName, screenType, screenWidth, screenHeight,
+                appVersionCode, appVersionName, theme, screenCacheKey,
+            )
+        }
+    }
+
+    /** Recolours and sends a frame that cleared the bar, and raises the bar on success. */
+    private fun shipRicherWireframe(
+        activity: Activity,
+        frame: SkeletonFrame,
+        bar: Int,
+        screenId: String,
+        screenName: String,
+        screenType: ScreenType,
+        screenWidth: Int,
+        screenHeight: Int,
+        appVersionCode: Int,
+        appVersionName: String,
+        theme: String,
+        screenCacheKey: String,
+    ) {
+        val deliver = { coloured: SkeletonFrame ->
+            scopeFor(activity).launch {
+                val result = dataSender?.sendScreenData(
+                    screenId = screenId,
+                    screenName = screenName,
+                    screenType = screenType,
+                    bitmapBase64 = null,
+                    skeleton = coloured,
+                    width = screenWidth,
+                    height = screenHeight,
+                    density = ScreenGeometry.density,
+                    appVersionCode = appVersionCode,
+                    appVersionName = appVersionName,
+                    theme = theme,
+                )
+                if (result?.isSuccess == true) {
+                    cacheManager.recordWireframeRects(screenCacheKey, coloured.rects.size)
+                    Log.d(
+                        "ScreenMapper",
+                        "Wireframe upgraded for $screenName ($bar -> ${coloured.rects.size} rects)",
+                    )
+                } else {
+                    // The bar stays where it was, so the next visit tries again by itself.
+                    Log.e(
+                        "ScreenMapper",
+                        "Wireframe upgrade send failed for $screenName",
+                        result?.exceptionOrNull(),
+                    )
+                }
+            }
+        }
+        if (trueColourWireframes) recolourFromScreen(frame) { deliver(it) } else deliver(frame)
+    }
 
     /**
      * Reads each widget's real colour out of a capture of the screen.
@@ -1767,6 +1849,21 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
         if (cacheManager.isFlowSent(flowCacheKey)) {
             Log.d("ScreenMapper", "Navigation flow already mapped: $flowKey (skipping)")
+            // The flow being mapped does not mean the *destination's wireframe* is the best it can
+            // be — this is the revisit that a poisoned first capture depends on. A screen reached
+            // only through a mapped flow would otherwise never be re-examined, because this early
+            // return is the whole of a repeat navigation. So the destination gets its cheap rescan
+            // here too, keyed the same way the send sites key it.
+            val toNode = screenNodes[to]
+            val activity = currentActivityWeakRef?.get()
+            if (toScreenId != null && toNode != null && activity != null && screenParams != null) {
+                upgradeWireframeIfRicher(
+                    activity, toScreenId, to, toNode.type,
+                    screenParams.width, screenParams.height,
+                    appVersionCode, appVersionName, screenParams.currentTheme,
+                    generateCacheKey(toScreenId),
+                )
+            }
             val toCacheKey = generateCacheKey(toScreenId.toString())
             if (!cacheManager.isScreenFullyCaptured(toCacheKey)) {
                 isScreenshotScheduledForCurrentScreen = true
@@ -1826,8 +1923,8 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             )
             val screenCacheKey = generateCacheKey(screenId)
 
-            if (!cacheManager.isScreenSent(screenCacheKey)) {
-                screenNodes[to]?.let { toNode ->
+            screenNodes[to]?.let { toNode ->
+                if (!cacheManager.isScreenSent(screenCacheKey)) {
                     captureWireframe(activity) { wireframe ->
                         // Sent even when the screenshot already landed. The two are stored in
                         // separate slots now, so a wireframe arriving second adds a layer instead
@@ -1843,7 +1940,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                                 activity, screenId, to, toNode.type,
                                 screenWidth, screenHeight,
                                 appVersionCode, appVersionName, currentTheme,
-                                wireframe.skeleton,
+                                screenCacheKey,
                             )
                             scopeFor(activity).launch {
                                 val result = dataSender?.sendScreenData(
@@ -1862,6 +1959,12 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
                                 if (result?.isSuccess == true) {
                                     cacheManager.markScreenAsSent(screenCacheKey, false)
+                                    // The bar the ratchet measures against. Recorded from what was
+                                    // actually shipped, only on success: a failed first send leaves
+                                    // it at zero, and the next visit resends by itself.
+                                    wireframe.skeleton?.let {
+                                        cacheManager.recordWireframeRects(screenCacheKey, it.rects.size)
+                                    }
                                     Log.d("ScreenMapper", "Skeleton screen sent for: $screenId (${screenWidth}x${screenHeight})")
                                 } else {
                                     Log.e("ScreenMapper", "Failed to send skeleton screen for: $to", result?.exceptionOrNull())
@@ -1871,6 +1974,16 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                             Log.e("ScreenMapper", "Failed to generate skeleton")
                         }
                     }
+                } else {
+                    // Seen before is no longer the end of the story — the stored wireframe may be
+                    // the spinner a touch froze in place, or the work of an older scanner. One
+                    // cheap walk decides; only strictly richer ships.
+                    upgradeWireframeIfRicher(
+                        activity, screenId, to, toNode.type,
+                        screenWidth, screenHeight,
+                        appVersionCode, appVersionName, currentTheme,
+                        screenCacheKey,
+                    )
                 }
             }
 
@@ -1964,7 +2077,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                                 activity, screenId, screenName, screenType,
                                 screenWidth, screenHeight,
                                 appVersionCode, appVersionName, currentTheme,
-                                wireframe.skeleton,
+                                screenCacheKey,
                             )
                             scope.launch {
                                 val result = dataSender?.sendScreenData(
@@ -1983,6 +2096,10 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
                                 if (result?.isSuccess == true) {
                                     cacheManager.markScreenAsSent(screenCacheKey, false)
+                                    // See the navigation path: the ratchet's bar, on success only.
+                                    wireframe.skeleton?.let {
+                                        cacheManager.recordWireframeRects(screenCacheKey, it.rects.size)
+                                    }
                                     Log.d("ScreenMapper", "Initial skeleton screen sent: $screenId (${screenWidth}x${screenHeight})")
                                 } else {
                                     Log.e("ScreenMapper", "Failed to send initial skeleton screen: $screenName", result?.exceptionOrNull())
@@ -1992,6 +2109,14 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                             Log.e("ScreenMapper", "Failed to generate skeleton for initial screen")
                         }
                     }
+                } else {
+                    // See the navigation path: a stored wireframe is a bar to clear, not a wall.
+                    upgradeWireframeIfRicher(
+                        activity, screenId, screenName, screenType,
+                        screenWidth, screenHeight,
+                        appVersionCode, appVersionName, currentTheme,
+                        screenCacheKey,
+                    )
                 }
 
                 // Schedule screenshot for the initial screen
