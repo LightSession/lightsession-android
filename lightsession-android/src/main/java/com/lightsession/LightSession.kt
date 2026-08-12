@@ -77,7 +77,8 @@ class LightSession private constructor() {
      * Every other screen in the map is discovered: an Activity resumes, a fragment destination
      * changes, a Compose NavController reports one. React Native defeats all three — the whole app is
      * one Activity and every screen inside it is a JavaScript concern the platform never hears about.
-     * Without this, such an app records exactly one screen, named after its Activity, forever.
+     * Compose Multiplatform and Flutter defeat them the same way. Without this, such an app records
+     * exactly one screen, named after its Activity, forever.
      *
      * The same bargain `rememberNavController().withNavigationTracking()` strikes for Compose: the SDK
      * cannot find the navigator, so the host hands the answer over. Call it whenever the current
@@ -89,6 +90,11 @@ class LightSession private constructor() {
      * ```kotlin
      * LightSession.getInstance().setScreen("Checkout")
      * ```
+     *
+     * The Activity this is called under stops being recorded as a screen of its own — it is the box
+     * the reported screens are drawn in, not one of them. So this alone is enough, and
+     * [LightSessionConfig.screensReportedByHost] becomes a way to say the same thing before the first
+     * call rather than something to get right in advance.
      *
      * From here on the screen is a screen like any other: wireframe, heatmap, flow edges. Nothing
      * downstream knows the name came from JavaScript.

@@ -91,3 +91,47 @@ internal fun planScreenSource(
         reportActivityNow = true,
     )
 }
+
+/** Why an Activity did or did not become a node in the screen map. See [judgeActivityAsScreen]. */
+internal enum class ActivityScreenVerdict {
+    /** Nothing else can name it, so its own name is the screen. */
+    IS_A_SCREEN,
+
+    /** `screensReportedByHost` is on: no Activity is ever a screen in this app. */
+    HOST_REPORTS_ALL,
+
+    /** The flag is off, but the host has named a screen while this Activity was in front. */
+    HOST_NAMED_THIS_ONE,
+}
+
+/**
+ * Whether an Activity is a screen, or only the box that other screens are drawn in.
+ *
+ * Separate from [planScreenSource] because it is answered at a different moment. The plan is fixed
+ * when an Activity resumes; this is asked when the Activity is about to be written into the map,
+ * which for a Compose host is a grace period later — after the composition that calls `setScreen`
+ * has run. Deciding it early is what left Compose Multiplatform out in the cold: a CMP app is one
+ * Activity whose composition the SDK can happily see into, so its wireframes and heatmaps come out
+ * right and nothing looks wrong, while the map quietly carries a permanent `MainActivity` node
+ * beside the real screens.
+ *
+ * [hostNamed] is compared by identity and not by name, and that is the whole reason this returns a
+ * verdict rather than the boolean it started as. The tempting version — a process-wide "the host
+ * has spoken" flag — is wrong for the mixed app: a native app that hand-names one WebView screen
+ * would have every *other* Activity silently stop being recorded. Per Activity, only the one the
+ * host actually spoke for stands down, which is no more than `setScreen` was claiming anyway.
+ *
+ * @param hostNamed the Activity in front the last time the host reported a screen, or null if it
+ *   never has or has since been collected. Typed as [Any] for the same reason [planScreenSource]
+ *   takes booleans rather than an `Activity`: what matters here is identity, and the objects
+ *   themselves cannot be built in a JVM test.
+ */
+internal fun judgeActivityAsScreen(
+    screensReportedByHost: Boolean,
+    hostNamed: Any?,
+    activity: Any,
+): ActivityScreenVerdict = when {
+    screensReportedByHost -> ActivityScreenVerdict.HOST_REPORTS_ALL
+    hostNamed === activity -> ActivityScreenVerdict.HOST_NAMED_THIS_ONE
+    else -> ActivityScreenVerdict.IS_A_SCREEN
+}

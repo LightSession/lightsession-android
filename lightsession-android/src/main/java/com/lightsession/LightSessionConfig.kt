@@ -105,11 +105,17 @@ data class LightSessionConfig @JvmOverloads constructor(
      * Off for a normal Android app, where the platform *is* the answer: an Activity resumes, a
      * fragment destination changes, a Compose NavController reports one.
      *
-     * On for React Native, and for anything else where the platform cannot see the screens. An RN app
-     * is a single Activity hosting everything, so with this off the map gets one node named after that
-     * Activity at the top of every session — a screen no user ever navigated to, permanently, since
-     * screens are permanent. With it on the Activity is not reported and `setScreen` is the only
-     * source, which is the truth for such an app.
+     * On for React Native, Flutter, Compose Multiplatform — anything where one Activity hosts every
+     * screen. With this off such an app gets a node named after that Activity at the top of every
+     * session: a screen no user ever navigated to, permanently, since screens are permanent. With it
+     * on the Activity is not reported and `setScreen` is the only source, which is the truth for such
+     * an app.
+     *
+     * Forgetting it is no longer fatal. An Activity that [LightSession.setScreen] names while it is
+     * in front stops reporting itself from then on, so the map comes out right either way and the
+     * SDK logs what it did. The flag is still worth setting: it is the claim made up front, so the
+     * Activity never gets the chance to report itself in the window before the first `setScreen`
+     * call — which on a slow first frame is the whole difference.
      *
      * Turning this on without calling [LightSession.setScreen] records no screens at all. The SDK
      * says so in the log once, rather than leaving you to notice an empty map — but it cannot fix it

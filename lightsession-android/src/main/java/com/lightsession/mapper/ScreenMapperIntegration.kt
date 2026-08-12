@@ -330,6 +330,24 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     /** Whether [handleReportedNavigation] has ever been called, for the advice below. */
     private var hostHasReportedAScreen = false
 
+    /**
+     * The Activity that was in front the last time the host named a screen.
+     *
+     * The flag says *up front* that the platform cannot see this app's screens. This says it after
+     * the fact, per Activity, and catches the case the flag was meant to cover but nobody knew to
+     * set: an app whose screens the SDK cannot discover, wired up without reading the config.
+     * Compose Multiplatform is the one that made this worth fixing — a CMP app is one Activity
+     * hosting a composition the SDK *can* see into, so the wireframes and the heatmaps are right,
+     * and only the names are wrong. Nothing looks broken. The map just permanently carries a node
+     * called `MainActivity` that no user ever navigated to, next to the real screens.
+     *
+     * Per Activity, and weak, rather than one process-wide boolean, because the boolean is wrong for
+     * the mixed app: a native app that names a single WebView screen by hand would have every one of
+     * its other Activities silently unnamed. Here only the Activity the host actually spoke for stops
+     * reporting itself, which is the same claim `setScreen` was making anyway.
+     */
+    private var hostNamedActivity: WeakReference<Activity>? = null
+
     /** Set from `LightSessionConfig.trackTabs` at [init]. */
     private var trackTabs = true
 
@@ -1140,6 +1158,19 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
             handleActivityNavigation(activity)
 
+            // It may have declined to record it — the host names this Activity's screens, or the
+            // config said so up front — and in that case it has already logged why. The advice
+            // below describes a node that was not created, so saying it too is worse than silence:
+            // the first version of this shipped both, and the second contradicted the first.
+            if (judgeActivityAsScreen(
+                    screensReportedByHost = screensReportedByHost,
+                    hostNamed = hostNamedActivity?.get(),
+                    activity = activity,
+                ) != ActivityScreenVerdict.IS_A_SCREEN
+            ) {
+                return@postDelayed
+            }
+
             if (composeAdviceGiven.add(activityName)) {
                 Log.i(
                     "ScreenMapper",
@@ -1183,6 +1214,31 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
                     "unaffected either way."
             )
         }, COMPOSE_INTEGRATION_GRACE_MS)
+    }
+
+    /**
+     * Says so, once, when an Activity stopped naming itself because the host started naming it.
+     *
+     * Not a warning: this is the SDK doing the right thing without being told. It is logged because
+     * the alternative is a silent behaviour change — an integrator who *wanted* the Activity in the
+     * map, and calls `setScreen` for something else entirely, should be able to find out why it left
+     * rather than deduce it. Suppressing the node is still the right default: an Activity that the
+     * host names is one screen among several by definition, and screens are permanent, so guessing
+     * wrong in the other direction cannot be undone.
+     */
+    private fun adviseHostNamesThisActivity(activity: Activity) {
+        val name = activity.javaClass.simpleName
+        if (!composeAdviceGiven.add("host-named:$name")) return
+
+        Log.i(
+            "ScreenMapper",
+            "$name is not recorded as a screen: LightSession.setScreen was called while it was in " +
+                "front, so its screens are the reported ones. Usual for Compose Multiplatform, " +
+                "React Native and Flutter, where one Activity hosts everything. Set " +
+                "screensReportedByHost = true to say so up front, which also skips the wait before " +
+                "the first reported screen. If you did want $name itself in the map, stop calling " +
+                "setScreen while it is showing."
+        )
     }
 
     /**
@@ -1334,6 +1390,11 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             return
         }
 
+        // This Activity's screens have a name now, so the Activity's own name is not one of them.
+        // See [hostNamedActivity] — it is what makes `screensReportedByHost` optional rather than
+        // something an integrator has to know about before the map is already wrong.
+        hostNamedActivity = WeakReference(activity)
+
         getOrCreateScreenNode(name, ScreenType.REACT_NATIVE).apply { routes.add(name) }
 
         if (lastScreen != null) {
@@ -1348,12 +1409,25 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
     override fun handleActivityNavigation(activity: Activity) {
         // An app that names its own screens has nothing to gain from this and something to lose. On
-        // React Native the Activity is not a screen — it is the box every screen is drawn in — so
-        // reporting it puts a node at the top of every session that no user ever navigated to, and
-        // screens are permanent.
-        if (screensReportedByHost) {
-            adviseIfHostNeverReports(activity)
-            return
+        // React Native or Compose Multiplatform the Activity is not a screen — it is the box every
+        // screen is drawn in — so reporting it puts a node at the top of every session that no user
+        // ever navigated to, and screens are permanent. Told either up front by the config flag or
+        // after the fact by a `setScreen` call under this Activity. See [judgeActivityAsScreen].
+        val verdict = judgeActivityAsScreen(
+            screensReportedByHost = screensReportedByHost,
+            hostNamed = hostNamedActivity?.get(),
+            activity = activity,
+        )
+        when (verdict) {
+            ActivityScreenVerdict.HOST_REPORTS_ALL -> {
+                adviseIfHostNeverReports(activity)
+                return
+            }
+            ActivityScreenVerdict.HOST_NAMED_THIS_ONE -> {
+                adviseHostNamesThisActivity(activity)
+                return
+            }
+            ActivityScreenVerdict.IS_A_SCREEN -> Unit
         }
 
         val screenName = utils.getActivityClassName(activity)

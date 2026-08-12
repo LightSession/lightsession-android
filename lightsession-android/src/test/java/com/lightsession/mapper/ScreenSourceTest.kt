@@ -126,4 +126,107 @@ class ScreenSourceTest {
             }
         }
     }
+
+    // Whether an Activity is a screen at all. Stand-ins for Activities, since identity is the only
+    // property [judgeActivityAsScreen] reads — which is the reason it takes `Any`.
+    private val hostActivity = Any()
+    private val otherActivity = Any()
+
+    /** The ordinary Android app, and the case every other one here must not break. */
+    @Test
+    fun `an activity nobody has named is its own screen`() {
+        assertEquals(
+            ActivityScreenVerdict.IS_A_SCREEN,
+            judgeActivityAsScreen(
+                screensReportedByHost = false,
+                hostNamed = null,
+                activity = hostActivity,
+            ),
+        )
+    }
+
+    /** The flag, unchanged: it is a statement about the app, so no Activity is ever a screen. */
+    @Test
+    fun `the flag stops every activity, named or not`() {
+        for (named in listOf(null, hostActivity, otherActivity)) {
+            assertEquals(
+                "hostNamed=$named",
+                ActivityScreenVerdict.HOST_REPORTS_ALL,
+                judgeActivityAsScreen(
+                    screensReportedByHost = true,
+                    hostNamed = named,
+                    activity = hostActivity,
+                ),
+            )
+        }
+    }
+
+    /**
+     * Compose Multiplatform without the flag, which is how it will be integrated the first time.
+     *
+     * A CMP app is one Activity hosting a composition, so everything the SDK reads off the screen is
+     * right and only the naming is wrong — the map gains a permanent `MainActivity` beside the real
+     * screens, and nothing about the session looks broken enough to go looking.
+     */
+    @Test
+    fun `an activity the host has named stops being a screen`() {
+        assertEquals(
+            ActivityScreenVerdict.HOST_NAMED_THIS_ONE,
+            judgeActivityAsScreen(
+                screensReportedByHost = false,
+                hostNamed = hostActivity,
+                activity = hostActivity,
+            ),
+        )
+    }
+
+    /**
+     * The regression the per-Activity comparison exists to prevent.
+     *
+     * A process-wide "the host has spoken" flag passes every test above and silently unnames the
+     * rest of a mixed app: one hand-named WebView screen, and the twelve ordinary Activities around
+     * it stop being recorded. Permanently, since screens are permanent.
+     */
+    @Test
+    fun `naming one activity leaves the others alone`() {
+        assertEquals(
+            ActivityScreenVerdict.IS_A_SCREEN,
+            judgeActivityAsScreen(
+                screensReportedByHost = false,
+                hostNamed = hostActivity,
+                activity = otherActivity,
+            ),
+        )
+    }
+
+    /**
+     * Identity, not name. Two instances of the same Activity class are two Activities — a detail
+     * that only shows up in an app that opens a second copy of a screen, which is most of them.
+     */
+    @Test
+    fun `a second instance of the same class is a different activity`() {
+        class Screen
+        assertEquals(
+            ActivityScreenVerdict.IS_A_SCREEN,
+            judgeActivityAsScreen(
+                screensReportedByHost = false,
+                hostNamed = Screen(),
+                activity = Screen(),
+            ),
+        )
+    }
+
+    /** The weak reference has been collected. Falling back to naming the Activity is the safe way
+     * to be wrong: a node too many can be ignored, a screen never recorded cannot be recovered. */
+    @Test
+    fun `a collected reference falls back to naming the activity`() {
+        assertEquals(
+            ActivityScreenVerdict.IS_A_SCREEN,
+            judgeActivityAsScreen(
+                screensReportedByHost = false,
+                hostNamed = null,
+                activity = hostActivity,
+            ),
+        )
+    }
 }
