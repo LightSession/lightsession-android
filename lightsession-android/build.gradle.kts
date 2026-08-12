@@ -572,7 +572,30 @@ publishing {
             // only against a server that asked for them. Requires `ls-ingest`/`ls-api` with the
             // decompression layer to see any difference; without it, every byte ships as 0.21.1
             // shipped it.
-            version = "0.22.0"
+            // 0.22.1 keeps a multiplatform app's Activity out of its own screen map.
+            //
+            // React Native, Flutter and Compose Multiplatform are all one Activity hosting
+            // everything, and `screensReportedByHost` is how an app says so. An integrator who does
+            // not know the flag exists gets a node named after that Activity at the top of every
+            // session — permanently, since screens are permanent. Compose Multiplatform is what
+            // made this worth fixing rather than documenting: a CMP composition is one this SDK can
+            // read, so the wireframes and the heatmaps come out right and nothing looks broken
+            // enough to send anyone looking for a flag.
+            //
+            // An Activity that `LightSession.setScreen` names while it is in front now stops
+            // reporting itself. The same claim the flag makes, made after the fact instead of in
+            // advance, so the map comes out right either way and the SDK logs what it did. Measured
+            // on a Compose Multiplatform probe built against the published artifact, navigating
+            // from shared code with no flag set: `home -> MainActivity` became `home -> details`.
+            //
+            // Compared by Activity identity and not by a process-wide "the host has spoken" flag,
+            // which passes every obvious test and is wrong for the mixed app: a native app that
+            // hand-names one WebView screen would have every other Activity silently unnamed.
+            //
+            // Patch. Nothing new is reported and no signature changes. The only app whose behaviour
+            // moves is one already calling `setScreen` without the flag, and what it loses is a node
+            // that should never have been there. No server change.
+            version = "0.22.1"
 
             afterEvaluate {
                 from(components["release"])
