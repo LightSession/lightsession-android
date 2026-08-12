@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import com.lightsession.errors.ErrorCapture
 import com.lightsession.mapper.NetworkDataSender
 import com.lightsession.mapper.ScreenMapperIntegration
 import com.lightsession.replay.ReplayIntegration
@@ -102,6 +103,41 @@ class LightSession private constructor() {
     fun setScreen(name: String) {
         if (!isInitialized) return
         ScreenMapperIntegration.getInstance().handleReportedNavigation(name)
+    }
+
+    /**
+     * Reports an exception the app caught and wants on the record.
+     *
+     * The uncaught kind reports itself — a crash is captured, written to disk before the process
+     * dies, and delivered on the next launch, with the screen it happened on attached. This is
+     * the same record for the errors that don't kill the app: the `catch` block that swallows a
+     * payment failure, the retry that gave up. Those are invisible to a crash handler by
+     * definition, and they are exactly the errors that show up as a user rage-tapping a button
+     * in the replay with nothing in the log to say why.
+     *
+     * The error is attributed to the screen the user is on, linked to the session, and lands on
+     * the same timeline as the taps and navigations around it — which is the point: not "what
+     * broke" in isolation, but *where in the app* it broke and what the user was doing.
+     *
+     * `attributes` is optional context, same rules as [identify]'s traits: strings, numbers and
+     * booleans only, anything else is dropped with a warning rather than stringified.
+     *
+     * ```kotlin
+     * try { checkout() } catch (e: PaymentException) {
+     *     LightSession.getInstance().captureException(e, mapOf("gateway" to "stripe"))
+     *     showRetry()
+     * }
+     * ```
+     *
+     * Does nothing before [init], and nothing when `captureErrors` is off in the config.
+     */
+    fun captureException(throwable: Throwable, attributes: Map<String, Any?> = emptyMap()) {
+        if (!isInitialized) {
+            Log.w("LightSession", "captureException called before init; ignored")
+            return
+        }
+        if (!config.captureErrors) return
+        ErrorCapture.capture(throwable, handled = true, thread = Thread.currentThread(), attributes = attributes)
     }
 
     /**
@@ -236,6 +272,14 @@ class LightSession private constructor() {
         identity = Identity.from(application.applicationContext)
         sessionDataManager = SessionDataManager(application.applicationContext, config)
         sessionDataManager.init(identity)
+
+        // Immediately after the pipeline exists and before anything heavier initialises, so a
+        // crash *during* the rest of this method is already being captured. The first session
+        // is the one where nothing has been configured yet, which makes its crashes the ones
+        // most worth having.
+        if (config.captureErrors) {
+            ErrorCapture.install(sessionDataManager, application.packageName)
+        }
 
         // Without this the only flush that ever runs is the five-second ticker:
         // `onTerminate`, `onLowMemory` and `onDestroy` were all written and none of

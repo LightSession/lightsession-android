@@ -8,6 +8,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
@@ -132,6 +133,13 @@ class SessionDataManager(
      * shape to maintain in two places for no reader.
      */
     private val identifyBuffer = ConcurrentLinkedQueue<JsonElement>()
+
+    /**
+     * Error crumbs, already in wire form — the same bargain as [identifyBuffer], for the same
+     * reason: nothing here inspects them, `spoolCrumbs` merges them into the breadcrumb array
+     * untouched.
+     */
+    private val errorBuffer = ConcurrentLinkedQueue<JsonElement>()
 
     // Sequence tracking
     private val globalSequenceCounter = AtomicInteger(0)
@@ -549,6 +557,56 @@ class SessionDataManager(
     }
 
     /**
+     * Records that something went wrong — a crash, or an exception the app chose to report.
+     *
+     * Queued as a breadcrumb for the same three reasons `addIdentify` is: the spool, the retry
+     * and the ordering already exist, and an error is the other crumb that can least afford to
+     * be lost. The spool never evicts breadcrumbs, so once this returns with `fatal = true` the
+     * crash survives anything short of the disk itself failing.
+     *
+     * `fatal` decides *when* the disk write happens, not whether. A handled exception flushes on
+     * the IO scope like everything else. A fatal one is spooled **synchronously, on the calling
+     * thread** — which is the crashing thread — because that thread is the only one guaranteed to
+     * still run: every thread this SDK owns is a daemon, and the process dies when the crash
+     * handler returns. `deferFrames = true` for the same reason, in reverse: frames are hundreds
+     * of file creates that a dying thread cannot afford, and losing them is the trade this class
+     * already makes everywhere else. The upload happens at the next launch, when `init` drains
+     * the spool.
+     *
+     * Deliberately not gated on [Recording.enabled]: error capture is its own pillar, not part of
+     * replay. Stopping the recording stops the pictures, not the record that the app broke.
+     */
+    fun addError(
+        details: JsonObject,
+        screen: String?,
+        screenId: String?,
+        attributes: Map<String, Any?>,
+        fatal: Boolean,
+    ) {
+        val crumb = buildJsonObject {
+            put("type", JsonPrimitive("error"))
+            put("timestamp", JsonPrimitive(System.currentTimeMillis()))
+            put("sequence", JsonPrimitive(globalSequenceCounter.incrementAndGet()))
+            put("user_id", JsonPrimitive(userId))
+            put("user_type", JsonPrimitive(userType))
+            put("app_version", JsonPrimitive(appVersion))
+            // The names the ingest parser already reads off any crumb, so an error is attributed
+            // to its screen even by a server that has never heard of the type.
+            screen?.let { put("screen", JsonPrimitive(it)) }
+            screenId?.let { put("screen_id", JsonPrimitive(it)) }
+            details.forEach { (key, value) -> put(key, value) }
+            if (attributes.isNotEmpty()) put("attributes", encodeTraits(attributes))
+        }
+        errorBuffer.offer(crumb)
+
+        if (fatal) {
+            processBatch("crash", deferFrames = true)
+        } else {
+            requestFlush("error")
+        }
+    }
+
+    /**
      * Traits as JSON, keeping only what JSON can carry.
      *
      * Anything else is dropped with a warning rather than stringified. `toString()` on a
@@ -714,9 +772,10 @@ class SessionDataManager(
         val navigations = drain(navigationBuffer)
         val interactions = drain(interactionBuffer)
         val identifies = drain(identifyBuffer)
+        val errors = drain(errorBuffer)
 
         if (frames.isEmpty() && navigations.isEmpty() && interactions.isEmpty() &&
-            identifies.isEmpty()
+            identifies.isEmpty() && errors.isEmpty()
         ) {
             return@synchronized
         }
@@ -737,8 +796,10 @@ class SessionDataManager(
                 spoolFrames(batchId, batchNumber, reason, frames)
             }
         }
-        if (navigations.isNotEmpty() || interactions.isNotEmpty() || identifies.isNotEmpty()) {
-            spoolCrumbs(batchId, batchNumber, deviceInfo, navigations, interactions, identifies)
+        if (navigations.isNotEmpty() || interactions.isNotEmpty() || identifies.isNotEmpty() ||
+            errors.isNotEmpty()
+        ) {
+            spoolCrumbs(batchId, batchNumber, deviceInfo, navigations, interactions, identifies, errors)
         }
 
         // The spool's own totals are deliberately not in here. `pendingCount()` lists two
@@ -843,9 +904,11 @@ class SessionDataManager(
         navigations: List<NavigationEvent>,
         interactions: List<InteractionEvent>,
         identifies: List<JsonElement>,
+        errors: List<JsonElement> = emptyList(),
     ) {
         val breadcrumbs = mutableListOf<JsonElement>()
         breadcrumbs.addAll(identifies)
+        breadcrumbs.addAll(errors)
 
         navigations.forEach { nav ->
             breadcrumbs.add(buildJsonObject {

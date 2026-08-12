@@ -36,6 +36,11 @@
         <activity
             android:name="com.sample.lightsession.LoadingScreenActivity"
             android:exported="true" />
+        <!-- Ways an app breaks, one button each. Exported so an E2E run can drive a real crash
+             from adb without depending on a tap. -->
+        <activity
+            android:name="com.sample.lightsession.ErrorPlaygroundActivity"
+            android:exported="true" />
         <activity
             android:name="com.sample.lightsession.ComposeWithNavigationActivity"
             android:exported="false" />

@@ -293,6 +293,24 @@ data class LightSessionConfig @JvmOverloads constructor(
      * discarded — see `SessionDataManager`.
      */
     val maxBufferedBytes: Long = 8L * 1024 * 1024,
+
+    /**
+     * Whether errors are captured — crashes by installing an uncaught-exception handler,
+     * handled exceptions through [LightSession.captureException].
+     *
+     * On by default, for the reason crash reporters default on: the crashes most worth having
+     * are the ones from the first session after install, which is exactly when nobody has
+     * configured anything yet. The handler chains to whatever was installed before it and always
+     * forwards the original throwable, so Crashlytics, Sentry or the system dialog behave as if
+     * this SDK were not there.
+     *
+     * Off disables both halves: no handler is installed, and `captureException` becomes a no-op.
+     * Errors are not part of replay — [LightSession.stopRecording] stops the pictures, not this.
+     *
+     * Cost when nothing crashes: zero. The handler sits idle; a handled capture is one JSON
+     * build and a queue offer.
+     */
+    val captureErrors: Boolean = true,
 ) {
     enum class CaptureQuality {
         LOW, MEDIUM, HIGH
