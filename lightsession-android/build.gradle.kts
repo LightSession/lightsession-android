@@ -552,7 +552,27 @@ publishing {
             //
             // Patch, on the reasoning of 0.14.1: nothing new is reported and no signature changes.
             // A screen that was storing a wireframe of the wrong colour stores the right one.
-            version = "0.21.1"
+            // 0.22.0 halves the wire, once the server can inflate it.
+            //
+            // Measured off a real recording session: 2.29 MB of upstream in thirty-five seconds,
+            // 91% of it frame batches — and all of it deflates, including the JPEG: frames of a
+            // masked, flat UI shrink 37% because their entropy-coded stream repeats. Breadcrumbs
+            // shrink 87%, a skeleton 63%. The same session re-run with compression put 1.38 MB on
+            // the wire. The device pays 0.32 ms per 26 KB batch on the encoder thread, measured in
+            // `GzipCostProbeTest` with the captured payloads; gzip level 6 via Okio, no new
+            // dependency — brotli and zstd were measured and declined, both needing a native
+            // encoder per ABI for a win that is absent on the dominant payload.
+            //
+            // Nothing compresses until the server advertises `X-LS-Accept-Encoding: gzip`: the
+            // first send of every process is plain, reads the header, and latches. A gzipped body
+            // at a server that cannot inflate is a hard parse failure, not degradation, so the SDK
+            // never assumes — which removes every deploy-ordering constraint in both directions.
+            //
+            // Minor. A consumer starts compressing uploads with no code change on their side, and
+            // only against a server that asked for them. Requires `ls-ingest`/`ls-api` with the
+            // decompression layer to see any difference; without it, every byte ships as 0.21.1
+            // shipped it.
+            version = "0.22.0"
 
             afterEvaluate {
                 from(components["release"])
