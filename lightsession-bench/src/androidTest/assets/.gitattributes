@@ -1,0 +1,4 @@
+# Captured wire bodies. The .json ones are multipart HTTP bodies whose \r\n part
+# delimiters are load-bearing: newline normalisation corrupts the fixture and
+# quietly changes what the compression probe measures.
+* -text

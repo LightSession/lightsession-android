@@ -14,6 +14,8 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -60,4 +62,11 @@ dependencies {
     // tens of megabytes in this same process, which would land in the middle of the numbers being
     // collected. `LeakHunt` turns dumping on and off around that.
     implementation("com.squareup.leakcanary:leakcanary-android:2.14")
+
+    // The compression probe: real captured payloads as assets, timed on the device they would
+    // cost. The bench is where measurements live, so its tests are measurements too.
+    androidTestImplementation(libs.ext.junit)
+    // `ext:junit` does not pull the runner artifact, and the manifest's
+    // testInstrumentationRunner names a class from it.
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }
