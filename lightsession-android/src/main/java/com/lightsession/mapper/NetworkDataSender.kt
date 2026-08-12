@@ -23,6 +23,9 @@ class NetworkDataSender : DataSender {
             .connectTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            // A skeleton send deflates 63%; see [com.lightsession.Compression]. The latch it
+            // reads is process-wide, so the ingest advertising once covers this client too.
+            .addInterceptor(com.lightsession.Compression.WhenServerAccepts())
             .addInterceptor { chain ->
                 val original = chain.request()
                 val request = original.newBuilder()

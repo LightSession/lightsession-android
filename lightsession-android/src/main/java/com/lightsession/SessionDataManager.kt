@@ -112,6 +112,10 @@ class SessionDataManager(
             .connectTimeout(60, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)
             .writeTimeout(120, TimeUnit.SECONDS)
+            // Halves the session's upstream bytes once the server advertises it can
+            // decompress — measured at 37% off a frame batch, 87% off breadcrumbs.
+            // See [Compression] for the numbers and the negotiation.
+            .addInterceptor(Compression.WhenServerAccepts())
             .build()
     }
 
