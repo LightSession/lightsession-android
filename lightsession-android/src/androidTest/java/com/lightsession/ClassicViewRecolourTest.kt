@@ -180,27 +180,50 @@ class ClassicViewRecolourTest {
         }
     }
 
-    /** Blocks until the hierarchy has actually been drawn once. */
+    /**
+     * Blocks until the hierarchy has actually been drawn once.
+     *
+     * The listener is attached unconditionally, and that is the whole fix. This used to check
+     * `decor.width > 0 && decor.isShown` first and, when the window had not been laid out yet,
+     * count the latch down anyway — declaring "drawn" without a draw. Every assertion after it
+     * then read an undrawn window, which is not a failure a fast emulator can produce: locally
+     * the layout is always finished by the time this posted runnable runs, so the branch was
+     * dead code here and live on CI, where the same suite takes seven times as long.
+     *
+     * What that looked like: four red checks whose colours differed per run — `#D4E4FC` on one
+     * API level, `#040404` on another — because an undrawn window has no colour of its own, only
+     * whatever its buffer happens to hold.
+     *
+     * A window that never lays out now trips the timeout with a message that says so, instead of
+     * passing quietly. `invalidate` is posted after the listener rather than before, so a
+     * traversal that was already scheduled cannot land in the gap between the two.
+     */
     private fun awaitDraw(decor: View) {
         val drawn = CountDownLatch(1)
         decor.post {
-            if (decor.width > 0 && decor.isShown) {
-                decor.viewTreeObserver.addOnDrawListener(
-                    object : ViewTreeObserver.OnDrawListener {
-                        override fun onDraw() {
-                            // Removed from a post, not from inside the callback: the observer is
-                            // iterating its listener list here and mutating it throws.
-                            decor.post { decor.viewTreeObserver.removeOnDrawListener(this) }
-                            drawn.countDown()
-                        }
+            decor.viewTreeObserver.addOnDrawListener(
+                object : ViewTreeObserver.OnDrawListener {
+                    override fun onDraw() {
+                        // Removed from a post, not from inside the callback: the observer is
+                        // iterating its listener list here and mutating it throws.
+                        decor.post { decor.viewTreeObserver.removeOnDrawListener(this) }
+                        drawn.countDown()
                     }
-                )
-                decor.invalidate()
-            } else {
-                drawn.countDown()
-            }
+                }
+            )
+            decor.invalidate()
         }
-        assertTrue("the screen never drew", drawn.await(10, TimeUnit.SECONDS))
+        assertTrue(
+            "the screen never drew: laid out ${decor.width}x${decor.height}, shown=${decor.isShown}",
+            drawn.await(20, TimeUnit.SECONDS),
+        )
+        // A draw pass fired, but a zero-sized window can fire one and still hold nothing. Asserted
+        // separately so the two failures read differently — "never drew" and "drew nothing" have
+        // different causes and the message is the only thing a CI log carries.
+        assertTrue(
+            "the screen drew at ${decor.width}x${decor.height}, which samples nothing",
+            decor.width > 0 && decor.height > 0,
+        )
     }
 
     /**

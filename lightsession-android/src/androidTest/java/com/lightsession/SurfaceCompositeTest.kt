@@ -72,6 +72,42 @@ class SurfaceCompositeTest {
      * exposes — so in the app it comes from the Activity the screen mapper tracks, and here
      * it comes from the test rule.
      */
+    /**
+     * Blocks until the window has actually put a frame on screen.
+     *
+     * `compose.waitForIdle()` is not this. It waits for the composition and its recompositions
+     * to go quiet, which says the tree is settled — not that a traversal has run and produced
+     * pixels. Every assertion in this file reads pixels, so the gap between the two is the
+     * whole correctness of the fixture.
+     *
+     * It never showed locally: on a fast emulator the draw lands inside the same idle wait.
+     * On CI, where this suite takes seven times as long, the first test in the class captured
+     * a window that had settled but not drawn, and read a colour belonging to nobody — the
+     * three sampled corners all came back `#9E9E9E` against the green the screen was painted.
+     * That reads as "the capture lost the screen", which is a bug report against the SDK for
+     * something the fixture never did.
+     */
+    private fun awaitDraw() {
+        val decor = compose.activity.window.decorView
+        val drawn = CountDownLatch(1)
+        compose.runOnUiThread {
+            decor.viewTreeObserver.addOnDrawListener(
+                object : android.view.ViewTreeObserver.OnDrawListener {
+                    override fun onDraw() {
+                        // Posted, not removed inline: the observer is iterating its listeners.
+                        decor.post { decor.viewTreeObserver.removeOnDrawListener(this) }
+                        drawn.countDown()
+                    }
+                }
+            )
+            decor.invalidate()
+        }
+        assertTrue(
+            "the screen never drew: ${decor.width}x${decor.height}, shown=${decor.isShown}",
+            drawn.await(20, TimeUnit.SECONDS),
+        )
+    }
+
     private fun captureViaSurface(drawing: ScreenDrawing): Bitmap? {
         ScreenDrawing::class.java.getDeclaredField("surfaceCaptureRequired").apply {
             isAccessible = true
@@ -107,6 +143,7 @@ class SurfaceCompositeTest {
             }
         }
         compose.waitForIdle()
+        awaitDraw()
 
         val drawing = ScreenDrawing()
 
@@ -124,6 +161,7 @@ class SurfaceCompositeTest {
         // The dialog animates in; the copy has to happen after it has actually drawn.
         compose.mainClock.advanceTimeBy(500)
         compose.waitForIdle()
+        awaitDraw()
 
         val withDialog = captureViaSurface(drawing)
         assertNotNull("the capture should not be dropped because a dialog is open", withDialog)
@@ -145,6 +183,7 @@ class SurfaceCompositeTest {
     fun a_plain_screen_still_captures_whole() {
         compose.setContent { Box(Modifier.fillMaxSize().background(BEHIND)) }
         compose.waitForIdle()
+        awaitDraw()
 
         val drawing = ScreenDrawing()
         val frame = captureViaSurface(drawing)
