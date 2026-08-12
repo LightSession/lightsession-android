@@ -595,7 +595,30 @@ publishing {
             // Patch. Nothing new is reported and no signature changes. The only app whose behaviour
             // moves is one already calling `setScreen` without the flag, and what it loses is a node
             // that should never have been there. No server change.
-            version = "0.22.1"
+            // 0.23.0 knows when the app broke, and on which screen.
+            //
+            // The first pillar that is not replay: crashes and handled exceptions, as error
+            // breadcrumbs. An uncaught exception is serialised and spooled to disk synchronously
+            // on the crashing thread — measured live at 9ms between the system's FATAL log and
+            // the batch on disk — then the previous handler runs with the original throwable, so
+            // the crash dialog, logcat and any other reporter behave as if this SDK were absent.
+            // Delivery is the next launch's spool drain, which already existed. Handled errors
+            // arrive through LightSession.captureException and ride the ordinary flush.
+            //
+            // Every error carries the screen it happened on, which is the product: not "what
+            // broke" but where in the app it broke. When the mapper has not named the screen yet
+            // — a startup crash, inside the Compose grace period — the foreground Activity's name
+            // stands in, verified live on a crash 500ms into a fresh process.
+            //
+            // The wire format is a breadcrumb of type "error", because the spool, the retry and
+            // the ordering already exist there, and because the ingest preserves unknown crumb
+            // types verbatim: a backend that has never heard of errors stores them queryable, so
+            // this SDK ships first and the backend catches up with nothing lost.
+            //
+            // Minor. New public API (captureException), new config flag (captureErrors, on by
+            // default — the crashes most worth having are the ones before anyone configured
+            // anything). No signature changes, no server requirement.
+            version = "0.23.0"
 
             afterEvaluate {
                 from(components["release"])
