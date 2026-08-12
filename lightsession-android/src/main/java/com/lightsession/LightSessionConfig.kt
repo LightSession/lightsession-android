@@ -301,8 +301,8 @@ data class LightSessionConfig @JvmOverloads constructor(
      * On by default, for the reason crash reporters default on: the crashes most worth having
      * are the ones from the first session after install, which is exactly when nobody has
      * configured anything yet. The handler chains to whatever was installed before it and always
-     * forwards the original throwable, so Crashlytics, Sentry or the system dialog behave as if
-     * this SDK were not there.
+     * forwards the original throwable, so any other crash reporter the app carries — and the
+     * system's own crash dialog — behave as if this SDK were not there.
      *
      * Off disables both halves: no handler is installed, and `captureException` becomes a no-op.
      * Errors are not part of replay — [LightSession.stopRecording] stops the pictures, not this.
