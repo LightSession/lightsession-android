@@ -94,7 +94,14 @@ jobs:
             # `if`/`else`/`fi` fails on its own first line with "end of file unexpected", which
             # is what happened to every emulator job the first time this ran. A `\` continuation
             # breaks the same way. If something ever needs a conditional, put it where it can be
-            # expressed — a `${{ }}` expression, a prior step, or the build script.
+            # expressed — a workflow expression, a prior step, or the build script.
+            #
+            # And "workflow expression" is spelled out in words above for a reason: GitHub
+            # expands expressions across this whole block BEFORE any splitting — comments
+            # included — so writing the two-brace opener literally here is a parse error in the
+            # workflow *plan*. The run fails in zero seconds with no jobs and no log, which
+            # looked like an infrastructure problem and was this comment's previous wording.
+            # Every run of this workflow ever recorded failed that way.
             #
             # `default` is understood by the build script as "leave the declared BOM alone", so
             # the flag is passed unconditionally and there is nothing to branch on.
