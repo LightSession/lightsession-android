@@ -17,12 +17,15 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.lightsession.ScreenGeometry
 import com.lightsession.replay.ScreenDrawing
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -50,6 +53,22 @@ class SurfaceCompositeTest {
 
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    /**
+     * `ScreenDrawing` sizes its capture from [ScreenGeometry] and lays the mask rectangles out
+     * in the same space. Un-attached it falls back to `Resources.getSystem().displayMetrics`,
+     * which belongs to no window — and a capture sized from one space with masks placed in
+     * another is how this test came back `#9E9E9E` at all three sampled corners on CI: the
+     * SDK's own mask paint, stretched over the whole frame.
+     *
+     * The same line appears in `DialogMaskingTest`, `MaskLeakProofTest`, `MaskStalenessTest`
+     * and `ModalSkeletonTest`, and for the same reason. It is what `LightSession.init` does
+     * first in a real app.
+     */
+    @Before
+    fun attachGeometry() {
+        ScreenGeometry.attach(InstrumentationRegistry.getInstrumentation().targetContext)
+    }
 
     private companion object {
         const val TAG = "SurfaceComposite"

@@ -16,12 +16,15 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import com.lightsession.ScreenGeometry
 import com.lightsession.mapper.Recolour
 import com.lightsession.mapper.SkeletonFrame
 import com.lightsession.mapper.SkeletonGenerator
 import com.lightsession.mapper.SkeletonRect
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
@@ -60,6 +63,29 @@ import java.util.concurrent.TimeUnit
  */
 @RunWith(AndroidJUnit4::class)
 class ClassicViewRecolourTest {
+
+    /**
+     * The frame's coordinate space and the bitmap's have to be the same space.
+     *
+     * `SkeletonGenerator.canvasSize` takes the frame's dimensions from [ScreenGeometry], and
+     * `Recolour.apply` divides the bitmap's dimensions by them to map a rect onto pixels. Un-
+     * attached, `ScreenGeometry` falls back to `Resources.getSystem().displayMetrics` — a number
+     * that belongs to no window in particular — so the two spaces agree only by luck.
+     *
+     * The luck held on every machine this suite had ever run on, and ran out on CI: both a
+     * button painted `#B71C4A` and a view painting a red gradient came back the *same* colour,
+     * `#D4E4FC`, which is what a wrong scale does — every rect samples the same displaced
+     * region. `DialogMaskingTest`, `MaskLeakProofTest`, `MaskStalenessTest` and
+     * `ModalSkeletonTest` all attach in their own setup for this reason; this file read pixels
+     * without doing so.
+     *
+     * Attaching is also what the SDK itself does, first thing in `LightSession.init`. Without it
+     * the test exercised a fallback no real app ever reaches.
+     */
+    @Before
+    fun attachGeometry() {
+        ScreenGeometry.attach(InstrumentationRegistry.getInstrumentation().targetContext)
+    }
 
     private companion object {
         const val TAG = "ClassicRecolour"
@@ -238,6 +264,14 @@ class ClassicViewRecolourTest {
         val frame = requireNotNull(SkeletonGenerator().frameFrom(screen.decor, PAGE)) {
             "no frame from an attached decor view"
         }
+        // Stated rather than assumed. `Recolour` scales rects by bitmap ÷ frame, so a mismatch
+        // here does not fail — it silently samples the wrong pixels, and every assertion below
+        // then reports a colour belonging to somewhere else on the screen.
+        assertEquals(
+            "the frame and the bitmap are in different coordinate spaces",
+            "${screen.decor.width}x${screen.decor.height}",
+            "${frame.width}x${frame.height}",
+        )
         val bitmap = Bitmap.createBitmap(
             screen.decor.width, screen.decor.height, Bitmap.Config.ARGB_8888,
         )
