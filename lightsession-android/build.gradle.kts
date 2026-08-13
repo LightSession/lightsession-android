@@ -618,7 +618,32 @@ publishing {
             // Minor. New public API (captureException), new config flag (captureErrors, on by
             // default — the crashes most worth having are the ones before anyone configured
             // anything). No signature changes, no server requirement.
-            version = "0.23.0"
+            // 0.23.1 survives Compose 1.11, and stops running the host's code to do it.
+            //
+            // Two fixes, one lesson. Compose 1.11 renamed ComposerImpl to GapComposer and
+            // turned its `composers` field into an androidx.collection.MutableScatterSet,
+            // which is a set in every sense except implementing Iterable — so subcomposition
+            // discovery silently found nothing and a LazyColumn screen stored the frame
+            // around an empty page. Bracketed to ui-tooling-data 1.11.1 on the CI BOM axis,
+            // which exists for precisely this class of break.
+            //
+            // The first fix read the collection through any zero-argument method returning
+            // an Iterable, on the theory that validating the result made a wrong guess
+            // harmless. Validating a result does not undo the invocation: the field walk
+            // reaches the context's this$0 — a live GapComposer mid-composition — and one
+            // such call left a real app's ComposeView measured 0x0 permanently, every screen
+            // blank, no exception. Bisected on that app, one component per arm, each arm's
+            // marker verified in the artifact and in logcat; reverting one file cured it.
+            //
+            // The shipped shape: candidate fields must already declare a collection type
+            // (Iterable, or the ScatterSet family by name); the only invocation is asSet(),
+            // Compose's own side-effect-free view, on values that are ScatterSets. Reading
+            // a field is passive; invoking is not, and a walk over another library's
+            // internals only gets to do the first.
+            //
+            // Patch. No API change, no server requirement. Consumers on Compose <= 1.10 see
+            // identical behaviour; consumers on 1.11+ get their list screens back.
+            version = "0.23.1"
 
             afterEvaluate {
                 from(components["release"])
