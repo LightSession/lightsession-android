@@ -56,6 +56,9 @@ class CompositionContextShapeProbeTest {
 
         val CANDIDATES = listOf(
             "androidx.compose.runtime.ComposerImpl\$CompositionContextImpl",
+            // Compose 1.11 renamed the composer: `ComposerImpl` became `GapComposer`, and its
+            // `composers` field became a `MutableScatterSet` rather than a `Set`.
+            "androidx.compose.runtime.GapComposer\$CompositionContextImpl",
             "androidx.compose.runtime.CompositionContextImpl",
             "androidx.compose.runtime.Recomposer",
         )

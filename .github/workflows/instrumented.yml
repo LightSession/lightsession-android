@@ -63,7 +63,26 @@ jobs:
         # `default` is this module's declared BOM; the pinned one is a current release. When a
         # newer Compose ships, raise the pin rather than replacing `default` — the pair is the
         # test, and one version alone is what made this bug invisible.
-        compose-bom: [default, '2026.02.01']
+        #
+        # The pin is capped by this module's AGP, not by what is current. Compose 1.12.0
+        # (BOM 2026.08.00) declares `compileSdk 37` and `AGP 9.1.0` in its AAR metadata, so the
+        # test APK refuses to build against it — 28 metadata errors, before a line of ours runs.
+        # 2026.05.00 is the newest that builds here, and raising past it means raising AGP and
+        # compileSdk first.
+        #
+        # Raising it to 2026.05.00 immediately earned its keep: `ui-tooling-data` 1.11.1 renamed
+        # `ComposerImpl` to `GapComposer` and changed its `composers` field from a `Set` to an
+        # `androidx.collection.MutableScatterSet`, which is a set in every sense except
+        # implementing `Iterable` — so the subcomposition walk silently stopped finding any, and
+        # a `LazyColumn` screen went back to storing a wireframe of its frame. Fixed in
+        # `CompositionContexts.kt`; bracketed to 1.11.1, since 1.10.5 is fine.
+        #
+        # Two tests still fail on this pin, and not for a reason this SDK can fix:
+        # `SubcompositionScanProbeTest` and `LateContentTest` swap their root content through
+        # state, and on Compose 1.11 the hosting `ComposeView` then reports 0x0 permanently —
+        # `isShown` true, five seconds of waiting, still zero. The scan is right to refuse a
+        # view with no size; there is nothing to measure. They pass on every earlier Compose.
+        compose-bom: [default, '2026.05.00']
 
     steps:
       - uses: actions/checkout@v4

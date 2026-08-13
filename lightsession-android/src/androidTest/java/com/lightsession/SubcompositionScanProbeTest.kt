@@ -16,7 +16,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import android.view.View
+import android.view.ViewGroup
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.lightsession.mapper.SkeletonGenerator
@@ -65,6 +68,13 @@ class SubcompositionScanProbeTest {
     /** Rect count and kind census for whatever is currently composed. */
     private fun scan(label: String): Int {
         var count = 0
+        // Laid out, not merely idle. `waitForIdle` says the composition has gone quiet, which is
+        // not the same as the hosting `ComposeView` having been measured — and on Compose 1.11 it
+        // is not even close: after `case` changes, the view reports 0x0 with `isShown` true, so
+        // `scanViewHierarchy` correctly refuses to descend and every case after the first came
+        // back with the View-only wireframe. Five rects, no `TEXT` at all, on content holding
+        // twenty of them. Compose 1.10.5 measured inside the idle wait and hid this entirely.
+        awaitLayout()
         rule.runOnUiThread {
             val root = rule.activity.window.decorView.rootView
             val rects = SkeletonGenerator().frameFrom(root, backgroundColor = 0)?.rects.orEmpty()
@@ -75,6 +85,27 @@ class SubcompositionScanProbeTest {
         rule.waitForIdle()
         return count
     }
+
+    /** Blocks until the composition's host view actually has a size. */
+    private fun awaitLayout() {
+        val view = rule.activity.window.decorView
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline) {
+            var sized = false
+            rule.runOnUiThread { sized = composeViewIsSized(view) }
+            if (sized) return
+            rule.waitForIdle()
+            Thread.sleep(16)
+        }
+        error("the composition's host view never got a size")
+    }
+
+    private fun composeViewIsSized(view: View): Boolean =
+        if (view is ComposeView) {
+            view.width > 0 && view.height > 0
+        } else {
+            view is ViewGroup && (0 until view.childCount).any { composeViewIsSized(view.getChildAt(it)) }
+        }
 
     /** The shape that produced a usable wireframe in production: no subcomposition anywhere. */
     @Composable
