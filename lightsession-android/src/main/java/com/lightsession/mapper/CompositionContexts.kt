@@ -88,28 +88,38 @@ private val classesWithoutElementsView: MutableSet<Class<*>> =
  * screen became the frame around an empty page. Bracketed to `ui-tooling-data` 1.11.1: 1.10.5
  * walks 27 rects for twenty items, 1.11.1 walks 7.
  *
- * `asSet()` is named because it is the public, documented way to view a `ScatterSet` as one, and
- * the search falls through to *any* zero-argument method returning something iterable — the
- * result is validated by its contents either way, so a wrong guess cannot be mistaken for a
- * right one. Naming it is a hint, not a dependency: this file's whole argument is that a walk
- * over another library's internals must recognise shapes rather than names.
+ * Exactly two shapes are read, and the narrowness is the lesson of this function's first
+ * version, learned the expensive way. That version fell through to invoking *any*
+ * zero-argument method returning something iterable, on the theory that the result would be
+ * validated by its contents anyway. Validating the result does not undo the invocation: the
+ * field walk reaches values like the context's own `this$0` — a live `GapComposer`,
+ * mid-composition — and calling an arbitrary method on that is running arbitrary runtime code
+ * at the worst possible moment. On Compose 1.12 one such call left the host's `ComposeView`
+ * measured at 0×0 permanently: every screen of the app blank, no exception anywhere, bisected
+ * on a real app to precisely this fallback. Reading a field is passive; *invoking* is not, and
+ * a walk over another library's internals only gets to do the first.
+ *
+ * `asSet()` on a `ScatterSet` is the one invocation kept, because it is the documented,
+ * side-effect-free view Compose itself provides — and it is called only on values whose class
+ * name says that is what they are.
  */
 private fun elementsOf(value: Any?): Iterable<*>? {
     if (value == null) return null
     if (value is Iterable<*>) return value
 
     val cls = value.javaClass
+    if (!isScatterSet(cls)) return null
+
     elementsViewByClass[cls]?.let { view ->
         return runCatching { view.invoke(value) as? Iterable<*> }.getOrNull()
     }
     if (cls in classesWithoutElementsView) return null
 
     val view = runCatching {
-        cls.methods
-            .asSequence()
-            .filter { it.parameterCount == 0 && Iterable::class.java.isAssignableFrom(it.returnType) }
-            .sortedBy { if (it.name == "asSet") 0 else 1 }
-            .firstOrNull()
+        cls.methods.firstOrNull {
+            it.name == "asSet" && it.parameterCount == 0 &&
+                Iterable::class.java.isAssignableFrom(it.returnType)
+        }
     }.getOrNull()
 
     if (view == null) {
@@ -120,17 +130,40 @@ private fun elementsOf(value: Any?): Iterable<*>? {
     return runCatching { view.invoke(value) as? Iterable<*> }.getOrNull()
 }
 
+/**
+ * Whether this is `androidx.collection`'s ScatterSet family, by name up the hierarchy.
+ *
+ * By name rather than by `Class.forName`: the SDK does not depend on androidx.collection
+ * directly, and resolving the class through this module's classloader would tie the check to
+ * classloader topology when all it needs is to recognise what it is looking at.
+ */
+private fun isScatterSet(cls: Class<*>): Boolean {
+    var current: Class<*>? = cls
+    while (current != null) {
+        if (current.name == "androidx.collection.ScatterSet" ||
+            current.name == "androidx.collection.MutableScatterSet"
+        ) {
+            return true
+        }
+        current = current.superclass
+    }
+    return false
+}
+
 private fun CompositionContext.composersField(): Field? {
     val cls = javaClass
     composersFieldByClass[cls]?.let { return it }
     if (cls in classesWithoutComposers) return null
 
-    // The field is identified by what it *holds*, not by its declared type: the type is generic,
-    // and since 1.11 it is not even a collection interface.
+    // The field is identified by what it *holds* — the declared type is generic — but only
+    // fields whose declared type already looks like a collection are read at all. The first
+    // version read every field and probed every value, which put a live `GapComposer` (the
+    // context's `this$0`) through the probe; see [elementsOf] for what that cost.
     var sawEmptyCandidate = false
     val field = runCatching {
         cls.declaredFields
             .asSequence()
+            .filter { Iterable::class.java.isAssignableFrom(it.type) || isScatterSet(it.type) }
             .onEach { it.isAccessible = true }
             .firstOrNull { candidate ->
                 val elements = elementsOf(runCatching { candidate.get(this) }.getOrNull())
