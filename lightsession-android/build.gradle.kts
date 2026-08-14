@@ -673,7 +673,32 @@ publishing {
             // Minor, on 0.18's reasoning: a consumer starts reporting screens it never did, with
             // no code change on their side, and its map gains nodes and edges. No signature
             // changes, no server requirement.
-            version = "0.24.0"
+            // 0.25.0 is what the first real app taught. Two lessons, one release.
+            //
+            // 0.24.0's discovery looked once, when the grace period ended — which quietly assumed
+            // the NavHost exists by then. The first app integrated that this SDK did not write
+            // keeps its NavHost behind a StateFlow<Destination?> filled by an auth check, the
+            // stock async-start shape; resolve slower than the grace period and the one-shot scans
+            // a composition that honestly holds no controller, names the Activity, and never looks
+            // again — which install gets the wrong map is decided by its network. NavControllerWatch
+            // closes that: what mounts a NavHost is a state write, every state write commits as a
+            // snapshot apply (LateContent's argument, now applied to discovery), so the watch
+            // rescans when the composition announces it may have changed — debounced to under two
+            // bounded read-only walks a second, armed only while a Compose Activity is in front.
+            // Verified against a 5s async start: fallback at 3s, controller tracked at 5.7s,
+            // alpha/beta/gamma named from there.
+            //
+            // The same app broke a naming assumption: type-safe navigation generates routes from
+            // the @Serializable destination's serial name, so five screens arrived as
+            // com.thisames...destination.dispatchdetail/{dispatchid} — a package path nobody
+            // declared, lower-cased into unreadability by a rule that assumed routes are written
+            // by hand. A route whose head holds a dot is now named by the segment after the last
+            // one, case kept: DispatchDetail/{dispatchId}, the name the author actually wrote.
+            //
+            // Minor, and it renames screens for type-safe apps: the server keys on the name, so
+            // FQN-named rows stop receiving data and can be deleted — cleanup, not migration.
+            // No signature changes, no server requirement.
+            version = "0.25.0"
 
             afterEvaluate {
                 from(components["release"])
