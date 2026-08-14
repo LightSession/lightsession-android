@@ -643,7 +643,37 @@ publishing {
             //
             // Patch. No API change, no server requirement. Consumers on Compose <= 1.10 see
             // identical behaviour; consumers on 1.11+ get their list screens back.
-            version = "0.23.1"
+            // 0.24.0 names Compose destinations without being handed the controller.
+            //
+            // An app with five destinations had one node in its map called MainActivity, with real
+            // wireframes under it — populated, plausible and wrong. The cause was a missing
+            // `.withNavigationTracking()`, and the SDK's only defence was a line of advice in
+            // logcat. This is the third answer to that shape and the first that does not depend on
+            // the app remembering anything: it reported nothing at all before 0.18, then the
+            // Activity's own name, which is right when the Activity is one screen and quietly
+            // wrong when it is five.
+            //
+            // What justified leaving it to the host was that Compose keeps no global registry of
+            // NavControllers. True, and not the same as unreachable: `rememberNavController()` is
+            // remembered, so it sits in the slot table this SDK already walks for subcompositions.
+            // `NavControllerReachProbeTest` measures both routes against a NavHost set up the way a
+            // forgetful app sets one up — `NavHostController` is there with its route readable,
+            // while `Navigation.findNavController` on the decor view returns null, since the
+            // view-tree tag is a fragment-host convention NavHost does not follow.
+            //
+            // When the grace period ends with nothing registered, the composition is asked before
+            // falling back to the Activity's name, and what it holds goes through the ordinary
+            // `registerComposeNavController` — nested-NavHost shell handling included.
+            // `withNavigationTracking()` is still worth calling, and the log now says why: it
+            // registers at composition time, so the first three seconds get named too.
+            //
+            // Reads only. Nothing invokes a method on a live runtime object; 0.23.1 is what that
+            // costs when it goes wrong, and a test asserts the window still has a size afterwards.
+            //
+            // Minor, on 0.18's reasoning: a consumer starts reporting screens it never did, with
+            // no code change on their side, and its map gains nodes and edges. No signature
+            // changes, no server requirement.
+            version = "0.24.0"
 
             afterEvaluate {
                 from(components["release"])
