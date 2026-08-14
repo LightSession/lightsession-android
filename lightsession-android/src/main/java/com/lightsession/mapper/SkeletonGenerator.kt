@@ -16,7 +16,6 @@ import android.util.SparseArray
 import android.util.TypedValue
 import android.view.View
 import android.view.ViewGroup
-import android.view.ViewTreeObserver
 import android.webkit.WebView
 import android.widget.ImageView
 import android.widget.TextView
@@ -222,7 +221,7 @@ class SkeletonGenerator {
     private fun contentCount(rootView: View): Int {
         if (containsComposeView(rootView)) return composeNodeCount(rootView)
 
-        val content = rootView.findViewById<View>(android.R.id.content) ?: rootView
+        val content = rootView.findViewById(android.R.id.content) ?: rootView
         return runCatching { contentLeaves(scanViewHierarchy(content)) }.getOrDefault(0)
     }
 
@@ -647,7 +646,7 @@ class SkeletonGenerator {
         }
     }
 
-    @SuppressLint("PrivateApi")
+    @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
     private fun View.getKeyedTags(): SparseArray<*>? {
         return try {
             val field = View::class.java.getDeclaredField("mKeyedTags")

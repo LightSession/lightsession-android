@@ -97,7 +97,7 @@ internal object ScreenTransition {
         if (started == 0L) return false
 
         val age = now - started
-        if (age < 0L || age >= MAX_MS) {
+        if (age !in 0L..<MAX_MS) {
             startedAt.compareAndSet(started, 0L)
             return false
         }
