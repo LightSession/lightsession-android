@@ -1,4 +1,5 @@
 package com.lightsession.mapper
+import com.lightsession.LightSession
 
 /**
  * A part of a screen the NavController does not know about.

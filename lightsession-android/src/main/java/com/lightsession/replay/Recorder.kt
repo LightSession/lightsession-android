@@ -7,7 +7,7 @@ import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewTreeObserver
-import com.lightsession.Recording
+import com.lightsession.session.Recording
 import com.lightsession.mapper.CompositionActivity
 import com.lightsession.mapper.ScreenTransition
 import curtains.Curtains
@@ -24,6 +24,8 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import com.lightsession.LightSession
+import com.lightsession.session.SessionDataManager
 
 /**
  * Periodic screen capture.

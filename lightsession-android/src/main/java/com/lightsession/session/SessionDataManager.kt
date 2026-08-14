@@ -1,4 +1,4 @@
-package com.lightsession
+package com.lightsession.session
 
 import android.content.Context
 import android.os.Build
@@ -26,6 +26,14 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
+import com.lightsession.LightSessionConfig
+import com.lightsession.ScreenGeometry
+import com.lightsession.Tracing
+import com.lightsession.transport.BatchSpool
+import com.lightsession.transport.Compression
+import com.lightsession.transport.FlushTriggers
+import com.lightsession.transport.PLATFORM
+import com.lightsession.traced
 
 /**
  * Manages all session data including video frames, navigation events, and user interactions.

@@ -29,6 +29,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.atomic.AtomicReference
+import com.lightsession.masking.MaskScanner
 
 /**
  * What the masker sees while one screen is replacing another.

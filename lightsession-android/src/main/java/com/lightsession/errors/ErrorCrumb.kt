@@ -5,6 +5,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import com.lightsession.LightSession
+import com.lightsession.session.Identity
+import com.lightsession.session.SessionDataManager
 
 /**
  * A `Throwable`, flattened into the JSON an error breadcrumb carries.

@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.lightsession.session.Identity
 
 /**
  * The whole decision space for where an Activity's screen names come from.

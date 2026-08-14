@@ -4,12 +4,14 @@ import android.app.Activity
 import android.util.Log
 import android.view.*
 import android.view.accessibility.AccessibilityEvent
-import com.lightsession.Recording
+import com.lightsession.session.Recording
 import com.lightsession.mapper.ScreenMapperIntegration
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.pow
 import kotlin.math.sqrt
+import com.lightsession.LightSession
+import com.lightsession.session.SessionDataManager
 
 /**
  * Every touch, as coordinates. The only thing in the SDK that produces interaction data.

@@ -1,4 +1,4 @@
-package com.lightsession
+package com.lightsession.masking
 
 import android.graphics.Rect
 import android.text.Layout

@@ -2,6 +2,7 @@ package com.lightsession.mapper
 
 import org.json.JSONArray
 import org.json.JSONObject
+import com.lightsession.LightSessionConfig
 
 /**
  * A screen described as geometry, for the server to draw.

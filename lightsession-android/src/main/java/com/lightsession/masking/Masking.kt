@@ -1,9 +1,10 @@
-package com.lightsession
+package com.lightsession.masking
 
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
+import com.lightsession.LightSessionConfig
 
 /**
  * What gets covered before a captured screen leaves the device.

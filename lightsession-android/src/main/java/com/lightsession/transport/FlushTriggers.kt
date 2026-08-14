@@ -1,4 +1,4 @@
-package com.lightsession
+package com.lightsession.transport
 
 import android.app.Application
 import android.content.ComponentCallbacks2
@@ -7,6 +7,8 @@ import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.lightsession.LightSession
+import com.lightsession.session.SessionDataManager
 
 /**
  * Flushes the session on the events that actually end a session.

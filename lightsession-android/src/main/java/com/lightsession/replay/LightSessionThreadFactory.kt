@@ -1,6 +1,7 @@
 package com.lightsession.replay
 
 import java.util.concurrent.ThreadFactory
+import com.lightsession.LightSession
 
 /**
  * Names the SDK's threads, and makes them daemons.

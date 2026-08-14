@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import com.lightsession.transport.BatchSpool
 
 /**
  * The spool's whole reason to exist is that data survives a failed upload and a

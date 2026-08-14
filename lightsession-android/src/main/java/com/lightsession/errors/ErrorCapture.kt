@@ -1,9 +1,10 @@
 package com.lightsession.errors
 
 import android.util.Log
-import com.lightsession.SessionDataManager
+import com.lightsession.session.SessionDataManager
 import com.lightsession.mapper.ScreenMapperIntegration
 import java.util.concurrent.atomic.AtomicBoolean
+import com.lightsession.LightSession
 
 /**
  * Captures errors — the uncaught kind by installing itself, the handled kind through

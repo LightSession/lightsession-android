@@ -10,6 +10,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.lightsession.session.SessionDataManager
 
 /**
  * The serializer that runs while the process is dying.
@@ -119,7 +120,7 @@ class ErrorCrumbTest {
         t.stackTrace = arrayOf(
             StackTraceElement("com.app.Checkout", "pay", "Checkout.kt", 10),
             StackTraceElement("com.appother.Impostor", "lurk", "Impostor.kt", 20),
-            StackTraceElement("com.lightsession.SessionDataManager", "addError", "S.kt", 30),
+            StackTraceElement("com.lightsession.session.SessionDataManager", "addError", "S.kt", 30),
             StackTraceElement("com.app", "topLevel", "App.kt", 40),
         )
 

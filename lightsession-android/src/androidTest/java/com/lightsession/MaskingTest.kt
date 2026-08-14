@@ -17,6 +17,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import com.lightsession.masking.MaskScanner
+import com.lightsession.masking.Masking
 
 /**
  * That masking actually covers what it claims to, and covers the right pixels.

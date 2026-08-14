@@ -1,8 +1,10 @@
-package com.lightsession
+package com.lightsession.transport
 
 import android.util.Log
 import java.io.File
 import java.io.IOException
+import com.lightsession.LightSession
+import com.lightsession.session.Identity
 
 /**
  * Batches waiting to be uploaded, on disk.

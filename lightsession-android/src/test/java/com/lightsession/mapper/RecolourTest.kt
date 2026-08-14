@@ -1,6 +1,6 @@
 package com.lightsession.mapper
 
-import com.lightsession.Masking
+import com.lightsession.masking.Masking
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals

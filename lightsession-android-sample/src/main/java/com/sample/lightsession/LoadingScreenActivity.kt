@@ -39,6 +39,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.lightsession.mapper.withNavigationTracking
 import kotlinx.coroutines.delay
+import com.lightsession.masking.Masking
 
 /**
  * A screen that shows a spinner and then becomes itself, which is the case every dashboard is.

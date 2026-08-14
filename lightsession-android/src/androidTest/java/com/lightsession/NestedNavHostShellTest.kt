@@ -21,6 +21,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import com.lightsession.session.Recording
 
 /**
  * A destination whose whole content is another NavHost must not become a screen.

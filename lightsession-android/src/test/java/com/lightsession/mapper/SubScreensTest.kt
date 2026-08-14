@@ -3,6 +3,7 @@ package com.lightsession.mapper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import com.lightsession.session.Identity
 
 /**
  * The rules that decide what a tab or a dialog is *called*, and whether it is reported.

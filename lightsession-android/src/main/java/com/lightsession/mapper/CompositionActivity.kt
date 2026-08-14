@@ -2,6 +2,7 @@ package com.lightsession.mapper
 
 import androidx.compose.runtime.snapshots.Snapshot
 import java.util.concurrent.atomic.AtomicLong
+import com.lightsession.masking.Masking
 
 /**
  * When the composition last changed, for anything that needs to know the screen is still moving.

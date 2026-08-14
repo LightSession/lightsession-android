@@ -7,12 +7,14 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsNode
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
+import com.lightsession.LightSession
+import com.lightsession.masking.MaskScanner
 
 /**
  * Reads the selected tab, and identifies a modal, out of Compose's semantics tree.
  *
  * Semantics is the right place to ask both questions, for the same reason masking uses it
- * (see [com.lightsession.MaskScanner]): it is what Compose publishes for accessibility, so
+ * (see [com.lightsession.masking.MaskScanner]): it is what Compose publishes for accessibility, so
  * R8 cannot strip it, whereas composable *names* come from source information that release
  * builds erase. `Tab` applies `Modifier.selectable(selected, role = Role.Tab)` and `Dialog`
  * applies `Modifier.semantics { dialog() }`, both of which survive minification.

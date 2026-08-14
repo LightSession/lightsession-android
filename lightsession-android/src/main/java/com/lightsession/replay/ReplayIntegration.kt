@@ -4,7 +4,7 @@ import android.content.Context
 import android.util.Log
 import java.util.concurrent.atomic.AtomicInteger
 import com.lightsession.LightSessionConfig
-import com.lightsession.SessionDataManager
+import com.lightsession.session.SessionDataManager
 import com.lightsession.mapper.ScreenMapperIntegration
 
 /**

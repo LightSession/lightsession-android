@@ -1,4 +1,7 @@
-package com.lightsession.mapper
+package com.lightsession.transport
+import com.lightsession.LightSessionConfig
+import com.lightsession.mapper.ScreenMapperIntegration
+import com.lightsession.mapper.SkeletonFrame
 
 interface DataSender {
     fun setBaseUrl(url: String)

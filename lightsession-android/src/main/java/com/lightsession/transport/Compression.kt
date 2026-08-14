@@ -1,4 +1,4 @@
-package com.lightsession
+package com.lightsession.transport
 
 import okhttp3.Interceptor
 import okhttp3.Request

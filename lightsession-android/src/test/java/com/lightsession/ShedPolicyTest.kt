@@ -5,6 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicLong
+import com.lightsession.session.SessionDataManager
 
 /**
  * What the SDK gives up when the in-memory buffer hits its ceiling.

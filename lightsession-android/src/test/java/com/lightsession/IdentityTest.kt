@@ -8,6 +8,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import com.lightsession.session.Identity
 
 /**
  * The rules that decide whose session this is.

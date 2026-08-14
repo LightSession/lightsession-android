@@ -1,4 +1,7 @@
-package com.lightsession
+package com.lightsession.session
+import com.lightsession.LightSession
+import com.lightsession.LightSessionConfig
+import com.lightsession.masking.Masking
 
 /**
  * Whether the SDK is recording right now.

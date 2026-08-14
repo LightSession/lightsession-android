@@ -21,9 +21,10 @@ import com.lightsession.Tracing
 import com.lightsession.traced
 import curtains.phoneWindow
 import java.io.ByteArrayOutputStream
-import com.lightsession.Masking
+import com.lightsession.masking.Masking
 import com.lightsession.ScreenGeometry
-import com.lightsession.MaskScanner
+import com.lightsession.masking.MaskScanner
+import com.lightsession.transport.Compression
 
 /**
  * Utility class for optimized screen capture and object pool management.

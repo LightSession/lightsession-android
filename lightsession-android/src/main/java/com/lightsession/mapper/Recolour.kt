@@ -1,6 +1,6 @@
 package com.lightsession.mapper
 
-import com.lightsession.Masking
+import com.lightsession.masking.Masking
 
 /**
  * Replaces a wireframe's palette colours with the ones actually on screen.

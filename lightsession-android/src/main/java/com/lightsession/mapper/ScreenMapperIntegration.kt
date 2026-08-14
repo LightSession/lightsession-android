@@ -25,7 +25,7 @@ import androidx.navigation.NavDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.fragment.NavHostFragment
 import com.lightsession.LightSessionConfig
-import com.lightsession.Recording
+import com.lightsession.session.Recording
 import com.lightsession.ScreenGeometry
 import com.lightsession.interaction.InteractionAwareCallback
 import com.lightsession.replay.ScreenDrawing
@@ -41,7 +41,9 @@ import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
 import android.view.Window
-import com.lightsession.SessionDataManager
+import com.lightsession.session.SessionDataManager
+import com.lightsession.masking.Masking
+import com.lightsession.transport.DataSender
 
 /**
  * The screen map: what the app's screens are, how people move between them, and what each looks

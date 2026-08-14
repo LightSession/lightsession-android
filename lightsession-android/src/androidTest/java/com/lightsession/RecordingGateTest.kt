@@ -9,6 +9,9 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import com.lightsession.session.Identity
+import com.lightsession.session.Recording
+import com.lightsession.session.SessionDataManager
 
 /**
  * That stopping recording actually stops data reaching the pipeline.

@@ -1,10 +1,11 @@
-package com.lightsession
+package com.lightsession.session
 
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
 import android.util.Log
 import java.util.UUID
+import com.lightsession.LightSession
 
 /**
  * Who the session belongs to.

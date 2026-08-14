@@ -44,6 +44,8 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import com.lightsession.masking.MaskScanner
+import com.lightsession.masking.Masking
 
 /**
  * Where a dialog's pixels end up, and where its mask ends up, held against each other.

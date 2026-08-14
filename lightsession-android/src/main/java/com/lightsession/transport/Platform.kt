@@ -1,4 +1,4 @@
-package com.lightsession
+package com.lightsession.transport
 
 /**
  * The platform this SDK runs on, as the server names it.

@@ -5,10 +5,15 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import com.lightsession.errors.ErrorCapture
-import com.lightsession.mapper.NetworkDataSender
+import com.lightsession.transport.NetworkDataSender
 import com.lightsession.mapper.ScreenMapperIntegration
 import com.lightsession.replay.ReplayIntegration
 import java.util.*
+import com.lightsession.masking.Masking
+import com.lightsession.session.Identity
+import com.lightsession.session.Recording
+import com.lightsession.session.SessionDataManager
+import com.lightsession.transport.FlushTriggers
 
 class LightSession private constructor() {
     companion object {

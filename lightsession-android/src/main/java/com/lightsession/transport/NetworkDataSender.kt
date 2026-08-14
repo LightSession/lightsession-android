@@ -1,7 +1,7 @@
-package com.lightsession.mapper
+package com.lightsession.transport
 
 import android.util.Log
-import com.lightsession.PLATFORM
+import com.lightsession.transport.PLATFORM
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -10,6 +10,10 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
+import com.lightsession.LightSession
+import com.lightsession.LightSessionConfig
+import com.lightsession.mapper.ScreenMapperIntegration
+import com.lightsession.mapper.SkeletonFrame
 
 class NetworkDataSender : DataSender {
 
@@ -23,9 +27,9 @@ class NetworkDataSender : DataSender {
             .connectTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
-            // A skeleton send deflates 63%; see [com.lightsession.Compression]. The latch it
+            // A skeleton send deflates 63%; see [com.lightsession.transport.Compression]. The latch it
             // reads is process-wide, so the ingest advertising once covers this client too.
-            .addInterceptor(com.lightsession.Compression.WhenServerAccepts())
+            .addInterceptor(com.lightsession.transport.Compression.WhenServerAccepts())
             .addInterceptor { chain ->
                 val original = chain.request()
                 val request = original.newBuilder()
