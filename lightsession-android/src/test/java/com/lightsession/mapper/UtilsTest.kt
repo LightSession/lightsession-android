@@ -87,6 +87,49 @@ class UtilsTest {
     }
 
     @Test
+    fun `a type-safe route is named by its class, not its package`() {
+        // Type-safe navigation generates the pattern from the @Serializable destination's
+        // serial name — the fully qualified class name. The map read
+        // `com.thisames.monestapp.ui.navigation.destination.dispatchdetail/{dispatchid}` until
+        // this rule: a package path nobody declared, lower-cased into unreadability. What the
+        // author wrote is the class name and the argument names, so both keep their case.
+        assertEquals(
+            "DispatchDetail/{dispatchId}",
+            utils.extractScreenNameFromRoute(
+                "com.thisames.monestapp.ui.navigation.Destination.DispatchDetail/{dispatchId}",
+            ),
+        )
+        assertEquals(
+            "Login",
+            utils.extractScreenNameFromRoute("com.thisames.monestapp.ui.navigation.Destination.Login"),
+        )
+        // Optional arguments arrive as query placeholders and are per-visit like any others.
+        assertEquals(
+            "Search",
+            utils.extractScreenNameFromRoute("com.app.nav.Search?query={query}"),
+        )
+        // Multiple path arguments survive with the head gone and nothing else touched.
+        assertEquals(
+            "Report/{year}/{month}",
+            utils.extractScreenNameFromRoute("com.app.nav.Report/{year}/{month}"),
+        )
+    }
+
+    @Test
+    fun `a dot only selects the class rule when it is in the route head`() {
+        // A dot inside an argument or a later segment says nothing about how the route was
+        // declared. Only the head — what precedes the first `/` — is a class name's place.
+        assertEquals(
+            "files/{path.ext}",
+            utils.extractScreenNameFromRoute("files/{path.ext}"),
+        )
+        // The accepted trade, pinned so it is a decision and not an accident: a hand-written
+        // dotted route loses its prefix and keeps its case, because treating dots-in-head as
+        // anything but a class name gives every type-safe app package paths for screen names.
+        assertEquals("profile", utils.extractScreenNameFromRoute("settings.profile"))
+    }
+
+    @Test
     fun `two routes differing only in case are one screen`() {
         // The point of the rule. Before, these were two rows on the server.
         assertEquals(

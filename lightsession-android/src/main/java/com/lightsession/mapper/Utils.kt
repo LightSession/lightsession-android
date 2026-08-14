@@ -89,11 +89,13 @@ class Utils {
     /**
      * A screen name from a navigation route.
      *
-     * Arguments go — they identify a visit, not a screen, so keeping them would file one
-     * screen under a new name for every set of values it was opened with. What is left is
-     * lower-cased, and that is the part that changed.
+     * Query arguments go — they identify a visit, not a screen, so keeping them would file one
+     * screen under a new name for every set of values it was opened with. What remains is named
+     * by one principle: **the name in the map matches the name in the source**, because the map
+     * is read by the person who wrote the source. The principle has produced two rules, because
+     * routes are written two ways.
      *
-     * ## Why the casing was wrong
+     * ## Hand-written routes: lower case
      *
      * It used to capitalise each segment, but only when the route contained a `/`:
      *
@@ -105,17 +107,34 @@ class Utils {
      * So a single-segment route kept whatever the app wrote and a multi-segment one was
      * retitled, and the same map ended up holding `login`, `doctors` and `splash` beside
      * `Home/Manager` and `Doctor/Detail/{id}`. It also capitalised inside route parameters,
-     * turning `{userId}` into `{UserId}` — a name the app never declares.
+     * turning `{userId}` into `{UserId}` — a name the app never declares. String routes are
+     * declared in lower case by convention, so lower case is what matches the source.
      *
-     * One rule now, applied to every route: lower case. Lower rather than capitalised
-     * because it is what the app itself writes — routes are declared in lower case by
-     * convention — so the name in the map matches the name in the source.
+     * ## Type-safe routes: the class's own name
      *
-     * This renames screens. A screen already reported as `Home/Manager` will be reported as
-     * `home/manager` and the server, which keys on the name, will treat it as a new one and
-     * keep both. That is a one-off cleanup, not a migration: the old rows stop receiving
-     * data and can be deleted.
+     * The lower-case rule assumed the app wrote the route, and type-safe navigation broke the
+     * assumption in the first real app integrated: there the pattern is generated from the
+     * `@Serializable` destination's serial name, which is the fully qualified class name. Five
+     * destinations arrived as
+     * `com.thisames.monestapp.ui.navigation.destination.dispatchdetail/{dispatchid}` — a
+     * package path nobody declared, with the lower-casing destroying the one thing that
+     * separated the words. What the app's author actually wrote is `DispatchDetail(val
+     * dispatchId: Int)`, so that is the name: the segment after the last dot, case kept, and
+     * the argument placeholders' case kept with it.
+     *
+     * A dot in the route head is what selects the rule. Dots cannot appear in a class name's
+     * place by accident, and a hand-written route with dots (`"settings.profile"`) loses its
+     * prefix here — accepted, because the app that writes one is rarer than the app the other
+     * reading breaks: every type-safe app gets package paths as screen names.
+     *
+     * Both rules rename screens on upgrade for the apps they touch. The server keys on the
+     * name, so the old rows simply stop receiving data and can be deleted — a one-off cleanup,
+     * not a migration.
      */
-    fun extractScreenNameFromRoute(route: String): String =
-        route.substringBefore('?').lowercase()
+    fun extractScreenNameFromRoute(route: String): String {
+        val pattern = route.substringBefore('?')
+        val head = pattern.substringBefore('/')
+        if ('.' !in head) return pattern.lowercase()
+        return head.substringAfterLast('.') + pattern.removePrefix(head)
+    }
 }
