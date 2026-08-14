@@ -1,7 +1,12 @@
 # Everything that can be checked without a device.
 #
 # Fast enough to run on every push, so it is the gate that has to stay green. The instrumented
-# suite lives in `instrumented.yml` because it needs an emulator and several minutes.
+# suite runs on a local emulator before a release rather than here: it spent its CI life
+# reporting-not-gating because three of its tests fail only on this runner's emulator — a
+# ColorBuffer problem in pixel readback that no real device or local emulator reproduces — and
+# a check that cannot gate is a bill without a benefit. `assembleDebugAndroidTest` below keeps
+# the suite compiling on every push, so what a release run needs is a green emulator, not a
+# rescue of code that quietly rotted.
 name: build
 
 on:
