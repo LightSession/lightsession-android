@@ -3,7 +3,7 @@ import com.lightsession.LightSessionConfig
 import com.lightsession.mapper.ScreenMapperIntegration
 import com.lightsession.mapper.SkeletonFrame
 
-interface DataSender {
+internal interface DataSender {
     fun setBaseUrl(url: String)
     fun setApiKey(apiKey: String)
     fun getApiKey(): String

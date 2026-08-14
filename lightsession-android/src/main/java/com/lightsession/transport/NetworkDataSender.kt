@@ -15,7 +15,7 @@ import com.lightsession.LightSessionConfig
 import com.lightsession.mapper.ScreenMapperIntegration
 import com.lightsession.mapper.SkeletonFrame
 
-class NetworkDataSender : DataSender {
+internal class NetworkDataSender : DataSender {
 
     // Set by LightSession.init from LightSessionConfig.apiUrl. No default:
     // a hardcoded address is what made the published artifact unusable.

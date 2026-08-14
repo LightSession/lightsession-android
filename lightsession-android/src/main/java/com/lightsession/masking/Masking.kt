@@ -41,7 +41,7 @@ import com.lightsession.LightSessionConfig
  * constructor: a new capture path inherits it instead of having to remember it. The
  * defaults are the masking ones, so a policy nobody configured still covers text.
  */
-object Masking {
+public object Masking {
 
     /**
      * Cover text and input fields. On by default.
@@ -51,7 +51,7 @@ object Masking {
      * omission, which is the wrong direction for a default to fail in.
      */
     @Volatile
-    var text: Boolean = true
+    public var text: Boolean = true
         internal set
 
     /**
@@ -63,7 +63,7 @@ object Masking {
      * documents, receipts or user uploads.
      */
     @Volatile
-    var images: Boolean = false
+    public var images: Boolean = false
         internal set
 
     /**
@@ -76,7 +76,7 @@ object Masking {
      * Never for production — it defeats the masking it is verifying.
      */
     @Volatile
-    var debugHighlight: Boolean = false
+    public var debugHighlight: Boolean = false
         internal set
 
     internal fun configure(config: LightSessionConfig) {

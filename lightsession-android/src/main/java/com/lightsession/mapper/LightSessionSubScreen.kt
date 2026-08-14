@@ -27,7 +27,7 @@ import com.lightsession.LightSession
  * SDK sees them by itself.
  */
 @Composable
-fun LightSessionSubScreen(name: String) {
+public fun LightSessionSubScreen(name: String) {
     DisposableEffect(name) {
         LightSession.getInstance().setSubScreen(name)
         onDispose {

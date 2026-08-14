@@ -5,7 +5,7 @@ import androidx.navigation.NavDestination
 import androidx.navigation.fragment.DialogFragmentNavigator
 import androidx.navigation.fragment.FragmentNavigator
 
-class Utils {
+internal class Utils {
 
     /**
      * A name for a destination in a fragment graph, from public API only.

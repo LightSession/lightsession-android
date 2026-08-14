@@ -39,7 +39,7 @@ import com.lightsession.traced
  * Manages all session data including video frames, navigation events, and user interactions.
  * Batches all data together for synchronized sending to the server.
  */
-class SessionDataManager(
+internal class SessionDataManager(
     private val context: Context,
     private val config: LightSessionConfig
 ) {

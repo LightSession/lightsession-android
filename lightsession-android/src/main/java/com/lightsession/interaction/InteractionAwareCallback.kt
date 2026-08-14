@@ -46,7 +46,7 @@ import com.lightsession.session.SessionDataManager
  * dropping any of them would break the host app's menus, key handling or action modes. A wrapper
  * that swallows what it does not understand is worse than no wrapper.
  */
-class InteractionAwareCallback(
+internal class InteractionAwareCallback(
     private val originalCallback: Window.Callback,
     private val activity: Activity,
 ) : Window.Callback {

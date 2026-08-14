@@ -41,7 +41,7 @@ import com.lightsession.masking.Masking
  * which is the only place all recorded data converges. The second check earns its keep: it is
  * what makes a producer that forgets cost a wasted capture rather than a leak.
  */
-object Recording {
+internal object Recording {
 
     /**
      * On by default, matching every version before this switch existed.

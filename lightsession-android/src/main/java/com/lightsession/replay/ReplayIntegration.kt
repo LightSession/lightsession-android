@@ -10,7 +10,7 @@ import com.lightsession.mapper.ScreenMapperIntegration
 /**
  * Manages screen capture, batching of captured frames, and sending them to a remote server.
  */
-class ReplayIntegration(
+internal class ReplayIntegration(
     private val context: Context,
     private val config: LightSessionConfig,
 ) {

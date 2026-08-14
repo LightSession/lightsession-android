@@ -22,7 +22,7 @@ import androidx.core.content.edit
  * write in the process. It does not cover two processes sharing one SharedPreferences file,
  * which Android does not support anyway.
  */
-class CacheManager(context: Context) {
+internal class CacheManager(context: Context) {
     private val prefs = context.getSharedPreferences("screen_mapper_cache", Context.MODE_PRIVATE)
 
     private val writeLock = Any()

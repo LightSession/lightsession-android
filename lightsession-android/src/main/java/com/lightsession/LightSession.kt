@@ -15,13 +15,13 @@ import com.lightsession.session.Recording
 import com.lightsession.session.SessionDataManager
 import com.lightsession.transport.FlushTriggers
 
-class LightSession private constructor() {
-    companion object {
+public class LightSession private constructor() {
+    public companion object {
         @Volatile
         private var instance: LightSession? = null
 
         @JvmStatic
-        fun getInstance(): LightSession {
+        public fun getInstance(): LightSession {
             return instance ?: synchronized(this) {
                 instance ?: LightSession().also { instance = it }
             }
@@ -60,7 +60,7 @@ class LightSession private constructor() {
      * Pass null when it closes. Prefer [com.lightsession.mapper.LightSessionSubScreen] in
      * Compose, which does both ends for you.
      */
-    fun setSubScreen(name: String?) {
+    public fun setSubScreen(name: String?) {
         if (!isInitialized) return
         ScreenMapperIntegration.getInstance().setDeclaredSubScreen(name)
     }
@@ -72,7 +72,7 @@ class LightSession private constructor() {
      * arriving one declares itself before the leaving one is disposed, so an unconditional
      * clear would erase a claim that had already moved on.
      */
-    fun clearSubScreen(name: String) {
+    public fun clearSubScreen(name: String) {
         if (!isInitialized) return
         ScreenMapperIntegration.getInstance().clearDeclaredSubScreen(name)
     }
@@ -105,7 +105,7 @@ class LightSession private constructor() {
      * From here on the screen is a screen like any other: wireframe, heatmap, flow edges. Nothing
      * downstream knows the name came from JavaScript.
      */
-    fun setScreen(name: String) {
+    public fun setScreen(name: String) {
         if (!isInitialized) return
         ScreenMapperIntegration.getInstance().handleReportedNavigation(name)
     }
@@ -136,7 +136,7 @@ class LightSession private constructor() {
      *
      * Does nothing before [init], and nothing when `captureErrors` is off in the config.
      */
-    fun captureException(throwable: Throwable, attributes: Map<String, Any?> = emptyMap()) {
+    public fun captureException(throwable: Throwable, attributes: Map<String, Any?> = emptyMap()) {
         if (!isInitialized) {
             Log.w("LightSession", "captureException called before init; ignored")
             return
@@ -164,7 +164,7 @@ class LightSession private constructor() {
      * Cheap to call repeatedly: an identify is only sent when the id actually changes, so
      * calling this on every screen costs nothing. Call [reset] on sign-out.
      */
-    fun identify(userId: String, traits: Map<String, Any?> = emptyMap()) {
+    public fun identify(userId: String, traits: Map<String, Any?> = emptyMap()) {
         if (!isInitialized) {
             Log.w("LightSession", "identify before init; ignored")
             return
@@ -185,7 +185,7 @@ class LightSession private constructor() {
      * history and two people become one. A new session is started for the same reason — one
      * session holding two people is a replay of nobody.
      */
-    fun reset() {
+    public fun reset() {
         if (!isInitialized) return
         identity.reset()
         sessionDataManager.startNewSession("identity_reset")
@@ -193,7 +193,7 @@ class LightSession private constructor() {
     }
 
     /** Whether anything is being recorded right now. */
-    val isRecording: Boolean
+    public val isRecording: Boolean
         get() = Recording.enabled
 
     /**
@@ -218,7 +218,7 @@ class LightSession private constructor() {
      * A screen that starts recording in `onResume` would otherwise split a session every time it
      * came back to the foreground.
      */
-    fun startRecording() {
+    public fun startRecording() {
         if (!isInitialized) {
             Log.w("LightSession", "startRecording before init; ignored")
             return
@@ -242,7 +242,7 @@ class LightSession private constructor() {
      * After this, no frame is captured, no tap or navigation becomes an event, and no screen is
      * captured for the screen map. See [Recording] for why the screen map is included.
      */
-    fun stopRecording() {
+    public fun stopRecording() {
         if (!isInitialized) {
             Log.w("LightSession", "stopRecording before init; ignored")
             return
@@ -255,7 +255,7 @@ class LightSession private constructor() {
         Log.i("LightSession", "recording stopped")
     }
 
-    fun init(application: Application, config: LightSessionConfig) {
+    public fun init(application: Application, config: LightSessionConfig) {
         if (isInitialized) {
             return
         }

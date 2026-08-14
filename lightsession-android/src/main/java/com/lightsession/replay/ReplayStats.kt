@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicLong
  * frozen replay when it did. On a screen being scrolled, every tick landing in [repeated] means no
  * picture of that scroll exists.
  */
-object ReplayStats {
+internal object ReplayStats {
 
     private val totalAtomic = AtomicLong(0)
     private val uniqueAtomic = AtomicLong(0)

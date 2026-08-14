@@ -98,7 +98,7 @@ import com.lightsession.transport.DataSender
  *
  * @author thisames
  */
-class ScreenMapperIntegration private constructor() : NavigationHandler {
+internal class ScreenMapperIntegration private constructor() {
 
     private var application: Application? = null
     private var activityLifecycleCallbacks: Application.ActivityLifecycleCallbacks? = null
@@ -1492,7 +1492,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         scheduleScreenshot()
     }
 
-    override fun handleActivityNavigation(activity: Activity) {
+    fun handleActivityNavigation(activity: Activity) {
         // An app that names its own screens has nothing to gain from this and something to lose. On
         // React Native or Compose Multiplatform the Activity is not a screen — it is the box every
         // screen is drawn in — so reporting it puts a node at the top of every session that no user
@@ -1535,7 +1535,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         enterDestination(screenName)
     }
 
-    override fun handleConventionalNavigation(destination: NavDestination) {
+    fun handleConventionalNavigation(destination: NavDestination) {
         val screenName = utils.getFragmentClassNameSafely(destination)
 
         if (screenName == baseScreen) {
@@ -1559,7 +1559,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         enterDestination(screenName)
     }
 
-    override fun handleComposeNavigation(destination: NavDestination) =
+    fun handleComposeNavigation(destination: NavDestination) =
         handleComposeNavigation(destination, controller = null)
 
     /**
@@ -2499,7 +2499,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 }
 
 @Composable
-fun NavHostController.withNavigationTracking(): NavHostController {
+public fun NavHostController.withNavigationTracking(): NavHostController {
     LaunchedEffect(this) {
         try {
             ScreenMapperIntegration.getInstance().registerComposeNavController(this@withNavigationTracking)

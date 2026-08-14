@@ -74,6 +74,21 @@ android {
     }
 }
 
+// Public is a decision here, never an omission. The surface audit that introduced this found
+// seven classes public by accident — SessionDataManager among them — which any client could
+// have coupled to, turning every refactor into a breaking change. Strict explicit-API mode makes
+// the compiler refuse a declaration that does not state its visibility, so the surface can only
+// grow on purpose; it is deliberately six symbols — LightSession, LightSessionConfig, Masking,
+// Recording's start/stop on LightSession, LightSessionSubScreen, withNavigationTracking — plus
+// their members. Scoped by task name because the raw flag knows no source sets: the DSL's
+// test exemption is exactly the behaviour wanted, but only this form reaches Android
+// compilations on this KGP, and tests declaring `internal` everywhere would be noise, not API.
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    if (!name.contains("Test")) {
+        compilerOptions.freeCompilerArgs.add("-Xexplicit-api=strict")
+    }
+}
+
 dependencies {
     implementation(libs.appcompat)
     implementation(libs.material)

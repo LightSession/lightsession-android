@@ -49,7 +49,7 @@ import com.lightsession.LightSessionConfig
  *
  * The server-side counterpart is `ls_media::skeleton`.
  */
-data class SkeletonFrame(
+internal data class SkeletonFrame(
     val width: Int,
     val height: Int,
     /** ARGB, from the activity theme's `windowBackground`. */
@@ -119,7 +119,7 @@ data class SkeletonFrame(
 }
 
 /** One widget, in screen pixels. */
-data class SkeletonRect(
+internal data class SkeletonRect(
     val left: Int,
     val top: Int,
     val right: Int,

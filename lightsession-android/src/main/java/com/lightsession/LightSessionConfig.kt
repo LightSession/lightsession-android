@@ -25,7 +25,7 @@ import com.lightsession.transport.NetworkDataSender
  * one of the tail options should pass them and stop there; Kotlin callers should use named arguments
  * and ignore all of this.
  */
-data class LightSessionConfig @JvmOverloads constructor(
+public data class LightSessionConfig @JvmOverloads constructor(
     val apiKey: String,
 
     /**
@@ -315,7 +315,7 @@ data class LightSessionConfig @JvmOverloads constructor(
      */
     val captureErrors: Boolean = true,
 ) {
-    enum class CaptureQuality {
+    public enum class CaptureQuality {
         LOW, MEDIUM, HIGH
     }
 
@@ -326,7 +326,7 @@ data class LightSessionConfig @JvmOverloads constructor(
      * is a separate switch because it is a separate decision — this one picks where a
      * wireframe is drawn, that one decides whether real pixels are stored at all.
      */
-    enum class WireframeMode {
+    public enum class WireframeMode {
         /**
          * Send the widget rectangles; the server draws the wireframe. The default.
          *

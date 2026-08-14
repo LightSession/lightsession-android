@@ -231,7 +231,7 @@ private fun Group.androidViewChildren(): List<ComposeLayoutInfo.AndroidViewInfo>
 }
 
 @OptIn(UiToolingDataApi::class)
-data class CallGroupInfo(
+internal data class CallGroupInfo(
     val name: String,
     val location: SourceLocation?,
 )

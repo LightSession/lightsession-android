@@ -40,7 +40,7 @@ import com.lightsession.Tracing
 import com.lightsession.traced
 import androidx.core.graphics.createBitmap
 
-class SkeletonGenerator {
+internal class SkeletonGenerator {
 
     private companion object {
         const val MAX_UNWRAP_DEPTH = 8
