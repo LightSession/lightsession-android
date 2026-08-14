@@ -50,7 +50,9 @@ internal object NavControllerDiscovery {
      * A `NavHost`'s controller sits near the top of the composition — it has to, since the
      * `NavHost` composable receives it as a parameter — and the probe found it within the first
      * hundred groups of a two-destination app. The cap is a guard against a pathological tree, not
-     * a tuning knob: this runs once per Activity, at the end of a three-second grace period.
+     * a tuning knob: this runs once per Activity at the end of the grace period, plus whenever
+     * [NavControllerWatch] concludes the composition may have changed — which that class bounds
+     * to well under two walks a second.
      */
     private const val MAX_GROUPS = 4_000
 

@@ -129,7 +129,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      * in production it had 20 interactions on `dashboard` against **0** on `home/manager` across
      * every session — not a little-used screen, a screen where there is nothing to do.
      *
-     * It cannot be recognised when it arrives. The signal that it is a shell is a *different*
+     * It cannot be recognized when it arrives. The signal that it is a shell is a *different*
      * NavController registering while it is current, which only a nested NavHost does, and that
      * registration happens from a `LaunchedEffect` in the composition the destination just caused —
      * a frame later. So the map report waits [SHELL_GRACE_FRAMES] frames, and [dropAsShell] cancels
@@ -143,7 +143,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         val route: String,
         val from: String?,
         val controller: NavController?,
-        val job: kotlinx.coroutines.Job,
+        val job: Job,
     )
 
     private var pendingReport: PendingReport? = null
@@ -283,7 +283,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     private var declaredSubScreen: SubScreen? = null
 
     /** Set while a modal window is on screen, so its removal can be recognised. */
-    private var modalRootView: java.lang.ref.WeakReference<android.view.View>? = null
+    private var modalRootView: WeakReference<android.view.View>? = null
 
     /**
      * The modal layer. Its window closing is what clears it, and what was underneath needs
@@ -299,6 +299,14 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
     /** Fires when content lands on a screen whose wireframe was already taken. See [watchForLateContent]. */
     private val lateContent = LateContent()
+
+    /**
+     * Re-runs NavController discovery when the composition may have grown one. Armed for any
+     * Activity whose screens could come from a Compose NavController ([planScreenSource]'s
+     * `resolveComposeAfterGrace`), for as long as it is in front — which also covers a nested
+     * `NavHost` composed minutes later inside a destination the outer controller named.
+     */
+    private val navControllerWatch = NavControllerWatch { scanForUnregisteredNavControllers() }
 
     /**
      * Set from `LightSessionConfig.wireframeMode` at [init].
@@ -921,7 +929,6 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
         cacheManager = CacheManager(application)
 
         // The app's version code and name
-        val currentAppVersionCode = getAppVersionCode()
         val currentAppVersionName = getAppVersionName()
 
         cacheManager.handleAppVersionCheck(currentAppVersionName)
@@ -1024,6 +1031,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
             override fun onActivityPaused(activity: Activity) {
                 lateContent.cancel()
+                navControllerWatch.cancel()
                 originalCallbacks.remove(activity)?.let {
                     activity.window.callback = it
                 }
@@ -1056,6 +1064,11 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
 
             override fun onActivityDestroyed(activity: Activity) {
+                // Same both-hooks paranoia as `originalCallbacks` below: pause normally precedes
+                // destroy, and "normally" is not a guarantee. Cancelling twice costs a volatile
+                // write; the next Activity's `attachTo` re-arms if its plan wants the watch.
+                navControllerWatch.cancel()
+
                 activity.window?.let { window ->
                     touchEventListener?.let { listener ->
                         window.touchEventInterceptors -= listener
@@ -1131,9 +1144,12 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      *    the only thing that happened was a warning. A screen a user spent half a minute on simply
      *    did not exist, and the flow through it read as one navigation straight past.
      *  * **Several Compose screens inside one Activity.** The Activity name says nothing — every
-     *    destination shares it — so the destinations are the screens, and only
-     *    `rememberNavController().withNavigationTracking()` can supply them. Compose keeps no global
-     *    registry of NavControllers, so there is nothing for the SDK to find on its own.
+     *    destination shares it — so the destinations are the screens. Compose keeps no global
+     *    registry of NavControllers, but a remembered one lives in the slot table, so the SDK can
+     *    find what was never handed over: [NavControllerDiscovery] looks once when the grace
+     *    period ends, and [navControllerWatch] keeps looking whenever the composition may have
+     *    changed — for the `NavHost` behind an async start destination that composes after the
+     *    deadline. `withNavigationTracking()` remains the zero-latency, zero-reflection path.
      *
      * Nothing distinguishes the two synchronously, so this waits: after
      * [COMPOSE_INTEGRATION_GRACE_MS], an Activity that handed over a controller is the second shape
@@ -1337,6 +1353,12 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
 
         if (plan.resolveComposeAfterGrace) {
             resolveComposeScreen(activity)
+            // And keep looking after that one-shot: a NavHost behind an async start destination
+            // composes whenever its data lands, which respects no grace period. The watch fires
+            // on snapshot applies, so the app that never writes state again — the app the
+            // one-shot exists for — costs nothing here, and the app whose NavHost arrives late
+            // is caught the moment it does.
+            navControllerWatch.arm()
         }
 
         if (plan.reportActivityNow) {
@@ -1351,6 +1373,43 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
     /** Whether this Activity's own composition handed over a NavController. */
     private fun hasComposeController(activity: Activity): Boolean =
         registeredComposeControllers.any { it.owner.get() === activity }
+
+    /**
+     * [navControllerWatch]'s tick: discovery again, against whatever the composition holds *now*.
+     *
+     * The one-shot in [resolveComposeScreen] answers "was a NavController there when the grace
+     * period ended"; this answers "did one appear since" — a `NavHost` behind an async start
+     * destination, or a nested one composed when a destination first opened. Both register through
+     * the same [registerComposeNavController] as the explicit path, which is also what makes this
+     * scan idempotent: a controller already handed over — by the app or by an earlier tick — is
+     * recognised by identity and skipped, so finding it again costs the walk and nothing else.
+     *
+     * Runs on main, reads only, and bails to the same fallback the one-shot uses: none, because
+     * the fallback already ran. An Activity named at the grace deadline stays in the map as the
+     * screen it honestly was — the loading shell — and the destinations take over from here.
+     */
+    @OptIn(androidx.compose.ui.tooling.data.UiToolingDataApi::class)
+    private fun scanForUnregisteredNavControllers() {
+        val activity = currentActivityWeakRef?.get() ?: return
+        val decor = activity.window?.decorView ?: return
+
+        pruneComposeControllers()
+        val found = NavControllerDiscovery.findIn(decor) { skeletonGenerator.compositionTreeOf(it) }
+        if (found.isEmpty()) return
+        val unregistered = found.filter { controller ->
+            registeredComposeControllers.none { it.controller.get() === controller }
+        }
+        if (unregistered.isEmpty()) return
+
+        Log.i(
+            "ScreenMapper",
+            "${unregistered.size} NavController(s) appeared in ${activity.javaClass.simpleName}'s " +
+                "composition without being handed over; tracking them. " +
+                "rememberNavController().withNavigationTracking() registers at composition time " +
+                "and skips this scan.",
+        )
+        unregistered.forEach { registerComposeNavController(it) }
+    }
 
     internal fun registerComposeNavController(navController: NavController) {
         pruneComposeControllers()
@@ -1542,7 +1601,7 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
             withFrames(SHELL_GRACE_FRAMES)
             // Cleared first: the flush below is also reachable from `flushPendingReport`, and a
             // report that ran twice is a duplicate edge.
-            if (pendingReport?.job === coroutineContext[kotlinx.coroutines.Job]) {
+            if (pendingReport?.job === coroutineContext[Job]) {
                 pendingReport = null
                 report(screenName, route, from)
             }

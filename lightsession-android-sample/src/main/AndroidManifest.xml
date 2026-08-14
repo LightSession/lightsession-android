@@ -58,6 +58,11 @@
         <activity
             android:name="com.sample.lightsession.UntrackedComposeNavActivity"
             android:exported="false" />
+        <!-- Exported so `adb shell am start` can drive the demonstration this Activity exists
+             for; nothing sensitive lives behind it and the sample never ships. -->
+        <activity
+            android:name="com.sample.lightsession.AsyncStartNavActivity"
+            android:exported="true" />
         <activity
             android:name="com.sample.lightsession.NestedComposeNavActivity"
             android:exported="false" />
