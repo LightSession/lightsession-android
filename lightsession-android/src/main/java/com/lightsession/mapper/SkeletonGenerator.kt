@@ -99,6 +99,23 @@ class SkeletonGenerator {
         return runCatching { scanComposeHierarchyUsingTooling(composeView).size }.getOrDefault(0)
     }
 
+    /**
+     * The composition tree under this root, or null when there is no Compose here.
+     *
+     * Exposed so [NavControllerDiscovery] can ask the same question the skeleton scan asks,
+     * through the same route to the slot table, rather than growing a second copy of the
+     * composition-to-tree reflection that has already needed correcting twice.
+     */
+    @OptIn(UiToolingDataApi::class)
+    internal fun compositionTreeOf(rootView: View): Group? {
+        val composeView = findComposeView(rootView) ?: return null
+        return runCatching {
+            val keyedTags = composeView.getKeyedTags() ?: return null
+            val composition = keyedTags.findComposition() ?: return null
+            composition.unwrap().getComposer()?.compositionData?.asTree()
+        }.getOrNull()
+    }
+
     private fun findComposeView(view: View): View? {
         if (isComposeView(view)) return view
         if (view is ViewGroup) {

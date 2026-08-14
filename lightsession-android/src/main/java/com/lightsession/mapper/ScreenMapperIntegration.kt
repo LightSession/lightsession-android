@@ -1145,12 +1145,36 @@ class ScreenMapperIntegration private constructor() : NavigationHandler {
      * and screens are permanent — a wrong node stays wrong. A screen dismissed inside the grace
      * period is missed instead, which is the same cost a splash already pays.
      */
+    @OptIn(androidx.compose.ui.tooling.data.UiToolingDataApi::class)
     private fun resolveComposeScreen(activity: Activity) {
         val activityName = activity.javaClass.simpleName
 
         mainHandler.postDelayed({
             pruneComposeControllers()
             if (hasComposeController(activity)) return@postDelayed
+
+            // Nothing was handed over — but that is not the same as nothing existing. A
+            // `rememberNavController()` lives in the slot table, so before falling back to the
+            // Activity's own name the composition is asked whether it holds one. This is the
+            // difference between a map with five destinations and a map with one node named
+            // `MainActivity`, and it used to depend on the app remembering a line of code.
+            // Registered through the ordinary path, so a discovered controller and a handed-over
+            // one behave identically from here — including the nested-NavHost shell handling.
+            val discovered = activity.window?.decorView?.let { decor ->
+                NavControllerDiscovery.findIn(decor) { skeletonGenerator.compositionTreeOf(it) }
+            }.orEmpty()
+            if (discovered.isNotEmpty()) {
+                Log.i(
+                    "ScreenMapper",
+                    "found ${discovered.size} NavController(s) in ${activity.javaClass.simpleName}'s " +
+                        "composition that were never handed over; tracking them. Calling " +
+                        "rememberNavController().withNavigationTracking() is still worth doing: it " +
+                        "registers at composition time, so the first destinations of a session are " +
+                        "named instead of waiting out this grace period.",
+                )
+                discovered.forEach { registerComposeNavController(it) }
+                return@postDelayed
+            }
 
             // The reader may have moved on during the grace period. Reporting now would file this
             // screen after the one that replaced it, inventing a navigation backwards.

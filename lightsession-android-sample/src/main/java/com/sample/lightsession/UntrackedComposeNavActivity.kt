@@ -25,14 +25,17 @@ import androidx.navigation.compose.rememberNavController
  * here shows the SDK working; this one shows what a consumer who skipped a line actually gets, which
  * is worth being able to look at on purpose rather than discovering in a support thread.
  *
- * Expected in the map: one screen named `UntrackedComposeNavActivity`, covering all three
- * destinations. Degraded but present — and logcat carries the advice naming the line to add, tagged
- * `ScreenMapper`.
+ * Expected in the map: `alpha`, `beta` and `gamma`, named from the routes — the same three screens
+ * an integrated Activity produces. `NavControllerDiscovery` finds the controller in the slot table
+ * when the grace period ends with nothing registered, so the missing line costs the destinations of
+ * the first three seconds rather than every destination of the session.
  *
- * That degradation is itself a fix. Before, this shape reported *nothing at all*, and the advice was
- * logged once per process and only when no other Activity had integrated — so in an app like this
- * sample, where a properly integrated screen registers a controller first, the warning never fired
- * either. Silent and invisible together.
+ * This screen is kept precisely because that recovery has to keep working. It has been wrong twice
+ * in opposite directions: first the shape reported *nothing at all* — and the advice was logged
+ * once per process, only when no other Activity had integrated, so in a sample like this one it
+ * never fired either — and then it reported one node named after the Activity, which is what a real
+ * app's map looked like when five destinations arrived as `MainActivity`. Discovery is the third
+ * answer, and this Activity is how it stays honest.
  */
 class UntrackedComposeNavActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
