@@ -66,9 +66,11 @@
         <activity
             android:name="com.sample.lightsession.NestedComposeNavActivity"
             android:exported="false" />
+        <!-- Exported for the same reason as AsyncStartNavActivity: its dialog is how the modal
+             capture path is driven from `adb shell am start`. -->
         <activity
             android:name="com.sample.lightsession.TabsAndModalActivity"
-            android:exported="false" />
+            android:exported="true" />
     </application>
 
 </manifest>

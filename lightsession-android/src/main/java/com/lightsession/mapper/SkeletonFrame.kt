@@ -140,6 +140,16 @@ internal data class SkeletonRect(
      * without this field it draws the outline alone, exactly as it always has.
      */
     val surface: Int? = null,
+    /**
+     * Corner radii in device pixels, when the app's own shape said so.
+     *
+     * Absent means square, and absent is the honest default: a sheet is rounded at the top and a
+     * Material dialog on all four corners *by convention*, but an app that squared its corners
+     * deliberately would be redrawn wrong by any constant. These are read from the composition —
+     * the `Shape` a `Surface`, `ModalBottomSheet` or `Card` was given — so an app that rounds
+     * nothing reports nothing here.
+     */
+    val radii: CornerRadii? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("l", left)
@@ -151,5 +161,33 @@ internal data class SkeletonRect(
         // Omitted when false, which is most nodes. The server defaults it.
         if (stroke) put("stroke", true)
         surface?.let { put("surface", SkeletonFrame.colorToHex(it)) }
+        // Omitted when square, which is every rect on an ordinary screen. A renderer that does
+        // not know the field ignores it and draws what it always drew.
+        radii?.takeIf { !it.isSquare }?.let { put("rad", it.toJson()) }
+    }
+}
+
+/**
+ * The four corners of a rectangle, in device pixels, in visual order.
+ *
+ * Visual — top-left first — rather than Compose's start/end, because the renderer draws pixels and
+ * has no layout direction to resolve. The mirroring for a right-to-left layout is done where the
+ * layout direction is known, which is on the device.
+ */
+internal data class CornerRadii(
+    val topLeft: Int,
+    val topRight: Int,
+    val bottomRight: Int,
+    val bottomLeft: Int,
+) {
+    val isSquare: Boolean
+        get() = topLeft == 0 && topRight == 0 && bottomRight == 0 && bottomLeft == 0
+
+    /** An array, not an object: four numbers in a fixed order cost less than four keys. */
+    fun toJson(): JSONArray = JSONArray().apply {
+        put(topLeft)
+        put(topRight)
+        put(bottomRight)
+        put(bottomLeft)
     }
 }

@@ -52,7 +52,9 @@ internal class SkeletonGenerator {
         val color: Int,
         val style: Paint.Style,
         val name: String? = null,
-        val children: List<SkeletonNode> = emptyList()
+        val children: List<SkeletonNode> = emptyList(),
+        /** Set only for a node whose composition declared a rounded shape. See [CornerShapes]. */
+        val radii: CornerRadii? = null,
     )
 
     private enum class NodeType {
@@ -429,6 +431,7 @@ internal class SkeletonGenerator {
                     kind = node.type.name,
                     color = node.color,
                     stroke = node.style == Paint.Style.STROKE,
+                    radii = node.radii,
                 )
             )
         }
@@ -567,8 +570,19 @@ internal class SkeletonGenerator {
             val hostLocation = IntArray(2)
             composeView.getLocationOnScreen(hostLocation)
 
+            // Read from each node's own modifiers as the tree is converted. See [CornerShapes]
+            // for why the modifier chain rather than the slot table.
+            // Density from `ScreenGeometry`, not from the view's own resources. The rule has a
+            // test — `ScreenGeometrySourceTest` — and the reason is the same one that made this
+            // class stop reading its own metrics: a number taken from a different source than the
+            // one the capture was sized with stops describing that capture.
+            val shapeContext = ShapeContext(
+                density = androidx.compose.ui.unit.Density(ScreenGeometry.density),
+                rightToLeft = composeView.layoutDirection == View.LAYOUT_DIRECTION_RTL,
+            )
+
             return layoutInfos
-                .map { convertLayoutInfoToSkeletonNode(it) }
+                .map { convertLayoutInfoToSkeletonNode(it, shapeContext) }
                 .map { translate(it, hostLocation[0], hostLocation[1]) }
                 .toList()
 
@@ -589,7 +603,22 @@ internal class SkeletonGenerator {
         )
     }
 
-    private fun convertLayoutInfoToSkeletonNode(layoutInfo: ComposeLayoutInfo): SkeletonNode {
+    /**
+     * Density and layout direction, read once per scan.
+     *
+     * Carried rather than looked up per node: both come from the host view and neither changes
+     * during a scan, and [CornerShapes] needs them to resolve a percentage corner and to mirror
+     * start/end into visual order.
+     */
+    private data class ShapeContext(
+        val density: androidx.compose.ui.unit.Density,
+        val rightToLeft: Boolean,
+    )
+
+    private fun convertLayoutInfoToSkeletonNode(
+        layoutInfo: ComposeLayoutInfo,
+        shapeContext: ShapeContext? = null,
+    ): SkeletonNode {
         return when (layoutInfo) {
             is ComposeLayoutInfo.LayoutNodeInfo -> {
                 val rect = Rect(
@@ -605,7 +634,20 @@ internal class SkeletonGenerator {
                 val color = defaultColors[type] ?: Color.LTGRAY
                 val style = if (type == NodeType.CONTAINER) Paint.Style.STROKE else Paint.Style.FILL
 
-                val children = layoutInfo.children.map { convertLayoutInfoToSkeletonNode(it) }.toMutableList()
+                val children = layoutInfo.children
+                    .map { convertLayoutInfoToSkeletonNode(it, shapeContext) }
+                    .toMutableList()
+
+                // The corners this node declared, if it declared any. Read from its own modifier
+                // chain, so the rectangle and its corners describe the same box by construction.
+                val radii = shapeContext?.let {
+                    CornerShapes.radiiOf(
+                        modifiers = layoutInfo.modifiers,
+                        bounds = layoutInfo.bounds,
+                        density = it.density,
+                        rightToLeft = it.rightToLeft,
+                    )
+                }
 
                 SkeletonNode(
                     rect = rect,
@@ -613,7 +655,8 @@ internal class SkeletonGenerator {
                     color = color,
                     style = style,
                     name = layoutInfo.name.ifEmpty { null },
-                    children = children
+                    children = children,
+                    radii = radii,
                 )
             }
             is ComposeLayoutInfo.SubcompositionInfo -> {
@@ -623,7 +666,9 @@ internal class SkeletonGenerator {
                     layoutInfo.bounds.right,
                     layoutInfo.bounds.bottom
                 )
-                val children = layoutInfo.children.map { convertLayoutInfoToSkeletonNode(it) }.toMutableList()
+                val children = layoutInfo.children
+                    .map { convertLayoutInfoToSkeletonNode(it, shapeContext) }
+                    .toMutableList()
 
                 SkeletonNode(
                     rect = rect,
