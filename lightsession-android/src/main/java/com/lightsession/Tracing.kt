@@ -36,11 +36,8 @@ import android.os.Trace
 internal object Tracing {
     /** Every capture attempt, whichever path it then takes. Counts the schedule, not the work. */
     const val CAPTURE_ATTEMPT = "LightSession.captureAttempt"
-    const val CAPTURE_SURFACE = "LightSession.capture.surface"
     const val PLAN_MASKS = "LightSession.planMasks"
     const val CAPTURE_SOFTWARE = "LightSession.capture.software"
-    const val COPY_LAYERS = "LightSession.capture.copyLayers"
-    const val DRAW_MASKS = "LightSession.drawMasks"
     const val ENCODE = "LightSession.encodeJpeg"
     const val SPOOL = "LightSession.spool"
     const val WIREFRAME = "LightSession.wireframe"

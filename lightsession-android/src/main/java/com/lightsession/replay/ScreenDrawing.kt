@@ -1,7 +1,6 @@
 package com.lightsession.replay
 
 import android.annotation.SuppressLint
-import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -24,7 +23,6 @@ import java.io.ByteArrayOutputStream
 import com.lightsession.masking.Masking
 import com.lightsession.ScreenGeometry
 import com.lightsession.masking.MaskScanner
-import com.lightsession.transport.Compression
 
 /**
  * Utility class for optimized screen capture and object pool management.
@@ -44,10 +42,8 @@ internal class ScreenDrawing {
         private const val MAX_POOLED_BITMAPS = 2
 
         object ScalePresets {
-            const val THUMBNAIL = 0.1f
             const val LOW_QUALITY = 0.25f
             const val MEDIUM_QUALITY = 0.5f
-            const val HIGH_QUALITY = 0.75f
             const val ORIGINAL = 1.0f
         }
     }
@@ -814,7 +810,7 @@ internal class ScreenDrawing {
             ) {
                 // Stale pixels would show through anywhere the hierarchy does
                 // not paint.
-                candidate.eraseColor(android.graphics.Color.TRANSPARENT)
+                candidate.eraseColor(Color.TRANSPARENT)
                 return candidate
             }
             if (!candidate.isRecycled) candidate.recycle()
@@ -888,20 +884,6 @@ internal class ScreenDrawing {
             Pair(null, null)
         }
     }
-
-    /**
-     * Captures the current screen and returns it as a Bitmap (without ByteArray conversion).
-     *
-     * Similar to captureCurrentScreenOptimized but returns the raw Bitmap instead of
-     * compressing it to a ByteArray. Useful when you need to perform additional
-     * processing on the bitmap before compression.
-     *
-     * @param scaleFactor Scale factor to resize the image (0.1f to 1.0f)
-     * @return Bitmap of the captured screen, or null if capture fails
-     */
-    /** Raw bitmap of the current screen. Main thread only; caller owns it. */
-    fun getWindowManagerComposedBitmapOptimized(scaleFactor: Float = globalScaleFactor): Bitmap? =
-        captureToBitmap(scaleFactor)
 
     /**
      * Calculates the compression quality based on the scale factor.
@@ -1063,32 +1045,6 @@ internal class ScreenDrawing {
         }
     }
 
-    fun convertOriginalToScaledCoordinates(
-        originalX: Float,
-        originalY: Float,
-        scaleFactor: Float = globalScaleFactor
-    ): Pair<Float, Float> {
-        val effectiveScale = scaleFactor.coerceIn(0.1f, 1.0f)
-        return Pair(
-            originalX * effectiveScale,
-            originalY * effectiveScale
-        )
-    }
-
-    fun convertScaledToOriginalCoordinates(
-        scaledX: Float,
-        scaledY: Float,
-        scaleFactor: Float = globalScaleFactor
-    ): Pair<Float, Float> {
-        val effectiveScale = scaleFactor.coerceIn(0.1f, 1.0f)
-        return Pair(
-            scaledX / effectiveScale,
-            scaledY / effectiveScale
-        )
-    }
-
-    fun getCurrentScaleFactor(): Float = globalScaleFactor
-
     /**
      * Gets a Canvas object from the pool or creates a new one if the pool is empty.
      *
@@ -1198,11 +1154,4 @@ internal class ScreenDrawing {
     fun setGlobalScaleFactor(scaleFactor: Float) {
         globalScaleFactor = scaleFactor.coerceIn(0.1f, 1.0f)
     }
-
-    /**
-     * Gets the current global scale factor.
-     *
-     * @return The current global scale factor value (0.1f to 1.0f)
-     */
-    fun getGlobalScaleFactor(): Float = globalScaleFactor
 }

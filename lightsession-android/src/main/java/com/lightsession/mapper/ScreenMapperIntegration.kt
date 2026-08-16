@@ -504,7 +504,7 @@ internal class ScreenMapperIntegration private constructor() {
         // A bitmap wireframe has no rectangles to count, and a screen out of budget has had its
         // chances.
         if (wireframeMode != LightSessionConfig.WireframeMode.RECTS || rescansLeft <= 0) return
-        val activityRef = java.lang.ref.WeakReference(activity)
+        val activityRef = WeakReference(activity)
         lateContent.arm {
             // The apply arrives on whichever thread wrote the state; everything below — the
             // settle detector, the view walk, [lastScreen] — is main-thread machinery.
@@ -1113,7 +1113,7 @@ internal class ScreenMapperIntegration private constructor() {
                 fragment != null && (fragment.javaClass.simpleName.contains("NavHostFragment") ||
                         try {
                             NavHostFragment.findNavController(fragment); true
-                        } catch (e: Exception) {
+                        } catch (_: Exception) {
                             false
                         })
             }
@@ -1559,9 +1559,6 @@ internal class ScreenMapperIntegration private constructor() {
         enterDestination(screenName)
     }
 
-    fun handleComposeNavigation(destination: NavDestination) =
-        handleComposeNavigation(destination, controller = null)
-
     /**
      * A Compose destination arrived. Whether it is reported is decided a few frames from now.
      *
@@ -1687,7 +1684,7 @@ internal class ScreenMapperIntegration private constructor() {
     private suspend fun withFrames(count: Int) {
         val choreographer = android.view.Choreographer.getInstance()
         repeat(count) {
-            kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
+            kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
                 val callback = android.view.Choreographer.FrameCallback {
                     continuation.resume(Unit)
                 }
@@ -1850,7 +1847,7 @@ internal class ScreenMapperIntegration private constructor() {
             null
         } ?: return
 
-        modalRootView = java.lang.ref.WeakReference(view)
+        modalRootView = WeakReference(view)
         modalSubScreen = modal
         applySubScreens()
     }

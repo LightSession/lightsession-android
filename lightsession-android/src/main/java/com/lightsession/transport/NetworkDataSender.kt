@@ -1,7 +1,6 @@
 package com.lightsession.transport
 
 import android.util.Log
-import com.lightsession.transport.PLATFORM
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -10,8 +9,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
-import com.lightsession.LightSession
-import com.lightsession.LightSessionConfig
 import com.lightsession.mapper.ScreenMapperIntegration
 import com.lightsession.mapper.SkeletonFrame
 

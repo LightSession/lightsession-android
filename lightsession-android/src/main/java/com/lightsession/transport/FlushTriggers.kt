@@ -7,7 +7,6 @@ import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
-import com.lightsession.LightSession
 import com.lightsession.session.SessionDataManager
 
 /**

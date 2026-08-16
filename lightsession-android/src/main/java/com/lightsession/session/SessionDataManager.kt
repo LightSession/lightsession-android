@@ -821,7 +821,7 @@ internal class SessionDataManager(
                     "${interactions.size} interactions (reason: $reason)")
     }
 
-    private fun <T> drain(queue: ConcurrentLinkedQueue<T>): List<T> {
+    private fun <T> drain(queue: ConcurrentLinkedQueue<T & Any>): List<T> {
         val out = mutableListOf<T>()
         while (true) out.add(queue.poll() ?: break)
         return out

@@ -58,7 +58,6 @@ internal class ReplayIntegration(
         ReplayStats.recordDelivery()
 
         if (bitmapBytes != null) {
-            val timestamp = System.currentTimeMillis()
             val isRepeatedFrame = bitmapBytes.contentEquals(Recorder.REPEATED_FRAME_SIGNAL)
 
             val currentScreen = try {
@@ -86,48 +85,5 @@ internal class ReplayIntegration(
                             "Total captures: $totalCaptures, Unique: $uniqueCaptures, Repeated: $repeatedFrameSignals")
             }
         }
-    }
-
-    /**
-     * Forces a manual flush of the frame buffer.
-     * This can be called from other parts of the application if needed.
-     */
-    fun forceFlush() {
-        sessionDataManager?.forceFlush() ?: run {
-            Log.w("ReplayIntegration", "Cannot force flush - SessionDataManager not available")
-        }
-    }
-
-    /**
-     * Called when the application is about to terminate.
-     * Performs a final flush of any remaining frames.
-     */
-    fun onTerminate() {
-        sessionDataManager?.forceFlush()
-        recorder?.shutdown()
-        recorder = null
-        Log.d("ReplayIntegration",
-            "terminated: ${totalCaptures.get()} captures, ${uniqueCaptures.get()} unique, " +
-                    "${repeatedFrameSignals.get()} repeats")
-    }
-
-    /**
-     * Called when the system is running low on memory.
-     * Performs a flush to free up resources.
-     */
-    fun onLowMemory() {
-        sessionDataManager?.forceFlush()
-        Log.d("ReplayIntegration", "Low memory - forcing flush")
-    }
-
-    /**
-     * Get current capture statistics
-     */
-    fun getStats(): Map<String, Int> {
-        return mapOf(
-            "totalCaptures" to totalCaptures.get(),
-            "uniqueCaptures" to uniqueCaptures.get(),
-            "repeatedFrameSignals" to repeatedFrameSignals.get()
-        )
     }
 }
