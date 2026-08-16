@@ -23,9 +23,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
-import com.lightsession.LightSession
-import com.lightsession.session.SessionDataManager
 
 /**
  * Periodic screen capture.
@@ -68,8 +67,17 @@ internal class Recorder {
         private const val BURST_QUIET_MS = 250L
 
         /**
+         * How many ticks in a row may be spent trying to land the session's first frame.
+         *
+         * Five, against a one-second idle tick: long enough to cover a window that is not ready
+         * yet — the transient case the budget exists to keep serving — and short enough that a
+         * window which cannot be read never costs more than five captures.
+         */
+        private const val MAX_FIRST_FRAME_ATTEMPTS = 5
+
+        /**
          * Ceiling on a single burst, measured from the touch that started it.
-         * Without it, a screen that animates forever bursts forever.
+         * Without it, a screen that animates forever bursts.
          */
         private const val BURST_MAX_MS = 3_000L
     }
@@ -78,7 +86,45 @@ internal class Recorder {
 
     /** Set by the draw listener, consumed by the capture tick. */
     private val isScreenContentChanged = AtomicBoolean(false)
-    private var isFirstCapture = true
+
+    /**
+     * True until a real frame has actually been *delivered* for this stretch of recording.
+     *
+     * Not "until one has been asked for", which is what it used to mean and is why it is atomic
+     * now: it is cleared on the encoder thread, at the moment bytes are handed downstream, rather
+     * than on the tick thread at the moment a capture is dispatched.
+     *
+     * The distinction is the whole of a bug. `captureFrame` is asynchronous and its failure path
+     * emits a repeated-frame marker — deliberately, because a gap is worse than a repeat. So a
+     * first capture that failed used to leave the flag already cleared, the session's first frame
+     * a marker saying "same as the one before" with no frame before it, and the guarantee gone for
+     * good. On a screen that then sat still, every later tick took the unchanged path and emitted
+     * another marker.
+     *
+     * The renderer refuses such a session — permanently and correctly, since no later delivery
+     * reads different bytes: "contains only repeated-frame markers". Measured in production
+     * before this change: eighteen sessions dead-lettered that way, one of them 78 frames with
+     * not a single real one among them.
+     */
+    private val isFirstCapture = AtomicBoolean(true)
+
+    /**
+     * Captures dispatched since the last delivered frame, while [isFirstCapture] was still set.
+     *
+     * Exists because making the flag mean "delivered" removed a bound that used to come for free.
+     * When it meant "attempted", exactly one capture was ever dispatched for it; now every tick
+     * dispatches another until one lands — which is the point on a screen whose first capture
+     * failed transiently, and a bill with no ceiling on a screen that can never be captured at
+     * all. A secure window is the honest example: it will not read on the tenth attempt either,
+     * and the difference between a full capture and a four-byte marker is paid every tick for the
+     * length of the session.
+     *
+     * Past [MAX_FIRST_FRAME_ATTEMPTS] the tick stops treating "no frame yet" as a reason on its
+     * own. It does not stop capturing: a screen that changes still takes the ordinary path, so a
+     * first frame can still arrive the moment there is something new to see. What stops is paying
+     * for an attempt against a still screen that has already refused several.
+     */
+    private val firstFrameAttempts = AtomicInteger(0)
 
     /** Wall clock until which captures use the burst interval. */
     private val burstUntil = AtomicLong(0)
@@ -182,7 +228,8 @@ internal class Recorder {
         screenDrawing.setGlobalScaleFactor(scaleFactor)
         contextRef = WeakReference(context)
 
-        isFirstCapture = true
+        isFirstCapture.set(true)
+        firstFrameAttempts.set(0)
         isScreenContentChanged.set(true)
 
         // Watches for composition movement, which is how `tick` knows not to capture a frame
@@ -244,7 +291,8 @@ internal class Recorder {
                 // Reset, so the frame after recording resumes is a real capture: a resumed
                 // recording whose first frame were a repeat would hold whatever the renderer had
                 // from the previous stretch.
-                isFirstCapture = true
+                isFirstCapture.set(true)
+                firstFrameAttempts.set(0)
                 return
             }
 
@@ -264,15 +312,39 @@ internal class Recorder {
             // against 196 repeats over twenty seconds of dragging.
             val transitioning = ScreenTransition.inProgress()
 
-            if (!isFirstCapture && transitioning) {
-                onBitmapBytesReady?.invoke(REPEATED_FRAME_SIGNAL)
-                // Left set, so the change is not swallowed: the next quiet tick captures it.
-                if (changed) isScreenContentChanged.set(true)
-            } else if (isFirstCapture || changed) {
-                isFirstCapture = false
-                captureFrame()
-            } else {
-                onBitmapBytesReady?.invoke(REPEATED_FRAME_SIGNAL)
+            // "No frame yet" is a reason to capture only while it is still worth trying. See
+            // [firstFrameAttempts] for what that budget buys and what it stops paying for.
+            val needsFirstFrame =
+                isFirstCapture.get() && firstFrameAttempts.get() < MAX_FIRST_FRAME_ATTEMPTS
+
+            when (tickAction(needsFirstFrame, changed, transitioning)) {
+                TickAction.RepeatThroughTransition -> {
+                    emitMarker()
+                    // Left set, so the change is not swallowed: the next quiet tick captures it.
+                    if (changed) isScreenContentChanged.set(true)
+                }
+                // Nothing is cleared here. The flag clears where the bytes are delivered, so a
+                // capture that fails leaves it set and the next tick tries again rather than
+                // settling into markers forever.
+                TickAction.Capture -> {
+                    // Counted only while the budget is open, so it stops at the ceiling and the
+                    // warning below is said once rather than on every later change.
+                    if (needsFirstFrame && firstFrameAttempts.incrementAndGet() ==
+                        MAX_FIRST_FRAME_ATTEMPTS
+                    ) {
+                        // Said once, and worth saying: from here the session can only be rendered
+                        // if the screen changes, and if it never does the server will reject it
+                        // for containing nothing but markers. That reason is otherwise visible
+                        // only in a dead-letter queue, days later.
+                        Log.w(
+                            "LightSession",
+                            "no frame has been captured in $MAX_FIRST_FRAME_ATTEMPTS attempts; " +
+                                "capturing only on change from here",
+                        )
+                    }
+                    captureFrame()
+                }
+                TickAction.Repeat -> emitMarker()
             }
         } catch (e: Throwable) {
             Log.e("LightSession", "capture tick failed", e)
@@ -284,6 +356,36 @@ internal class Recorder {
             val now = System.currentTimeMillis()
             scheduleNext(currentDelay(now))
         }
+    }
+
+    /**
+     * A real frame, on its way downstream — and the only thing that closes [isFirstCapture].
+     *
+     * There are exactly two ways a tick ends, this and [emitMarker], and they are named so that
+     * the difference between them is visible at every call site. The bug this pair exists to
+     * prevent was a single `isFirstCapture = false` sitting where a capture was *requested*
+     * rather than where one arrived, on a path whose failure case emits a marker. With the flag
+     * only reachable from here, a marker cannot claim to be a first frame.
+     *
+     * `FirstFrameSourceTest` holds the pair to it: one call site, inside a null check, in this
+     * method. A source test because no device can demonstrate the fault — it needs an encode
+     * to fail, which is exactly what a device does not do on demand.
+     */
+    private fun emitFrame(bytes: ByteArray?) {
+        onBitmapBytesReady?.invoke(bytes)
+        // Only bytes close it. `encodeToJpeg` returns null when encoding throws, and
+        // `ReplayIntegration.handleCaptureResult` counts that as a delivery and stores nothing —
+        // so clearing the flag unconditionally would put the session back exactly where the
+        // marker case did: no real frame, and no reason left to take one.
+        if (bytes != null) {
+            isFirstCapture.set(false)
+            firstFrameAttempts.set(0)
+        }
+    }
+
+    /** Four bytes meaning "the same as the one before". Never a first frame. */
+    private fun emitMarker() {
+        onBitmapBytesReady?.invoke(REPEATED_FRAME_SIGNAL)
     }
 
     /**
@@ -314,15 +416,14 @@ internal class Recorder {
                 // Nothing is re-armed here on purpose. The draw that made a frame unusable also
                 // sets `isScreenContentChanged`, so the next tick tries again by itself — and once
                 // the screen settles, the settled frame is the one that gets captured.
-                onBitmapBytesReady?.invoke(REPEATED_FRAME_SIGNAL)
+                emitMarker()
                 return@captureToBitmapAsync
             }
             encoder.execute {
                 // Delivered from the encoder thread. Everything downstream is
                 // thread-safe: SessionDataManager buffers into a
                 // ConcurrentLinkedQueue and ReplayIntegration counts atomically.
-                val bytes = screenDrawing.encodeToJpeg(bitmap, scale)
-                onBitmapBytesReady?.invoke(bytes)
+                emitFrame(screenDrawing.encodeToJpeg(bitmap, scale))
             }
             }
         }
@@ -344,7 +445,8 @@ internal class Recorder {
             Curtains.onRootViewsChangedListeners -= onRootViewsChangedListener
             cleanupViewMonitoring()
             isScreenContentChanged.set(false)
-            isFirstCapture = true
+            isFirstCapture.set(true)
+            firstFrameAttempts.set(0)
             burstUntil.set(0)
             screenDrawing.clearObjectPools()
             Log.d("LightSessionCore", "view monitoring uninstalled")
@@ -465,4 +567,44 @@ internal class Recorder {
             Log.d("LightSessionCore", "cleaned up ${dead.size} dead window root(s)")
         }
     }
+}
+
+/** What a capture tick does with this instant. */
+internal enum class TickAction {
+    /** Take a picture. */
+    Capture,
+
+    /** Emit the marker, and keep a pending change pending — see [tickAction]. */
+    RepeatThroughTransition,
+
+    /** Emit the marker: nothing on screen moved. */
+    Repeat,
+}
+
+/**
+ * The whole of a tick's decision, as a function of three booleans.
+ *
+ * Pulled out of `Recorder.tick` to be tested, because the interesting cases are the ones that
+ * only happen when two of the three line up, and `Recorder` cannot be built on a JVM — it takes
+ * a main-thread `Handler` in its constructor.
+ *
+ * [needsFirstFrame] is the ordering that matters. It outranks [transitioning]: a session with no
+ * real frame yet captures anyway, mid-transition or not, because the alternative is a session
+ * whose first frame is a marker saying "same as the one before" with nothing before it. The
+ * renderer refuses those outright, and eighteen of them reached the dead-letter queue in
+ * production before the flag was made to mean "delivered" rather than "attempted".
+ *
+ * A frame taken mid-transition carries a mask that cannot be made correct, so it is worth
+ * avoiding — but a mask that is wrong for one frame is a smaller loss than a session that cannot
+ * be rendered at all.
+ */
+internal fun tickAction(
+    needsFirstFrame: Boolean,
+    changed: Boolean,
+    transitioning: Boolean,
+): TickAction = when {
+    needsFirstFrame -> TickAction.Capture
+    transitioning -> TickAction.RepeatThroughTransition
+    changed -> TickAction.Capture
+    else -> TickAction.Repeat
 }
