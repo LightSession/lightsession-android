@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.util.Base64
 import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 import android.util.Log
 import android.view.PixelCopy
 import android.view.View
@@ -845,8 +846,24 @@ internal class ScreenDrawing {
      * doctor list whose avatars Coil had decoded into hardware bitmaps.
      */
     suspend fun captureScreenAsBase64Async(): Pair<String?, Pair<Int, Int>?> {
-        val bitmap = kotlin.coroutines.suspendCoroutine<Bitmap?> { continuation ->
-            captureToBitmapAsync(ScalePresets.ORIGINAL) { continuation.resume(it) }
+        // Cancellable, and it matters here: this runs inside `currentScreenshotJob`, which is
+        // cancelled on every touch and every navigation — `ScreenMapperIntegration.cancelScreenshot`
+        // exists for exactly that. With the plain `suspendCoroutine` this used, a cancellation
+        // arriving while the capture was in flight did not resume anything; the coroutine sat here
+        // until PixelCopy called back and then ran on to encode a full-resolution JPEG and base64
+        // it, which is the expensive half of the work the cancellation was meant to prevent.
+        //
+        // The `onCancellation` arm is the half the IDE's warning does not mention. Bitmaps come
+        // from a pool of two, so a capture delivered to a continuation that has since been
+        // cancelled must be handed back — otherwise cancelling would trade wasted work for a lost
+        // buffer. `recycleBitmap` is safe from here: the pool is a `ConcurrentLinkedQueue` and the
+        // callback is documented as arriving on the main thread.
+        val bitmap = suspendCancellableCoroutine<Bitmap?> { continuation ->
+            captureToBitmapAsync(ScalePresets.ORIGINAL) { captured ->
+                continuation.resume(captured) { _, _, _ ->
+                    captured?.let { recycleBitmap(it) }
+                }
+            }
         } ?: return Pair(null, null)
 
         val bytes = encodeToJpeg(bitmap, ScalePresets.ORIGINAL) ?: return Pair(null, null)
