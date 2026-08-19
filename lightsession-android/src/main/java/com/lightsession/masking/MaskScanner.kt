@@ -9,6 +9,7 @@ import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.compose.ui.node.RootForTest
+import com.lightsession.mapper.SkeletonGenerator
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsNode
@@ -56,6 +57,13 @@ import androidx.compose.ui.semantics.getOrNull
  * the text is still readable somewhere else.
  */
 internal class MaskScanner {
+
+    /**
+     * Only for its route to the composition, which [ComposeImages] needs and which has already
+     * needed correcting twice — so there is one copy of it, in `SkeletonGenerator`, and this holds
+     * the instance rather than growing a second.
+     */
+    private val skeletonGenerator = SkeletonGenerator()
 
     private companion object {
         const val TAG = "MaskScanner"
@@ -225,6 +233,28 @@ internal class MaskScanner {
         maskImages: Boolean,
         into: MutableList<Rect>,
     ) {
+        // Images first, and from the composition rather than from semantics: a decorative
+        // `Image` publishes no semantics node at all, so this is the only place it exists. Only
+        // when the flag is on — an app that does not ask for image masking never pays for the
+        // composition walk. See [ComposeImages] for the cost and the cache.
+        //
+        // Allowed to throw, like the rest of this scan: the caller drops the frame, and a dropped
+        // frame is cheaper than a frame with an uncovered photograph in it.
+        // Two sources for images, deliberately, and deduplicated because they overlap. The
+        // composition finds every image that paints through a painter, described or not; semantics
+        // keeps the rarer case the composition cannot see — something drawn by hand into a
+        // `Canvas` and declared `Role.Image` has no painter to find. A described `Image` is found
+        // by both, and covering the same rectangle twice is free but reads as two images to anyone
+        // counting.
+        val seen = HashSet<Rect>()
+        fun add(rect: Rect) {
+            if (!rect.isEmpty && seen.add(rect)) into.add(rect)
+        }
+
+        if (maskImages) {
+            ComposeImages.rectsIn(host, skeletonGenerator).forEach { add(it) }
+        }
+
         val owner = (host as RootForTest).semanticsOwner
         val nodes = owner.getAllSemanticsNodes(mergingEnabled = false)
 
@@ -247,13 +277,14 @@ internal class MaskScanner {
             if (!shouldMask(node, maskText, maskImages)) continue
 
             val bounds = node.boundsInRoot
-            val rect = Rect(
-                location[0] + bounds.left.toInt(),
-                location[1] + bounds.top.toInt(),
-                location[0] + bounds.right.toInt(),
-                location[1] + bounds.bottom.toInt(),
+            add(
+                Rect(
+                    location[0] + bounds.left.toInt(),
+                    location[1] + bounds.top.toInt(),
+                    location[0] + bounds.right.toInt(),
+                    location[1] + bounds.bottom.toInt(),
+                ),
             )
-            if (!rect.isEmpty) into.add(rect)
         }
     }
 
