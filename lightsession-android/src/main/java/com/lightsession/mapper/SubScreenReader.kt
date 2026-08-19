@@ -1,7 +1,12 @@
 package com.lightsession.mapper
 
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
+import android.widget.EditText
+import android.widget.ImageView
+import android.widget.TextView
 import androidx.compose.ui.node.RootForTest
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsNode
@@ -136,7 +141,144 @@ internal object SubScreenReader {
             if (marker == Marker.POPUP) return null
             return SubScreen(SubScreen.Kind.MODAL, nameModal(tree))
         }
-        return null
+        return identifyViewModal(root)
+    }
+
+    /**
+     * The same question for a window with no Compose in it.
+     *
+     * Everything above reads Compose semantics, so it answers `null` for a dialog built out of
+     * Views — and that is most of them outside a Compose app. Measured on the React Native
+     * sample: RN's `Modal` is a plain `Dialog` holding `ReactViewGroup`s, its window reached
+     * `readModal` exactly as a Compose dialog does, and `identifyModal` returned null because
+     * there was no `RootForTest` to find. `Alert.alert` is an AppCompat `AlertDialog` and failed
+     * the same way. Neither ever became a node, on any version. The iOS SDK does not have this
+     * gap because it recognises a modal by controller class, which is blind to the UI framework.
+     *
+     * ## Telling a dialog from a popup without semantics
+     *
+     * [identifyModal] warns what is at stake: dropdown menus, tooltips and exposed-dropdown
+     * popups all add a root view exactly like a dialog does, and treating "a window appeared" as
+     * "a screen appeared" mints a screen every time someone opens a combo box. Compose separates
+     * them with `IsPopup` versus `IsDialog`; there is no such flag here, so the separator is the
+     * window's own type.
+     *
+     * `WindowManager.LayoutParams` partitions types by range, and the boundary is named:
+     * everything below `FIRST_SUB_WINDOW` is an application window, which is what a `Dialog`
+     * gets. A `PopupWindow` — every dropdown, menu and tooltip — is a *sub*-window at or above
+     * that boundary, and a toast or the keyboard is a system window above them again. Focus is
+     * required as well, because a window that cannot take focus is not something a person is
+     * looking *at*: it is chrome over what they were already looking at.
+     *
+     * Two conditions, both from the window rather than from its contents, and neither of them a
+     * guess about a class name — which would not survive R8 anyway.
+     */
+    private fun identifyViewModal(root: View): SubScreen? {
+        val params = root.layoutParams as? WindowManager.LayoutParams ?: return null
+        if (!isDialogWindow(params.type, params.flags)) {
+            Log.d("ScreenMapper", "window is not a dialog: type=${params.type} flags=${params.flags}")
+            return null
+        }
+        Log.d("ScreenMapper", "view-world dialog: type=${params.type}")
+        return SubScreen(SubScreen.Kind.MODAL, modalLabel(root.tag as? String, viewShapeHash(root)))
+    }
+
+    /**
+     * Whether a window that is not the Activity's own is a dialog rather than a popup.
+     *
+     * Pure, and separated from the View it was read off because this is the decision with a wrong
+     * answer worth writing down. [identifyModal] states the cost of getting it wrong: dropdown
+     * menus, tooltips and exposed-dropdown popups all add a root view exactly like a dialog does,
+     * so answering `true` too readily mints a screen every time someone opens a combo box.
+     *
+     * `WindowManager.LayoutParams` partitions types by range, and the boundary is named.
+     * `FIRST_SUB_WINDOW` divides application windows — which is what a `Dialog` gets — from
+     * sub-windows, which is what every `PopupWindow` gets; system windows such as a toast or the
+     * keyboard sit above them again. Focus is required as well: a window that cannot take focus is
+     * not something a person is looking *at*, it is chrome over what they were already looking at.
+     */
+    internal fun isDialogWindow(typeRaw: Int, flags: Int): Boolean {
+        if (typeRaw >= WindowManager.LayoutParams.FIRST_SUB_WINDOW) return false
+        return (flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) == 0
+    }
+
+    /**
+     * The developer's own name for a dialog, or a name for its shape.
+     *
+     * A `View.tag` is the View-world counterpart of `Modifier.testTag`: the one thing an app sets
+     * on a View for its own purposes and never for display, so it cannot be a person's data. It
+     * still goes through [SubScreens.sanitize], which is what refuses a "tag" that is really a
+     * record — the trap [nameModal] documents at length.
+     */
+    internal fun modalLabel(tag: String?, shapeHash: String): String {
+        SubScreens.sanitize(tag)?.let { return it }
+        return "dialog-$shapeHash"
+    }
+
+    /**
+     * [shapeHash] for a tree of Views: the depth and kind of every node, and nothing else.
+     *
+     * The same reasoning, including what is left out. No text, because a dialog named after what
+     * it says becomes one screen per record. No geometry, because a text view's width *is* its
+     * content — the measurement behind `a_dialog_keeps_one_name_when_only_its_text_changes`
+     * applies here unchanged.
+     *
+     * Kind comes from framework superclasses rather than class names. Names do not survive R8,
+     * and this SDK has already been caught by that once; `is TextView` holds for a design
+     * system's subclass, a third-party widget and React Native's own text view alike.
+     */
+    private fun viewShapeHash(root: View): String = shapeHashOf(flattenShape(root))
+
+    /** The tree reduced to what the hash is allowed to see: a kind and a depth per node. */
+    private fun flattenShape(root: View): List<Pair<Int, Int>> {
+        val shape = mutableListOf<Pair<Int, Int>>()
+        fun visit(view: View, depth: Int) {
+            shape += shapeKindOf(view) to depth
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) visit(view.getChildAt(index), depth + 1)
+            }
+        }
+        visit(root, 0)
+        return shape
+    }
+
+    /**
+     * What a View counts as, for shape only.
+     *
+     * Framework superclasses rather than class names: names do not survive R8, and this SDK has
+     * been caught by that before. `is TextView` holds for a design system's subclass, a
+     * third-party widget and React Native's own text view alike.
+     */
+    private fun shapeKindOf(view: View): Int = when {
+        view is EditText -> KIND_EDITABLE
+        view is TextView -> KIND_TEXT
+        view is ImageView -> KIND_IMAGE
+        view is ViewGroup -> KIND_GROUP
+        else -> KIND_OTHER
+    }
+
+    internal const val KIND_EDITABLE = 1
+    internal const val KIND_TEXT = 2
+    internal const val KIND_IMAGE = 3
+    internal const val KIND_GROUP = 4
+    internal const val KIND_OTHER = 5
+
+    /**
+     * [shapeHash] for a tree of Views, over the flattened shape rather than the tree.
+     *
+     * Pure, so the property that matters can be tested without an Android framework: the same
+     * shape always hashes the same, and a different shape does not. What is *absent* from the
+     * input is the point — no text, because a dialog named after what it says becomes one screen
+     * per record; no geometry, because a text view's width *is* its content, which is the
+     * measurement behind `a_dialog_keeps_one_name_when_only_its_text_changes`.
+     */
+    internal fun shapeHashOf(shape: List<Pair<Int, Int>>): String {
+        var hash = 17L
+        for ((kind, depth) in shape) {
+            hash = hash * 31 + kind
+            hash = hash * 31 + depth
+        }
+        return java.lang.Long.toHexString(hash and 0xFFFFFF)
     }
 
     private enum class Marker { DIALOG, POPUP }
