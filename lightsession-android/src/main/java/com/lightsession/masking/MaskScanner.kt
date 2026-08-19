@@ -308,10 +308,17 @@ internal class MaskScanner {
         }
 
         if (maskImages) {
+            // `Role.Image` is what a described image publishes, and it is free to ask. Every
+            // image — described or not — is also reported by [ComposeImages], so this is the
+            // cheap half of a belt and braces rather than the only source.
+            //
+            // A `ContentDescription` used to count as an image here, and no longer does. It is
+            // not evidence of one: an icon button, a switch, anything described for a screen
+            // reader carries one, so the flag covered controls as though they were photographs.
+            // Over-covering is the safe direction and was the right default while the
+            // composition was unreadable; now that it is read, the looser rule only hides
+            // widgets nobody asked to hide.
             if (config.getOrNull(SemanticsProperties.Role) == Role.Image) return true
-            if (config.getOrNull(SemanticsProperties.ContentDescription)?.isNotEmpty() == true) {
-                return true
-            }
         }
 
         return false

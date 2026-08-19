@@ -190,4 +190,32 @@ class ComposeImageMaskTest {
         rule.waitForIdle()
         return rects
     }
+
+    /**
+     * A described control is no longer covered as though it were a photograph.
+     *
+     * `ContentDescription` used to count as proof of an image, which made `maskImages` hide any
+     * described control — a switch, an icon button, anything a screen reader can name. It was the
+     * safe direction while the composition could not be read; now that every real image is
+     * reported from its painter, the loose rule only hid widgets nobody asked to hide.
+     *
+     * A `Switch` is the clean case: described, interactive, and it paints no image.
+     */
+    @Test
+    fun a_described_control_is_not_an_image() {
+        rule.setContent {
+            androidx.compose.material3.Switch(
+                checked = false,
+                onCheckedChange = {},
+                modifier = Modifier.semantics { contentDescription = "a described switch" },
+            )
+        }
+        rule.waitForIdle()
+
+        assertEquals(
+            "a described control was covered as though it were an image",
+            emptyList<android.graphics.Rect>(),
+            imageRects(),
+        )
+    }
 }
