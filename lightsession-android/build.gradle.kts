@@ -713,7 +713,32 @@ publishing {
             // Minor, and it renames screens for type-safe apps: the server keys on the name, so
             // FQN-named rows stop receiving data and can be deleted — cleanup, not migration.
             // No signature changes, no server requirement.
-            version = "0.25.0"
+            // 0.26.0 sees a dialog that has no Compose in it.
+            //
+            // Modal detection read Compose semantics and nothing else, so a dialog built out of
+            // Views answered `null` and never became a node — which is most dialogs outside a
+            // Compose app. Measured on the React Native sample: RN's `Modal` is a plain `Dialog`
+            // holding `ReactViewGroup`s, its window reached the reader exactly as a Compose dialog
+            // does, and the read came back `result=null` for want of a `RootForTest` to find.
+            // `Alert.alert` is an AppCompat `AlertDialog` and failed identically. Neither ever
+            // appeared in the map, on any version. The iOS SDK has no such gap because it
+            // recognises a modal by controller class, which is blind to the UI framework.
+            //
+            // The hard half was telling a dialog from a popup without semantics to ask. Compose
+            // separates them with `IsPopup` versus `IsDialog`; there is no such flag on a View, and
+            // treating "a window appeared" as "a screen appeared" mints a screen every time
+            // somebody opens a combo box — measured, a dropdown adds a root view exactly like a
+            // dialog does. The separator is the window's own type: `FIRST_SUB_WINDOW` divides
+            // application windows, which is what a `Dialog` gets, from sub-windows, which is what
+            // every `PopupWindow` gets. Focus is required too, because a window that cannot take
+            // focus is chrome over what someone was already looking at rather than a place they
+            // went.
+            //
+            // Minor, on 0.18's reasoning, and the same shape of consequence: a non-Compose consumer
+            // starts reporting dialogs it never did, with no code change on their side, and its map
+            // gains nodes and edges. Nothing existing is renamed. No signature changes, no server
+            // requirement.
+            version = "0.26.0"
 
             afterEvaluate {
                 from(components["release"])
