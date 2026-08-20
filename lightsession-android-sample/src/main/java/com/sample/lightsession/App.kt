@@ -39,6 +39,9 @@ class App : Application() {
                 apiUrl = "http://10.0.2.2:3002",
                 // Sharper than the LOW default, because this app exists to be looked at.
                 captureQuality = LightSessionConfig.CaptureQuality.MEDIUM,
+                // Off by default in the SDK, because nothing else it does can break the app
+                // it watches. On here because NetworkPlaygroundActivity exists to exercise it.
+                captureNetwork = true,
                 // Must match LS_SESSION__IDLE_TIMEOUT_SECS on the ingest service. 8s is what
                 // scripts/e2e.sh runs with; production uses the 30s default on both sides. Shorter
                 // splits sessions the server would keep whole, longer keeps sending to one it has

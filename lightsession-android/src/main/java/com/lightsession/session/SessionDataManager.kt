@@ -148,6 +148,7 @@ internal class SessionDataManager(
      * untouched.
      */
     private val errorBuffer = ConcurrentLinkedQueue<JsonElement>()
+    private val apiBuffer = ConcurrentLinkedQueue<JsonElement>()
 
     // Sequence tracking
     private val globalSequenceCounter = AtomicInteger(0)
@@ -615,6 +616,72 @@ internal class SessionDataManager(
     }
 
     /**
+     * One HTTP request, as a breadcrumb on the timeline.
+     *
+     * Built as a raw crumb rather than a typed `SessionEvent` for the reason [addError] gives:
+     * the ingest reads a handful of names off any crumb whatever its type, so this is attributed
+     * to its screen by a server that has never heard of `api`. The typed columns are a server
+     * concern; the wire is these names.
+     *
+     * `sequence` from the same counter as everything else, and it has to be: the ingest derives
+     * an event's id from `(project, session, kind, seq, ordinal, ts)`, so two requests sharing a
+     * sequence in the same millisecond would collapse into one row on merge.
+     *
+     * ## What is not here
+     *
+     * No headers and no bodies, and there is no parameter to pass them through — the absence is
+     * structural rather than a default that could be flipped. `path` arrives already collapsed
+     * by [com.lightsession.network.PathTemplate], and `host` is a host rather than a URL.
+     *
+     * Gated on [Recording.enabled] like a navigation and unlike an error: a request is part of
+     * what a session did, so stopping the recording stops it. An error is its own pillar.
+     */
+    fun addApiCall(
+        method: String,
+        host: String,
+        path: String,
+        status: Int,
+        durationMs: Long,
+        requestBytes: Long,
+        responseBytes: Long,
+        errorClass: String,
+        screen: String?,
+        screenId: String?,
+    ) {
+        if (!Recording.enabled) return
+
+        val crumb = buildJsonObject {
+            put("type", JsonPrimitive("api"))
+            put("timestamp", JsonPrimitive(System.currentTimeMillis()))
+            put("sequence", JsonPrimitive(globalSequenceCounter.incrementAndGet()))
+            put("user_id", JsonPrimitive(userId))
+            put("user_type", JsonPrimitive(userType))
+            put("app_version", JsonPrimitive(appVersion))
+            screen?.let { put("screen", JsonPrimitive(it)) }
+            screenId?.let { put("screen_id", JsonPrimitive(it)) }
+            // The name every kind's latency already travels under, so the server needs no
+            // special case to read it.
+            put("duration", JsonPrimitive(durationMs))
+            put(
+                "data",
+                buildJsonObject {
+                    put("method", JsonPrimitive(method))
+                    put("host", JsonPrimitive(host))
+                    put("path", JsonPrimitive(path))
+                    put("status", JsonPrimitive(status))
+                    // A declared length of -1 means the client did not know — chunked, or a
+                    // stream. Sent as 0, because "unknown" and "empty" are different and only
+                    // one of them is a number worth summing.
+                    put("request_bytes", JsonPrimitive(requestBytes.coerceAtLeast(0)))
+                    put("response_bytes", JsonPrimitive(responseBytes.coerceAtLeast(0)))
+                    put("error", JsonPrimitive(errorClass))
+                },
+            )
+        }
+        apiBuffer.offer(crumb)
+    }
+
+    /**
      * Traits as JSON, keeping only what JSON can carry.
      *
      * Anything else is dropped with a warning rather than stringified. `toString()` on a
@@ -781,9 +848,10 @@ internal class SessionDataManager(
         val interactions = drain(interactionBuffer)
         val identifies = drain(identifyBuffer)
         val errors = drain(errorBuffer)
+        val apiCalls = drain(apiBuffer)
 
         if (frames.isEmpty() && navigations.isEmpty() && interactions.isEmpty() &&
-            identifies.isEmpty() && errors.isEmpty()
+            identifies.isEmpty() && errors.isEmpty() && apiCalls.isEmpty()
         ) {
             return@synchronized
         }
@@ -805,9 +873,12 @@ internal class SessionDataManager(
             }
         }
         if (navigations.isNotEmpty() || interactions.isNotEmpty() || identifies.isNotEmpty() ||
-            errors.isNotEmpty()
+            errors.isNotEmpty() || apiCalls.isNotEmpty()
         ) {
-            spoolCrumbs(batchId, batchNumber, deviceInfo, navigations, interactions, identifies, errors)
+            spoolCrumbs(
+                batchId, batchNumber, deviceInfo, navigations, interactions, identifies, errors,
+                apiCalls,
+            )
         }
 
         // The spool's own totals are deliberately not in here. `pendingCount()` lists two
@@ -818,7 +889,8 @@ internal class SessionDataManager(
         // callback. `getStats()` reports those numbers when something actually asks.
         Log.d("SessionDataManager",
             "Batch #$batchNumber spooled: ${frames.size} frames, ${navigations.size} navigations, " +
-                    "${interactions.size} interactions (reason: $reason)")
+                "${interactions.size} interactions, ${errors.size} errors, " +
+                "${apiCalls.size} api (reason: $reason)")
     }
 
     private fun <T> drain(queue: ConcurrentLinkedQueue<T & Any>): List<T> {
@@ -913,10 +985,14 @@ internal class SessionDataManager(
         interactions: List<InteractionEvent>,
         identifies: List<JsonElement>,
         errors: List<JsonElement> = emptyList(),
+        apiCalls: List<JsonElement> = emptyList(),
     ) {
         val breadcrumbs = mutableListOf<JsonElement>()
         breadcrumbs.addAll(identifies)
         breadcrumbs.addAll(errors)
+        // Already whole crumbs, like an identify and an error: nothing here inspects them, so
+        // they go in untouched and the ingest reads the names it reads off any crumb.
+        breadcrumbs.addAll(apiCalls)
 
         navigations.forEach { nav ->
             breadcrumbs.add(buildJsonObject {

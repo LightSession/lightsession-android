@@ -41,6 +41,11 @@
         <activity
             android:name="com.sample.lightsession.ErrorPlaygroundActivity"
             android:exported="true" />
+        <!-- Real outbound requests, one button each. Exported for the same reason: an E2E run
+             drives it from adb rather than depending on a tap. -->
+        <activity
+            android:name="com.sample.lightsession.NetworkPlaygroundActivity"
+            android:exported="true" />
         <activity
             android:name="com.sample.lightsession.ComposeWithNavigationActivity"
             android:exported="false" />
