@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import com.lightsession.errors.ErrorCapture
+import com.lightsession.network.NetworkRecorder
 import com.lightsession.transport.NetworkDataSender
 import com.lightsession.mapper.ScreenMapperIntegration
 import com.lightsession.replay.ReplayIntegration
@@ -285,6 +286,13 @@ public class LightSession private constructor() {
         if (config.captureErrors) {
             ErrorCapture.install(sessionDataManager, application.packageName)
         }
+
+        // Unconditional, unlike the line above, and the asymmetry is the point: an installed
+        // interceptor asks this object whether to record, so it has to be reachable even when
+        // the answer is no. Gating the install on the flag would leave an interceptor already
+        // shipped in a release with nothing to talk to, and no way to turn on without a new
+        // build of the customer's app.
+        NetworkRecorder.install(sessionDataManager, config.captureNetwork)
 
         // Without this the only flush that ever runs is the five-second ticker:
         // `onTerminate`, `onLowMemory` and `onDestroy` were all written and none of

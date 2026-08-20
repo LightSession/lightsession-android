@@ -313,6 +313,20 @@ public data class LightSessionConfig @JvmOverloads constructor(
      * Cost when nothing crashes: zero. The handler sits idle; a handled capture is one JSON
      * build and a queue offer.
      */
+    /**
+     * Whether an installed [com.lightsession.network.LightSessionInterceptor] records anything.
+     *
+     * Two switches rather than one, and deliberately: the customer decides whether we are in
+     * their network path at all by adding the interceptor to their own client, and this decides
+     * whether an interceptor already shipped in their release records. Without it, turning the
+     * feature off would mean a new build of *their* app.
+     *
+     * Default off, which is the opposite of every other flag here. Nothing else in this SDK can
+     * break the app it watches; this sits in the path of every request the app makes, and a
+     * default that puts us there without anyone choosing it is not a default we are entitled to.
+     */
+    val captureNetwork: Boolean = false,
+
     val captureErrors: Boolean = true,
 ) {
     public enum class CaptureQuality {
