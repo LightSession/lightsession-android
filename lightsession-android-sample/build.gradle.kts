@@ -62,6 +62,10 @@ dependencies {
     // through the FragmentManager, and no screen here exercised that path until now — which is how
     // a whole branch of the mapper went nineteen commits without being run.
     implementation("androidx.fragment:fragment-ktx:1.8.5")
+
+    // The customer's own HTTP client, which is where our interceptor goes. Declared here
+    // rather than leaned on transitively: the opt-in posture is that the app owns the client.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.navigation:navigation-fragment-ktx:2.8.4")
     implementation("androidx.navigation:navigation-ui-ktx:2.8.4")
 
