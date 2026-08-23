@@ -70,6 +70,76 @@ class LightSessionInterceptorTest {
             .body(body.toResponseBody("application/json".toMediaType()))
             .build()
 
+    // ------------------------------------------------------------- one row per request
+
+    /**
+     * Two instances in one chain record once.
+     *
+     * Not hypothetical, and it is the failure mode a build-time transform makes likely: a
+     * transform that inserts this interceptor cannot see that the source already installed it by
+     * hand. Measured on the sample with both paths active before this guard existed — one request,
+     * two rows, no error and no log. Every number the product shows would have been doubled.
+     *
+     * Asserted through the outer interceptor's own view: the inner one must still call `proceed`,
+     * so the request reaches the network exactly once either way, and the recording is what
+     * collapses.
+     */
+    @Test
+    fun `a second instance in the same chain does not record again`() {
+        val req = request()
+        var innerSawTag = false
+        var proceeds = 0
+
+        // The inner interceptor stands where a second copy of this class would: it receives the
+        // request the outer one already tagged.
+        val inner = Interceptor { chain ->
+            innerSawTag = chain.request().tag(AlreadyRecording::class.java) != null
+            proceeds++
+            LightSessionInterceptor().intercept(
+                object : Interceptor.Chain {
+                    override fun request(): Request = chain.request()
+                    override fun proceed(request: Request): Response = ok(request)
+                    override fun connection(): Connection? = null
+                    override fun call(): Call = OkHttpClient().newCall(chain.request())
+                    override fun connectTimeoutMillis(): Int = 0
+                    override fun readTimeoutMillis(): Int = 0
+                    override fun writeTimeoutMillis(): Int = 0
+                    override fun withConnectTimeout(t: Int, u: TimeUnit) = this
+                    override fun withReadTimeout(t: Int, u: TimeUnit) = this
+                    override fun withWriteTimeout(t: Int, u: TimeUnit) = this
+                },
+            )
+        }
+
+        val outerChain = FakeChain(req) { tagged -> inner.intercept(SingleShot(tagged)) }
+        LightSessionInterceptor().intercept(outerChain)
+
+        assertTrue("the outer instance did not tag the request", innerSawTag)
+        assertEquals("the request must still reach the network once", 1, proceeds)
+    }
+
+    /** A chain whose `proceed` just answers, for the nested case above. */
+    private class SingleShot(private val request: Request) : Interceptor.Chain {
+        override fun request(): Request = request
+        override fun proceed(request: Request): Response =
+            Response.Builder()
+                .request(request)
+                .protocol(Protocol.HTTP_1_1)
+                .code(200)
+                .message("OK")
+                .body("{}".toResponseBody("application/json".toMediaType()))
+                .build()
+
+        override fun connection(): Connection? = null
+        override fun call(): Call = OkHttpClient().newCall(request)
+        override fun connectTimeoutMillis(): Int = 0
+        override fun readTimeoutMillis(): Int = 0
+        override fun writeTimeoutMillis(): Int = 0
+        override fun withConnectTimeout(timeout: Int, unit: TimeUnit): Interceptor.Chain = this
+        override fun withReadTimeout(timeout: Int, unit: TimeUnit): Interceptor.Chain = this
+        override fun withWriteTimeout(timeout: Int, unit: TimeUnit): Interceptor.Chain = this
+    }
+
     // --------------------------------------------------------------- pass-through
 
     /** Whatever this class gets wrong, the app must see exactly what it would have seen. */

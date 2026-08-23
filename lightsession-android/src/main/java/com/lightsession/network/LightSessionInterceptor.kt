@@ -54,7 +54,26 @@ public class LightSessionInterceptor : Interceptor {
 
     @Throws(IOException::class)
     public override fun intercept(chain: Interceptor.Chain): Response {
-        val request = chain.request()
+        val original = chain.request()
+
+        // One row per request, however many copies of this class are in the chain.
+        //
+        // Two instances is not a hypothetical: a client can be handed this interceptor as both an
+        // application and a network interceptor, an app can add it twice across two builders it
+        // merges, and a build-time transform that inserts it cannot see that the source already
+        // did. Measured with a transform over `OkHttpClient.Builder.build()` against a call site
+        // that also installed it by hand: one request, `2 api` rows. Nothing errors, no log
+        // appears, and every number the product shows is doubled — request counts, failure rates,
+        // the endpoint list. Silent and wrong beats loud and wrong to nobody.
+        //
+        // The first instance to run tags the request; a later one sees the tag and gets out of the
+        // way. A tag rather than a header, because a header would reach the customer's server.
+        if (original.tag(AlreadyRecording::class.java) != null) {
+            return chain.proceed(original)
+        }
+        val request = original.newBuilder()
+            .tag(AlreadyRecording::class.java, AlreadyRecording)
+            .build()
         val startedAt = System.nanoTime()
 
         // Outside every guard below, called exactly once, and its outcome is passed through
@@ -128,3 +147,15 @@ internal object FailureClass {
         return "io"
     }
 }
+
+/**
+ * Marks a request as already being recorded by an outer [LightSessionInterceptor].
+ *
+ * An object rather than a boolean: `Request.tag(Class)` is keyed on the type, so the type *is* the
+ * flag and there is no value to get wrong.
+ *
+ * `internal` rather than private so the test can assert the mechanism itself. `Request.tags` is
+ * internal to OkHttp, so a test with no name for this type could only check that *some* tag
+ * exists — which passes for the wrong reason the day anything else tags a request.
+ */
+internal object AlreadyRecording
