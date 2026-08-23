@@ -1,0 +1,4 @@
+# Its own file because this is a separate included build: the root .gitignore anchors `/build` to
+# the repository root, which never matched a nested build's output.
+build/
+.gradle/

@@ -2,6 +2,11 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.compose)
+    // Inserts the network interceptor into every OkHttpClient this module builds — and
+    // `NetworkPlaygroundActivity` still installs it by hand. Both, deliberately: that pair is the
+    // arrangement that produced two rows for one request before the interceptor learned to
+    // recognise itself, so keeping it here is what stops the guard rotting.
+    id("com.lightsession.instrumentation")
 }
 
 android {

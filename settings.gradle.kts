@@ -1,4 +1,8 @@
 pluginManagement {
+    // The instrumentation plugin, built from source and resolved by id in the same build. Inside
+    // `pluginManagement` rather than at the top level, because that is where Gradle looks for a
+    // plugin *id*; an `includeBuild` outside it makes the project available and the id unknown.
+    includeBuild("lightsession-gradle-plugin")
     repositories {
         google {
             content {
