@@ -738,7 +738,34 @@ publishing {
             // starts reporting dialogs it never did, with no code change on their side, and its map
             // gains nodes and edges. Nothing existing is renamed. No signature changes, no server
             // requirement.
-            version = "0.26.0"
+            // 0.27.0 records the requests a session made, and is the first artifact to carry
+            // anything since 0.25.0.
+            //
+            // 0.26.0 was tagged in this file and never published — the registry goes straight from
+            // 0.25.0 to here — so the gap is deliberate and this release carries everything the
+            // 0.26.0 note above describes as well: the dialog with no Compose in it, the Compose
+            // image that declares no semantics, the corners a modal actually has, the first frame
+            // of a session being a real one, and a screenshot that honours cancellation.
+            //
+            // What is new beyond that note is the network pillar. One row per HTTP request, on the
+            // screen that made it, which is the pairing nobody else can offer: a failing endpoint
+            // is a backend fact, and a failing endpoint on the checkout screen right before the
+            // session ends is a product one. Opt-in twice over — a config flag and an interceptor
+            // the customer installs on the client they own — because this is the first thing the
+            // SDK does that sits in the path of the app's own traffic, and the worst failure of
+            // everything else is a wrong number on a page while the worst failure here is a
+            // request that never completes.
+            //
+            // Sampling is by session rather than by request, derived from the session id rather
+            // than rolled and remembered, and every failure is kept whatever the rate says. A coin
+            // per request is the obvious design and it punches holes in the one view this product
+            // has of value; a rare failure sampled at a tenth is seen once in ten occurrences,
+            // which is the occurrence somebody phoned about.
+            //
+            // Minor. Two additive config fields, one new public class, and a consumer who asks for
+            // none of it is unaffected: `captureNetwork` defaults off, so an app that upgrades and
+            // changes nothing sends exactly what it sent before.
+            version = "0.27.0"
 
             afterEvaluate {
                 from(components["release"])
