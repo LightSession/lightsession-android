@@ -292,7 +292,11 @@ public class LightSession private constructor() {
         // the answer is no. Gating the install on the flag would leave an interceptor already
         // shipped in a release with nothing to talk to, and no way to turn on without a new
         // build of the customer's app.
-        NetworkRecorder.install(sessionDataManager, config.captureNetwork)
+        NetworkRecorder.install(
+            sessionDataManager,
+            config.captureNetwork,
+            config.networkSampleRate,
+        )
 
         // Without this the only flush that ever runs is the five-second ticker:
         // `onTerminate`, `onLowMemory` and `onDestroy` were all written and none of

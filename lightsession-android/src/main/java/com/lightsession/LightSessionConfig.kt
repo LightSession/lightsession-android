@@ -327,6 +327,27 @@ public data class LightSessionConfig @JvmOverloads constructor(
      */
     val captureNetwork: Boolean = false,
 
+    /**
+     * What fraction of sessions have their network recorded. `1.0` — everything — by default.
+     *
+     * The unit is the **session**, not the request, and that is the whole design. A coin per
+     * request at a tenth turns a screen that fires six calls at once into one recorded call, and
+     * a reader then concludes the screen makes one request: a lie about the app's structure that
+     * no sample size repairs. It also punches holes in the session timeline, which is the one
+     * view this product has that a server-side tool does not. So a session is recorded whole or
+     * not at all, and sessions are drawn uniformly.
+     *
+     * **Failures are recorded regardless.** A rare failure at a tenth would otherwise be seen
+     * once in ten occurrences, and the rare one is the one somebody phones about. Those extras
+     * are sent marked as standing for no traffic, so they can be listed and watched without
+     * moving any rate or percentile — see [com.lightsession.network.NetworkSampling].
+     *
+     * Default `1.0` on purpose. Sampling makes every number an estimate, and a default that
+     * quietly estimates would have people quoting figures they did not know were approximate.
+     * Turning it down is a decision about cost, and it belongs to whoever is paying.
+     */
+    val networkSampleRate: Double = 1.0,
+
     val captureErrors: Boolean = true,
 ) {
     public enum class CaptureQuality {
