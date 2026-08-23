@@ -765,7 +765,29 @@ publishing {
             // Minor. Two additive config fields, one new public class, and a consumer who asks for
             // none of it is unaffected: `captureNetwork` defaults off, so an app that upgrades and
             // changes nothing sends exactly what it sent before.
-            version = "0.27.0"
+            // 0.28.0 stops double-counting a request, and prototypes installing the
+            // interceptor without a line of Kotlin.
+            //
+            // Two copies of `LightSessionInterceptor` in one chain recorded the request twice —
+            // silently, and every number the network pillar produces would have been double.
+            // Reachable today by handing the interceptor to a client as both an application and a
+            // network interceptor, or adding it twice across two builders; and reachable by
+            // construction the moment a build-time transform inserts it into a call site the
+            // source already covered, which is how it was found. The first instance now tags the
+            // request and a later one steps aside, so the number is one per request whatever the
+            // arrangement.
+            //
+            // The transform itself ships as source, not as an artifact. `lightsession-gradle-plugin`
+            // rewrites `OkHttpClient$Builder.build()` to add the interceptor, which is one line in
+            // a consumer's build file instead of one line per client — and reaches a client built
+            // inside a dependency, which a hand-written line cannot. It is not published: a release
+            // build under R8 and any AGP other than 8.7.3 are untested, and its scope default is a
+            // product decision rather than an implementation one.
+            //
+            // Patch would be defensible for the fix alone. Minor because the module gains a second
+            // buildable component, and because an app that was double-counting sees its numbers
+            // halve on upgrade — right, and still a change in what the dashboard says.
+            version = "0.28.0"
 
             afterEvaluate {
                 from(components["release"])
