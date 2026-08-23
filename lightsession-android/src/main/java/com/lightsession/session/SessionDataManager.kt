@@ -60,6 +60,18 @@ internal class SessionDataManager(
     @Volatile
     private var sessionId = newSessionId()
 
+    /**
+     * The current session's id, for the sampling decision.
+     *
+     * Exposed rather than passing the rate down here, because the decision has to be asked
+     * *before* a crumb is built — a request the sample does not want should cost a hash and
+     * nothing more. Read without a lock: rotation replaces the reference, so a caller either
+     * sees the old id or the new one, and a request that lands on the boundary belongs to
+     * whichever of the two the read caught. Locking on the app's network thread to settle that
+     * would be the wrong trade by a wide margin.
+     */
+    internal fun currentSessionId(): String = sessionId
+
     private var sessionStartTime = System.currentTimeMillis()
 
     /** When the app last went to background, for [rotateIfIdle]. */
@@ -647,6 +659,7 @@ internal class SessionDataManager(
         errorClass: String,
         screen: String?,
         screenId: String?,
+        weight: Int = 1,
     ) {
         if (!Recording.enabled) return
 
@@ -675,6 +688,10 @@ internal class SessionDataManager(
                     put("request_bytes", JsonPrimitive(requestBytes.coerceAtLeast(0)))
                     put("response_bytes", JsonPrimitive(responseBytes.coerceAtLeast(0)))
                     put("error", JsonPrimitive(errorClass))
+                    // How many real requests this one stands for. Always sent, including the
+                    // `1` that means "no sampling" — an omitted field would have the server
+                    // guessing, and it already has to guess for every SDK older than this.
+                    put("weight", JsonPrimitive(weight))
                 },
             )
         }

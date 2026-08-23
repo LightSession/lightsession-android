@@ -94,7 +94,11 @@ internal object PathTemplate {
             extension.all { it.isLetterOrDigit() } &&
             segment.length > extension.length + 1
         ) {
-            return collapseWord(segment.substringBeforeLast('.')) + "." + extension
+            // The stem goes back through `collapse`, not straight to `collapseWord`: an id with a
+            // file extension on it is still an id. Sending the stem here skipped the digit and UUID
+            // rules, so `/assets/8842.png` published `8842` and minted one endpoint per file —
+            // under-collapsing, which is the failure that can neither be seen nor undone.
+            return collapse(segment.substringBeforeLast('.')) + "." + extension
         }
         if (segment.length > MAX_WORD) return "{id}"
         if (

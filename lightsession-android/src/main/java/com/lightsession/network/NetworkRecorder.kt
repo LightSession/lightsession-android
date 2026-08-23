@@ -24,9 +24,17 @@ internal object NetworkRecorder {
     @Volatile
     private var enabled: Boolean = false
 
-    fun install(sessionDataManager: SessionDataManager, captureNetwork: Boolean) {
+    @Volatile
+    private var sampleRate: Double = NetworkSampling.NO_SAMPLING
+
+    fun install(
+        sessionDataManager: SessionDataManager,
+        captureNetwork: Boolean,
+        networkSampleRate: Double = NetworkSampling.NO_SAMPLING,
+    ) {
         dataManager = sessionDataManager
         enabled = captureNetwork
+        sampleRate = networkSampleRate
     }
 
     /**
@@ -46,6 +54,18 @@ internal object NetworkRecorder {
     ) {
         if (!enabled) return
         val manager = dataManager ?: return
+
+        // The sampling decision, before any of the work below. A request the sample does not want
+        // costs a hash of the session id and nothing else — no screen lookup, no JSON, no queue.
+        // That matters more here than anywhere else in the SDK: this runs on the app's own
+        // network threads, once per request, and sampling exists to make that cheaper.
+        //
+        // `status = 0` means the request never got an answer, which is a failure and one of the
+        // ones most worth keeping.
+        val failed = status >= 400 || status == 0
+        val weight = NetworkSampling.weightFor(manager.currentSessionId(), sampleRate, failed)
+            ?: return
+
         val mapper = ScreenMapperIntegration.getInstance()
         manager.addApiCall(
             method = method,
@@ -56,6 +76,7 @@ internal object NetworkRecorder {
             requestBytes = requestBytes,
             responseBytes = responseBytes,
             errorClass = errorClass,
+            weight = weight,
             // The same fallback the error path takes, for the same measured reason: a Compose
             // Activity is named a grace period after resume, and a request fired from `init` or
             // a splash lands inside exactly that window. The Activity's own name is where the

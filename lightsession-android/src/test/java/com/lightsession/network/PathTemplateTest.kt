@@ -109,6 +109,21 @@ class PathTemplateTest {
         assertEquals("/assets/{id}.png", PathTemplate.of("/assets/9f86d081884c7d659a2f.png"))
     }
 
+    /**
+     * An id wearing an extension is still an id. The stem used to skip the digit and UUID rules, so
+     * a numbered or UUID-named file published its name — and the quiet half of that failure is one
+     * endpoint per file, which is the endpoint list destroying itself.
+     */
+    @Test
+    fun `an id with a file extension on it is still an id`() {
+        assertEquals("/assets/{id}.png", PathTemplate.of("/assets/8842.png"))
+        assertEquals(
+            "/f/{uuid}.pdf",
+            PathTemplate.of("/f/1e527025-c3ae-40c1-bf98-7d6a67e759a6.pdf"),
+        )
+        assertEquals("/f/report.tar.gz", PathTemplate.of("/f/report.tar.gz"))
+    }
+
     // --------------------------------------------- refusing rather than guessing
 
     @Test

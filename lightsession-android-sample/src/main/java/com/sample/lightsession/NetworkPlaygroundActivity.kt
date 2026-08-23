@@ -63,6 +63,16 @@ class NetworkPlaygroundActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent { Playground() }
 
+        // Stored for the *next* launch, because the rate is read when the Application starts
+        // and that already happened. `--ef rate 0.1` then a force-stop and a relaunch.
+        intent?.extras?.let { extras ->
+            if (extras.containsKey("rate")) {
+                getSharedPreferences("demo", MODE_PRIVATE).edit()
+                    .putFloat("networkSampleRate", extras.getFloat("rate", 1.0f))
+                    .apply()
+            }
+        }
+
         when (intent?.getStringExtra("action")) {
             "ok" -> after { get("$base/health") }
             "notfound" -> after { get("$base/api/v1/projects/84321/nope") }
