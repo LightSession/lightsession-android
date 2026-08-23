@@ -42,6 +42,17 @@ class App : Application() {
                 // Off by default in the SDK, because nothing else it does can break the app
                 // it watches. On here because NetworkPlaygroundActivity exists to exercise it.
                 captureNetwork = true,
+                // Read from prefs rather than hardcoded, so a script can vary it without a
+                // rebuild:
+                //
+                //   adb shell am start -n com.sample.lightsession/.NetworkPlaygroundActivity \
+                //       --ef rate 0.1
+                //   adb shell am force-stop com.sample.lightsession   # then relaunch
+                //
+                // Two launches, because the rate is read here — in `onCreate` of the
+                // Application — and the first launch is what writes it. The alternative is a
+                // rebuild per rate, which is slower and easy to forget.
+                networkSampleRate = networkSampleRate(),
                 // Must match LS_SESSION__IDLE_TIMEOUT_SECS on the ingest service. 8s is what
                 // scripts/e2e.sh runs with; production uses the 30s default on both sides. Shorter
                 // splits sessions the server would keep whole, longer keeps sending to one it has
@@ -55,4 +66,15 @@ class App : Application() {
             ),
         )
     }
+
+    /**
+     * The sampling rate a previous launch asked for, or 1.0.
+     *
+     * A `Float` in prefs because that is what `am start --ef` writes, widened here; the config
+     * takes a `Double` and the SDK's arithmetic is in doubles.
+     */
+    private fun networkSampleRate(): Double =
+        getSharedPreferences("demo", MODE_PRIVATE)
+            .getFloat("networkSampleRate", 1.0f)
+            .toDouble()
 }
