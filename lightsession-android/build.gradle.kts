@@ -109,7 +109,18 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:${libs.versions.androidx.compose.navigation.get()}")
 
     // Compose - use BOM
-    implementation(platform("androidx.compose:compose-bom:2024.11.00"))
+    //
+    // `api(platform(...))`, not `implementation`, and the difference is whether this library can
+    // be installed at all. The five `api` lines below carry no version — the BOM supplies it — and
+    // an `implementation` BOM is not exported, so a consumer received five Compose dependencies
+    // with empty versions and Gradle refused them:
+    //
+    //     Could not find androidx.compose.ui:ui:
+    //
+    // A Compose app never saw it, because it applies the BOM itself and fills the versions in by
+    // accident. Anything else could not consume this SDK — found by installing the React Native
+    // bridge into a plain RN app, which is the consumer that has no reason to know Compose exists.
+    api(platform("androidx.compose:compose-bom:2024.11.00"))
     api("androidx.compose.ui:ui")
     api("androidx.compose.runtime:runtime")
     api("androidx.compose.runtime:runtime-livedata")
