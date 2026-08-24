@@ -112,6 +112,64 @@ public class LightSession private constructor() {
     }
 
     /**
+     * Records one HTTP request the app made, for a client that has no interceptor of ours in it.
+     *
+     * [com.lightsession.network.LightSessionInterceptor] is the ordinary path and covers OkHttp,
+     * which is most of Android. This is the primitive underneath it, for everything else — Ktor, a
+     * hand-written client, or a request issued from JavaScript in React Native, where the only
+     * thing that can cross the bridge is a URL string.
+     *
+     * ```kotlin
+     * LightSession.recordRequest(
+     *     method = "POST",
+     *     url = "https://api.example.com/v1/orders/84321/items",
+     *     statusCode = 201,
+     *     durationMs = 118,
+     * )
+     * ```
+     *
+     * What is kept: the method, the host, the path with its dynamic segments collapsed **here, on
+     * the device**, the status, the duration, the two byte counts and a one-word failure class.
+     * There is no parameter for a body or a header — passing one is impossible rather than
+     * discouraged, and the query string is dropped before anything is stored.
+     *
+     * `statusCode` is `0` for a request that never got an answer; pass `error` with the class of
+     * what went wrong. Both are what the server reads as a failure.
+     *
+     * Byte counts are optional and `0` means unknown rather than empty. Do not read a body to
+     * measure it — that consumes the stream the app is about to read, which is the classic way a
+     * measurement breaks the thing it measures.
+     *
+     * Does nothing unless [LightSessionConfig.captureNetwork] is on, and obeys
+     * [LightSessionConfig.networkSampleRate] like any other recorded request. Callable from any
+     * thread.
+     */
+    public fun recordRequest(
+        method: String,
+        url: String,
+        statusCode: Int,
+        durationMs: Long,
+        requestBytes: Long = 0,
+        responseBytes: Long = 0,
+        error: String = "",
+    ) {
+        if (!isInitialized) return
+        // Guarded here as well as inside, and both matter: this is a public entry point a customer
+        // calls from their own code, so a bug of ours must not surface as a crash of theirs.
+        runCatching {
+            NetworkRecorder.recordUrl(
+                method = method,
+                url = url,
+                status = statusCode,
+                durationMs = durationMs,
+                requestBytes = requestBytes,
+                responseBytes = responseBytes,
+                errorClass = error,
+            )
+        }
+    }
+
+    /**
      * Reports an exception the app caught and wants on the record.
      *
      * The uncaught kind reports itself — a crash is captured, written to disk before the process
