@@ -42,6 +42,50 @@ internal object NetworkRecorder {
      * matter: this one keeps a bug here from reaching an app that installed the interceptor,
      * and that one keeps a bug in the guard itself from doing the same.
      */
+    /**
+     * Records one request from a raw URL, for a client this SDK has no interceptor for.
+     *
+     * [LightSessionInterceptor] exists for OkHttp and covers most Android apps. This is for
+     * everything else: Ktor, a hand-written client, or — the case that made it necessary — React
+     * Native, where the request is issued from JavaScript and the only thing that crosses the
+     * bridge is a URL string.
+     *
+     * The URL is parsed and the path collapsed *here*, in the same [PathTemplate] the interceptor
+     * uses. Handing the caller that job would mean a second implementation of rules whose subtle
+     * cases were found the hard way — an email is not a file extension — and two implementations
+     * that almost agree split one endpoint into two rows.
+     *
+     * Returns quietly on anything it cannot read. A caller reporting a request should never have to
+     * handle an error from the reporting.
+     */
+    fun recordUrl(
+        method: String,
+        url: String,
+        status: Int,
+        durationMs: Long,
+        requestBytes: Long,
+        responseBytes: Long,
+        errorClass: String,
+    ) {
+        if (!enabled) return
+        val parsed = runCatching { java.net.URI(url) }.getOrNull() ?: return
+        val host = parsed.host ?: return
+        // `rawPath` and not `path`: the decoded form would turn a `%2F` inside a segment into a
+        // separator and invent a path level that the request never had.
+        val path = PathTemplate.of(parsed.rawPath ?: "")
+        if (path.isEmpty()) return
+        record(
+            method = method,
+            host = host,
+            path = path,
+            status = status,
+            durationMs = durationMs,
+            requestBytes = requestBytes,
+            responseBytes = responseBytes,
+            errorClass = errorClass,
+        )
+    }
+
     fun record(
         method: String,
         host: String,
