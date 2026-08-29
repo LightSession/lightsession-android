@@ -90,18 +90,18 @@ class UtilsTest {
     fun `a type-safe route is named by its class, not its package`() {
         // Type-safe navigation generates the pattern from the @Serializable destination's
         // serial name — the fully qualified class name. The map read
-        // `com.thisames.monestapp.ui.navigation.destination.dispatchdetail/{dispatchid}` until
+        // `com.example.app.ui.navigation.destination.orderdetail/{orderid}` until
         // this rule: a package path nobody declared, lower-cased into unreadability. What the
         // author wrote is the class name and the argument names, so both keep their case.
         assertEquals(
-            "DispatchDetail/{dispatchId}",
+            "OrderDetail/{orderId}",
             utils.extractScreenNameFromRoute(
-                "com.thisames.monestapp.ui.navigation.Destination.DispatchDetail/{dispatchId}",
+                "com.example.app.ui.navigation.Destination.OrderDetail/{orderId}",
             ),
         )
         assertEquals(
             "Login",
-            utils.extractScreenNameFromRoute("com.thisames.monestapp.ui.navigation.Destination.Login"),
+            utils.extractScreenNameFromRoute("com.example.app.ui.navigation.Destination.Login"),
         )
         // Optional arguments arrive as query placeholders and are per-visit like any others.
         assertEquals(

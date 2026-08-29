@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.compose)
     id("maven-publish")
+    id("signing")
 }
 
 android {
@@ -30,6 +31,16 @@ android {
             )
         }
     }
+    // Os dois artefatos que o Maven Central exige alem do AAR, declarados em vez de herdados.
+    // O de sources ja saia por default do AGP; o de javadoc nao, e a falta dele so aparece na
+    // validacao do Central — ou seja, no fim do release, depois de assinar e subir.
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+            withJavadocJar()
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -173,6 +184,26 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+// Assinatura GPG, exigida pelo Maven Central.
+//
+// Condicional de proposito: sem as chaves configuradas o bloco nao faz nada, entao
+// `publishToMavenLocal` e o CI continuam funcionando numa maquina que nao tem — e nao tem por que
+// ter. Assinar e coisa de quem publica, nao de quem compila.
+//
+// As chaves vem de propriedades do Gradle (`~/.gradle/gradle.properties`) ou do ambiente, nunca
+// deste arquivo: uma chave privada versionada e uma chave privada publicada.
+signing {
+    val signingKey = (findProperty("signingInMemoryKey") as String?)
+        ?: System.getenv("SIGNING_KEY")
+    val signingPassword = (findProperty("signingInMemoryKeyPassword") as String?)
+        ?: System.getenv("SIGNING_PASSWORD")
+    isRequired = signingKey != null
+    if (signingKey != null) {
+        useInMemoryPgpKeys(signingKey, signingPassword)
+        afterEvaluate { sign(publishing.publications["release"]) }
+    }
 }
 
 publishing {
@@ -821,6 +852,23 @@ publishing {
                         id.set("lightsession")
                         name.set("LightSession Team")
                     }
+                }
+
+                // Exigido pelo Maven Central, junto de `name`, `description`, `url`, `licenses` e
+                // `developers` — que ja estavam aqui. Sem `scm` a validacao do Central recusa o
+                // deployment, e a recusa acontece no fim do processo de release, depois de assinar
+                // e subir, que e o pior momento para descobrir um campo faltando.
+                //
+                // As duas connections diferem de proposito: `connection` e o endereco de leitura
+                // que qualquer um usa, `developerConnection` e o de escrita. O Central le as duas.
+                scm {
+                    url.set("https://github.com/LightSession/lightsession-android")
+                    connection.set(
+                        "scm:git:https://github.com/LightSession/lightsession-android.git"
+                    )
+                    developerConnection.set(
+                        "scm:git:ssh://git@github.com/LightSession/lightsession-android.git"
+                    )
                 }
             }
         }

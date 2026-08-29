@@ -116,11 +116,11 @@ internal class Utils {
      * assumption in the first real app integrated: there the pattern is generated from the
      * `@Serializable` destination's serial name, which is the fully qualified class name. Five
      * destinations arrived as
-     * `com.thisames.monestapp.ui.navigation.destination.dispatchdetail/{dispatchid}` — a
-     * package path nobody declared, with the lower-casing destroying the one thing that
-     * separated the words. What the app's author actually wrote is `DispatchDetail(val
-     * dispatchId: Int)`, so that is the name: the segment after the last dot, case kept, and
-     * the argument placeholders' case kept with it.
+     * `com.example.app.ui.navigation.destination.orderdetail/{orderid}` — a package path
+     * nobody declared, with the lower-casing destroying the one thing that separated the
+     * words. What the app's author actually wrote is `OrderDetail(val orderId: Int)`, so that
+     * is the name: the segment after the last dot, case kept, and the argument placeholders'
+     * case kept with it.
      *
      * A dot in the route head is what selects the rule. Dots cannot appear in a class name's
      * place by accident, and a hand-written route with dots (`"settings.profile"`) loses its
