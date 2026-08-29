@@ -209,7 +209,11 @@ signing {
 publishing {
     publications {
         create<MavenPublication>("release") {
-            groupId = "com.lightsession"
+            // `io.lightsession`, do dominio lightsession.io invertido — e o Maven Central so
+            // verifica um namespace cujo dominio voce prova possuir. Nao confundir com o pacote
+            // Kotlin, que segue `com.lightsession`: sao coisas independentes, e renomear o pacote
+            // quebraria todo `import` de todo consumidor para ganhar so simetria.
+            groupId = "io.lightsession"
             artifactId = "lightsession-android"
             // 0.1.11-alpha is the artifact with a laptop's LAN address hardcoded into
             // it, so a consumer resolving that one by accident sees an SDK that
