@@ -7,11 +7,11 @@ import com.lightsession.transport.NetworkDataSender
  * SDK configuration.
  *
  * [ingestUrl] and [apiUrl] have no defaults on purpose. The previous version
- * hardcoded `http://192.168.0.114:5000` and `http://192.168.0.114:3001` inside
- * [SessionDataManager] and `NetworkDataSender`, with no way to override them —
- * so the artifact published to GitHub Packages as `0.1.11-alpha` could only ever
- * talk to one developer's laptop. A required parameter fails at the call site;
- * a default would fail silently in production.
+ * hardcoded one developer's LAN address inside [SessionDataManager] and
+ * `NetworkDataSender`, with no way to override it — so the artifact published
+ * as `0.1.11-alpha` could only ever talk to that one laptop, and reported
+ * nowhere for everybody else. A required parameter fails at the call site; a
+ * default would fail silently in production.
  *
  * ## Calling this from Java
  *

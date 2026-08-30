@@ -751,10 +751,10 @@ publishing {
             //
             // The same app broke a naming assumption: type-safe navigation generates routes from
             // the @Serializable destination's serial name, so five screens arrived as
-            // com.thisames...destination.dispatchdetail/{dispatchid} — a package path nobody
+            // com.example...destination.orderdetail/{orderid} — a package path nobody
             // declared, lower-cased into unreadability by a rule that assumed routes are written
             // by hand. A route whose head holds a dot is now named by the segment after the last
-            // one, case kept: DispatchDetail/{dispatchId}, the name the author actually wrote.
+            // one, case kept: OrderDetail/{orderId}, the name the author actually wrote.
             //
             // Minor, and it renames screens for type-safe apps: the server keys on the name, so
             // FQN-named rows stop receiving data and can be deleted — cleanup, not migration.
