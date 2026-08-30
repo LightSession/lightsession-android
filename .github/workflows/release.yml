@@ -1,0 +1,98 @@
+# O que uma tag `v*` dispara: valida, publica no Maven Central e cria o Release.
+#
+# A tag e o ato deliberado. Tudo depois dela e mecanico, e mecanico feito a mao e mecanico que uma
+# hora sai errado — foi assim que uma versao publicada acabou rotulada com um numero diferente da
+# tag que a originou.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+# Uma tag so pode ser publicada uma vez: o Maven Central nao aceita sobrescrever nem remover uma
+# versao, nunca. Sem isto, dois pushes concorrentes tentariam publicar o mesmo numero e o segundo
+# falharia no fim, depois de assinar e subir.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write        # necessario para criar o Release
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # o gerador de notas precisa do historico e das tags
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # A guarda que teria evitado um bug real: a tag v0.28.0 conviveu com `version = "0.26.0"` no
+      # build, e o artefato publicado sai rotulado pelo build, nao pela tag. Isso nao falha em lugar
+      # nenhum — produz uma versao com o nome errado, em silencio, para sempre.
+      - name: A tag e a versao do build concordam
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          BUILD=$(grep -oE 'version = "[0-9]+\.[0-9]+\.[0-9]+"' \
+                    lightsession-android/build.gradle.kts | tail -1 | grep -oE '[0-9.]+')
+          echo "tag=$TAG build=$BUILD"
+          if [ "$TAG" != "$BUILD" ]; then
+            echo "::error::a tag diz $TAG e o build declara $BUILD" && exit 1
+          fi
+
+      - name: Testes
+        run: ./gradlew :lightsession-android:testDebugUnitTest
+
+      # Monta o pacote que o Central recebe: layout de repositorio com artefatos, assinaturas e
+      # checksums. `publishToMavenLocal` nao serve — nao gera os checksums, e o Central recusa sem.
+      - name: Montar o pacote
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: ./gradlew :lightsession-android:publishReleasePublicationToCentralBundleRepository
+
+      - name: Conferir que tudo esta assinado
+        run: |
+          DIR=lightsession-android/build/central-bundle/io/lightsession/lightsession-android/${GITHUB_REF_NAME#v}
+          N=$(ls "$DIR" | grep -c '\.asc$')
+          echo "$N assinaturas"
+          # Cinco artefatos: aar, sources, javadoc, pom, module. Menos que isso e um artefato sem
+          # assinatura, que o Central recusa depois de todo o upload.
+          [ "$N" -ge 5 ] || { echo "::error::esperava 5 assinaturas, achei $N" && exit 1; }
+
+      - name: Enviar ao Maven Central
+        env:
+          TOKEN_USER: ${{ secrets.CENTRAL_TOKEN_USER }}
+          TOKEN_PASS: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cd lightsession-android/build/central-bundle
+          zip -qr ../bundle.zip io
+          AUTH=$(printf '%s:%s' "$TOKEN_USER" "$TOKEN_PASS" | base64 -w0)
+          # AUTOMATIC publica direto. E irreversivel — uma versao no Central nunca pode ser
+          # removida nem sobrescrita — e por isso o gatilho e a tag: cortar a tag e o momento em
+          # que alguem decidiu. Para revisar antes de liberar, troque por USER_MANAGED e o
+          # deployment fica esperando um clique em central.sonatype.com.
+          CODE=$(curl -s -o /tmp/resp -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $AUTH" \
+            -F "bundle=@../bundle.zip" \
+            "https://central.sonatype.com/api/v1/publisher/upload?name=$VERSION&publishingType=AUTOMATIC")
+          echo "HTTP $CODE"; cat /tmp/resp; echo
+          [ "$CODE" = "201" ] || { echo "::error::o Central recusou o envio" && exit 1; }
+
+      - name: Criar o Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            --verify-tag
