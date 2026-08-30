@@ -879,6 +879,18 @@ publishing {
     }
 
     repositories {
+        // Onde o pacote para o Maven Central e montado.
+        //
+        // O Central Portal nao aceita um deploy direto por URL como o OSSRH antigo aceitava: ele
+        // recebe um *bundle* — um zip com o layout de repositorio inteiro, artefatos, assinaturas
+        // e checksums — enviado a API dele. Publicar num diretorio local e o que produz esse
+        // layout, e sobretudo os `.md5` e `.sha1`, que o `publishToMavenLocal` nao gera e cuja
+        // ausencia o Central recusa.
+        maven {
+            name = "CentralBundle"
+            url = uri(layout.buildDirectory.dir("central-bundle"))
+        }
+
         maven {
             name = "GitHubPackages"
             url = uri("https://maven.pkg.github.com/LightSession/lightsession-android")
