@@ -1,32 +1,38 @@
-# O que uma tag `v*` dispara: valida, publica no Maven Central e cria o Release.
+# Publicar e um ato deliberado, e aqui mais do que em qualquer outro lugar: o Maven Central nao
+# aceita sobrescrever nem remover uma versao, nunca. Nao existe desfazer.
 #
-# A tag e o ato deliberado. Tudo depois dela e mecanico, e mecanico feito a mao e mecanico que uma
-# hora sai errado — foi assim que uma versao publicada acabou rotulada com um numero diferente da
-# tag que a originou.
+# Por isso o gatilho nao e mais uma tag. Uma tag e facil de empurrar por engano — `git push --tags`
+# leva junto tudo o que estiver local — e um engano aqui e permanente. Este workflow so roda quando
+# alguem abre Actions, clica em "Run workflow" e escreve a versao; e para outra vez, antes do
+# passo irreversivel, esperando aprovacao.
 name: release
 
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versao a publicar, sem o "v" (ex.: 0.29.0). Tem que bater com o build.gradle.kts.'
+        required: true
+        type: string
 
-# Uma tag so pode ser publicada uma vez: o Maven Central nao aceita sobrescrever nem remover uma
-# versao, nunca. Sem isto, dois pushes concorrentes tentariam publicar o mesmo numero e o segundo
-# falharia no fim, depois de assinar e subir.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
-  release:
+  # As conferencias rodam antes e fora do job que publica, de proposito: assim elas nao dependem de
+  # aprovacao nenhuma. Quem for aprovar ja ve o resultado delas na tela, em vez de precisar aprovar
+  # para descobrir que a versao estava errada.
+  verificar:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    permissions:
-      contents: write        # necessario para criar o Release
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.guard.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0     # o gerador de notas precisa do historico e das tags
+          fetch-depth: 0
 
       - uses: actions/setup-java@v4
         with:
@@ -35,21 +41,67 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # A guarda que teria evitado um bug real: a tag v0.28.0 conviveu com `version = "0.26.0"` no
+      # A primeira guarda nasceu de um bug real: a tag v0.28.0 conviveu com `version = "0.26.0"` no
       # build, e o artefato publicado sai rotulado pelo build, nao pela tag. Isso nao falha em lugar
       # nenhum — produz uma versao com o nome errado, em silencio, para sempre.
-      - name: A tag e a versao do build concordam
+      #
+      # As outras duas cobrem o caso oposto: pedir uma versao que ja saiu. O Central responde 201 e
+      # depois recusa o deployment, entao sem esta checagem o erro aparece minutos adiante, ja com
+      # tudo assinado e enviado.
+      - name: Conferir a versao
+        id: guard
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
+          IN="${{ inputs.version }}"
           BUILD=$(grep -oE 'version = "[0-9]+\.[0-9]+\.[0-9]+"' \
                     lightsession-android/build.gradle.kts | tail -1 | grep -oE '[0-9.]+')
-          echo "tag=$TAG build=$BUILD"
-          if [ "$TAG" != "$BUILD" ]; then
-            echo "::error::a tag diz $TAG e o build declara $BUILD" && exit 1
+          echo "pedido=$IN  build.gradle.kts=$BUILD"
+
+          [ "$IN" = "$BUILD" ] || { echo "::error::voce pediu $IN e o build declara $BUILD" && exit 1; }
+
+          if git rev-parse -q --verify "refs/tags/v$IN" >/dev/null; then
+            echo "::error::a tag v$IN ja existe — esta versao ja foi publicada?" && exit 1
           fi
+
+          POM="https://repo1.maven.org/maven2/io/lightsession/lightsession-android/$IN/lightsession-android-$IN.pom"
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' -I "$POM")
+          echo "Maven Central responde $CODE para $IN"
+          if [ "$CODE" = "200" ]; then
+            echo "::error::$IN ja esta no Maven Central, e la nada pode ser sobrescrito" && exit 1
+          fi
+
+          echo "version=$IN" >> "$GITHUB_OUTPUT"
 
       - name: Testes
         run: ./gradlew :lightsession-android:testDebugUnitTest
+
+  publicar:
+    needs: verificar
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    # A trava que importa. `release` e um Environment com required reviewers: o job para aqui e
+    # espera alguem clicar em "Review deployments" -> "Approve and deploy". Enquanto ninguem
+    # aprovar, nada e assinado nem enviado.
+    #
+    # E o lugar certo para os segredos deste workflow. Movidos de "repository secrets" para
+    # "environment secrets" deste environment, eles deixam de ser legiveis por qualquer job do
+    # repositorio e passam a existir so nesta etapa, depois da aprovacao.
+    environment: release
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
 
       # Monta o pacote que o Central recebe: layout de repositorio com artefatos, assinaturas e
       # checksums. `publishToMavenLocal` nao serve — nao gera os checksums, e o Central recusa sem.
@@ -60,8 +112,10 @@ jobs:
         run: ./gradlew :lightsession-android:publishReleasePublicationToCentralBundleRepository
 
       - name: Conferir que tudo esta assinado
+        env:
+          V: ${{ needs.verificar.outputs.version }}
         run: |
-          DIR=lightsession-android/build/central-bundle/io/lightsession/lightsession-android/${GITHUB_REF_NAME#v}
+          DIR="lightsession-android/build/central-bundle/io/lightsession/lightsession-android/$V"
           N=$(ls "$DIR" | grep -c '\.asc$')
           echo "$N assinaturas"
           # Cinco artefatos: aar, sources, javadoc, pom, module. Menos que isso e um artefato sem
@@ -72,27 +126,36 @@ jobs:
         env:
           TOKEN_USER: ${{ secrets.CENTRAL_TOKEN_USER }}
           TOKEN_PASS: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+          V: ${{ needs.verificar.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
           cd lightsession-android/build/central-bundle
           zip -qr ../bundle.zip io
           AUTH=$(printf '%s:%s' "$TOKEN_USER" "$TOKEN_PASS" | base64 -w0)
-          # AUTOMATIC publica direto. E irreversivel — uma versao no Central nunca pode ser
-          # removida nem sobrescrita — e por isso o gatilho e a tag: cortar a tag e o momento em
-          # que alguem decidiu. Para revisar antes de liberar, troque por USER_MANAGED e o
-          # deployment fica esperando um clique em central.sonatype.com.
+          # AUTOMATIC publica direto, sem uma segunda espera em central.sonatype.com. Isso e
+          # aceitavel porque a espera ja aconteceu: este job so comecou depois da aprovacao no
+          # environment. Trocar por USER_MANAGED adicionaria um segundo clique, em outro site,
+          # para a mesma decisao.
           CODE=$(curl -s -o /tmp/resp -w '%{http_code}' -X POST \
             -H "Authorization: Bearer $AUTH" \
             -F "bundle=@../bundle.zip" \
-            "https://central.sonatype.com/api/v1/publisher/upload?name=$VERSION&publishingType=AUTOMATIC")
+            "https://central.sonatype.com/api/v1/publisher/upload?name=$V&publishingType=AUTOMATIC")
           echo "HTTP $CODE"; cat /tmp/resp; echo
           [ "$CODE" = "201" ] || { echo "::error::o Central recusou o envio" && exit 1; }
+
+      # Depois do envio, nao antes. Se algo falhar aqui, a tag e o Release se resolvem na mao; se a
+      # ordem fosse inversa e o envio falhasse, ficaria uma tag apontando para uma versao que nunca
+      # existiu no Central.
+      - name: Marcar a tag
+        env:
+          V: ${{ needs.verificar.outputs.version }}
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git tag -a "v$V" -m "$V"
+          git push origin "v$V"
 
       - name: Criar o Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "${GITHUB_REF_NAME#v}" \
-            --generate-notes \
-            --verify-tag
+          V: ${{ needs.verificar.outputs.version }}
+        run: gh release create "v$V" --title "$V" --generate-notes --verify-tag
