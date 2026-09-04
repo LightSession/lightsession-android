@@ -833,7 +833,23 @@ publishing {
             // Patch would be defensible for the fix alone. Minor because the module gains a second
             // buildable component, and because an app that was double-counting sees its numbers
             // halve on upgrade — right, and still a change in what the dashboard says.
-            version = "0.28.0"
+            //
+            // 0.29.0 stops a tab label from minting screens that do not exist.
+            //
+            // Two ways it happened, both found by auditing a production map against the app's
+            // real navigation graph. A label built as "$title ($count)" grew one permanent
+            // screen per value the count ever showed, with one tab's heatmap split between
+            // them; sanitize now drops a trailing parenthesised integer. And a tap landing
+            // inside the settle window cancelled the arrival-baseline read, so the next read
+            // diffed against nothing and named the destination's own bottom-nav label as a
+            // sub-screen of itself; whether the arrival state is known is now a property of
+            // the destination (TabBaseline), not a flag on the pending read.
+            //
+            // No API changes. Minor rather than patch because screen identity moves on
+            // upgrade for an affected app: "Members (7)" starts reporting as "Members", a
+            // different row on the server — the map comes out right, and it is still a
+            // change in what the dashboard says.
+            version = "0.29.0"
 
             afterEvaluate {
                 from(components["release"])
