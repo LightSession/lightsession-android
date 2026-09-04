@@ -275,11 +275,11 @@ internal class ScreenMapperIntegration private constructor() {
      * This replaced taking the first selected tab found, which depended on the order the
      * composition happened to emit them in: get the nav bar first and the screen's own tabs
      * became invisible, because the value never changed as the reader switched them.
+     *
+     * Whether the arrival state is *known yet* lives inside, not in a flag on the pending
+     * read — a flag on the read is what raced. See [TabBaseline].
      */
-    private var defaultTabs: List<String> = emptyList()
-
-    /** Whether the pending read establishes the default rather than reporting a change. */
-    private var pendingReadIsBaseline = false
+    private val tabBaseline = TabBaseline()
 
     /** Set by [setDeclaredSubScreen]; see [SubScreen.Kind.DECLARED]. */
     private var declaredSubScreen: SubScreen? = null
@@ -1713,7 +1713,7 @@ internal class ScreenMapperIntegration private constructor() {
         baseScreenOwner = currentActivityWeakRef
         tabSubScreen = null
         modalSubScreen = null
-        defaultTabs = emptyList()
+        tabBaseline.reset()
         modalRootView = null
         // A panel does not survive the destination it was declared on. Its `onDispose` will
         // arrive, but composition teardown races the NavController and can land after the
@@ -1722,9 +1722,11 @@ internal class ScreenMapperIntegration private constructor() {
         lastScreen = screenName
         // Which tab this destination arrived on has to be learned, not assumed, and it
         // cannot be read yet — the NavController reports the destination before its
-        // content composes. This read supersedes any pending one from the touch that
-        // caused the navigation, which is the same gesture seen from the other end.
-        scheduleSubScreenRead(baseline = true)
+        // content composes. Not marked as special in any way: the reset above means the
+        // next read to fire acts as the baseline *whoever scheduled it*, so a touch inside
+        // the settle window can reschedule this read without un-baselining it. A baseline
+        // flag on the pending read is what used to race here.
+        scheduleSubScreenRead()
     }
 
     /**
@@ -1852,9 +1854,8 @@ internal class ScreenMapperIntegration private constructor() {
         applySubScreens()
     }
 
-    private fun scheduleSubScreenRead(baseline: Boolean = false) {
+    private fun scheduleSubScreenRead() {
         if (!trackTabs && !trackModals) return
-        pendingReadIsBaseline = baseline
         mainHandler.removeCallbacks(subScreenReadRunnable)
         mainHandler.postDelayed(subScreenReadRunnable, SUB_SCREEN_SETTLE_MS)
     }
@@ -1870,7 +1871,7 @@ internal class ScreenMapperIntegration private constructor() {
         val activity = currentActivityWeakRef?.get() ?: return@Runnable
 
         // Bail before reading, not just before reporting. `applySubScreen` guards the report for
-        // every mechanism, but the baseline branch below writes `defaultTabs` directly — and
+        // every mechanism, but the learning branch below writes the baseline directly — and
         // learning the next Activity's tabs as the *previous* screen's default would make the
         // reader's first real tab choice look like no change at all.
         if (activity !== baseScreenOwner?.get()) {
@@ -1888,16 +1889,25 @@ internal class ScreenMapperIntegration private constructor() {
             emptyList()
         }
 
-        if (pendingReadIsBaseline) {
-            defaultTabs = tabs
+        if (!tabBaseline.learned) {
+            // The first read after a destination change is the arrival state, whoever
+            // scheduled it — a gesture's read landing first must not diff against an
+            // empty baseline and mint the destination's own nav label as a sub-screen.
+            tabBaseline.learn(tabs)
             Log.d("ScreenMapper", "arrived on $baseScreen; tabs selected: $tabs")
+            // Fall through to apply rather than return: on a screen with no tabs this
+            // branch now takes every read, and a read scheduled by a declared panel's
+            // dismissal still has to report the fallback name. The tab layer is null
+            // here by construction — entering the destination cleared it — so this can
+            // only ever fold layers away, never invent one.
+            applySubScreens()
             return@Runnable
         }
 
-        // What is selected now and was not on arrival. A nav bar's item is in `defaultTabs`
+        // What is selected now and was not on arrival. A nav bar's item is in the baseline
         // and stays there, so it drops out without having to be recognised.
-        val chosen = tabs.firstOrNull { it !in defaultTabs }
-        Log.d("ScreenMapper", "tabs now $tabs, arrived with $defaultTabs, chose $chosen")
+        val chosen = tabBaseline.choose(tabs)
+        Log.d("ScreenMapper", "tabs now $tabs, arrived with ${tabBaseline.defaults}, chose $chosen")
 
         // While a declared panel is up the tab layer stays frozen, for the same reason the
         // modal freezes it: the panel is drawn over the screen, so what this read found is

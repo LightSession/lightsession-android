@@ -51,6 +51,40 @@ class SubScreensTest {
         assertEquals("a b", SubScreens.sanitize("a${SubScreens.SEPARATOR}b"))
     }
 
+    @Test
+    fun `a trailing count is data, and two counts are one tab`() {
+        // The measured case: a tab row whose text is built as "$title ($count)". The count
+        // drifts across sessions, and every value used to become its own permanent screen,
+        // splitting one tab's heatmap between them.
+        assertEquals("Members", SubScreens.sanitize("Members (7)"))
+        assertEquals(SubScreens.sanitize("Members (7)"), SubScreens.sanitize("Members (84)"))
+        // Stacked counts collapse too — identity must not depend on how many were appended.
+        assertEquals("Members", SubScreens.sanitize("Members (7) (8)"))
+    }
+
+    @Test
+    fun `a number that is part of the name survives`() {
+        // These are fixed strings in someone's source, not live counts. Only the trailing
+        // parenthesised-integer shape is conventionally a counter.
+        assertEquals("4K stream", SubScreens.sanitize("4K stream"))
+        assertEquals("Terminal 2", SubScreens.sanitize("Terminal 2"))
+        assertEquals("Inbox (3 new)", SubScreens.sanitize("Inbox (3 new)"))
+    }
+
+    @Test
+    fun `a label that is only a count is not a label`() {
+        // With the count gone there is no place left to name; the caller falls back to
+        // the bare destination, same as any unusable label.
+        assertNull(SubScreens.sanitize("(7)"))
+    }
+
+    @Test
+    fun `the length check judges what will be kept, not what arrived`() {
+        // 32 chars of name plus a count is still a 32-char name once the count is gone.
+        val name = "a".repeat(SubScreens.MAX_LABEL)
+        assertEquals(name, SubScreens.sanitize("$name (12)"))
+    }
+
     // -------------------------------------------------------------- compose
 
     @Test

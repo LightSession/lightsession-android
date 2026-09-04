@@ -64,19 +64,45 @@ internal object SubScreens {
     const val MAX_LABEL = 32
 
     /**
+     * A trailing count on a label — `Members (7)` — where the number is data, not place.
+     *
+     * Measured in a production map: a detail screen built its tab text as
+     * `"$title (${items.size})"`, and because a screen is permanent, the map grew
+     * `… › Members (7)` and `… › Members (84)` as the list grew — one tab, a node per
+     * value, with its heatmap split between them. It is the same disease [PathTemplate]
+     * cures in request paths (`order/8842` → `order/{id}`), surfacing through a label
+     * instead of a segment, so it gets the same cure: the digits go, the place stays.
+     *
+     * Only a *trailing parenthesised integer* is collapsed. `4K stream` and `Terminal 2`
+     * are fixed strings in someone's source; `Inbox (3 new)` carries words the app chose.
+     * The `(N)` suffix is the one shape that is conventionally a live count.
+     */
+    private val TRAILING_COUNT = Regex("""(\s*\(\d+\))+$""")
+
+    /**
      * A label fit to become part of a screen name, or null.
      *
      * Screen names are keys: the server rows a screen by (name, version), and the device
      * caches by a hash of the name. So the same tab has to produce a byte-identical string
      * every time it is read, which is why whitespace is collapsed rather than trusted —
      * a label wrapped across two lines arrives with a newline in it, and `Overview\n` and
-     * `Overview` would be two screens.
+     * `Overview` would be two screens. A trailing count is dropped for the same reason,
+     * one step further: `Members (7)` and `Members (84)` are two readings of one tab.
+     *
+     * Every label passes through here — read tabs, modal identities, declared names — so
+     * the rule is uniform on purpose: identity must not depend on which door a label came
+     * in through, or the arrival baseline and the gesture read could disagree about the
+     * same tab.
      */
     fun sanitize(raw: String?): String? {
         if (raw == null) return null
         val collapsed = raw.replace(SEPARATOR, " ").replace(Regex("\\s+"), " ").trim()
-        if (collapsed.isEmpty() || collapsed.length > MAX_LABEL) return null
-        return collapsed
+        // After whitespace collapse, so `Members (7)\n` has one shape by the time it is
+        // matched; before the length check, so a long name that fits once its count is
+        // gone is judged by what will actually be kept.
+        val counted = collapsed.replace(TRAILING_COUNT, "").trim()
+        if (counted.isEmpty() || counted.length > MAX_LABEL) return null
+        return counted
     }
 
     /**
