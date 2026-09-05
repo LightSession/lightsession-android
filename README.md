@@ -11,7 +11,7 @@ you add in one call.
 
 ```kotlin
 dependencies {
-    implementation("io.lightsession:lightsession-android:0.29.0")
+    implementation("io.lightsession:lightsession-android:0.30.0")
 }
 ```
 

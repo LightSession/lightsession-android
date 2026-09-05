@@ -849,7 +849,23 @@ publishing {
             // upgrade for an affected app: "Members (7)" starts reporting as "Members", a
             // different row on the server — the map comes out right, and it is still a
             // change in what the dashboard says.
-            version = "0.29.0"
+            //
+            // 0.30.0 makes going to background end the session.
+            //
+            // The recorder used to keep ticking however long the app sat in the background,
+            // and every repeated-frame batch it emitted renewed the server's session key —
+            // measured: a four-hour session with twelve real frames, kept alive by a recorder
+            // nobody was watching. Backgrounding now stops the recorder after the flush, the
+            // batches cease, and the server seals the session once its 20s window passes.
+            // Returning within the window resumes the same session; later, it is a new one.
+            //
+            // `sessionTimeoutMs` moves 30s -> 20s with it, matching the ingest window, which
+            // is a contract: the client decides "same session or new one" against the same
+            // number the server seals on. Minor rather than patch because session counts
+            // change for any app whose users background it — sessions get shorter and more
+            // numerous, which is the corrected picture, and still a change in what the
+            // dashboard says.
+            version = "0.30.0"
 
             afterEvaluate {
                 from(components["release"])
