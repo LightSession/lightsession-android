@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.lightsession.session.Recording
 import com.lightsession.session.SessionDataManager
 
 /**
@@ -30,6 +31,17 @@ internal class FlushTriggers(
     private companion object {
         private const val TAG = "LightSession.Flush"
     }
+
+    /**
+     * True while recording is off *because the app is in the background*, and only then.
+     *
+     * The flag exists to tell that apart from recording the app itself turned off through
+     * `stopRecording`. Foreground must resume the first case and must not touch the second —
+     * re-enabling a recorder the app deliberately stopped would record a stretch it asked not to
+     * have. So the pause is taken only when recording was on, and the resume only when this pause
+     * is the reason it is off.
+     */
+    private var pausedForBackground = false
 
     /**
      * Attaches to the process, not to an Activity.
@@ -68,6 +80,21 @@ internal class FlushTriggers(
         // Stamped *after* the flush, so the timestamp marks when the app actually
         // stopped producing data rather than when the callback happened to run.
         sessionDataManager.markBackgrounded()
+
+        // Recording stops with the app, and this is what makes a backgrounded session actually
+        // end. The recorder's idle tick keeps emitting a repeated-frame marker every interval
+        // whether the app is in front or not, and each batch it produces resets the server's
+        // session key — so a session with the recorder still running never falls idle and is
+        // never sealed, however long the app sits in the background. Stopping the tick lets the
+        // batches cease, and the server ends the session once its window passes with none
+        // arriving. Flushed first, above, so nothing recorded up to this moment is lost.
+        //
+        // Guarded so this pause is distinguishable from `stopRecording`: only a recorder that was
+        // running is paused here, and only such a pause is resumed on return.
+        if (Recording.enabled) {
+            Recording.enabled = false
+            pausedForBackground = true
+        }
     }
 
     /**
@@ -82,8 +109,20 @@ internal class FlushTriggers(
         // Rotation first. It flushes anything still buffered under the old session
         // id before minting a new one, and `retryPending` would otherwise upload
         // that flush's batch as part of whichever session happened to be current.
+        //
+        // Rotation and the server's seal are timed to the same window on purpose: away longer
+        // than it and `rotateIfIdle` mints a new id here, which is exactly when the server has
+        // also sealed the old one — so the resumed recorder never sends batches under an id the
+        // server already closed. Away less than it and neither acts: the same session resumes,
+        // its server key never having expired.
         sessionDataManager.rotateIfIdle()
         sessionDataManager.retryPending()
+
+        // Resume only what backgrounding paused. Recording the app itself stopped stays stopped.
+        if (pausedForBackground) {
+            pausedForBackground = false
+            Recording.enabled = true
+        }
     }
 
     /**

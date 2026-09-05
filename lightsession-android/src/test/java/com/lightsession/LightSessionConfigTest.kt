@@ -16,7 +16,7 @@ class LightSessionConfigTest {
     private fun config(
         captureIntervalMs: Long = 1_000,
         interactionCaptureIntervalMs: Long = 100,
-        sessionTimeoutMs: Long = 30_000,
+        sessionTimeoutMs: Long = 20_000,
         flushAtFrameCount: Int = 24,
         flushAtBytes: Long = 2L * 1024 * 1024,
         maxBufferedBytes: Long = 8L * 1024 * 1024
@@ -35,7 +35,7 @@ class LightSessionConfigTest {
     @Test
     fun `the defaults are usable`() {
         val c = config()
-        assertEquals(30_000, c.sessionTimeoutMs)
+        assertEquals(20_000, c.sessionTimeoutMs)
         assertTrue(c.maxBufferedBytes > c.flushAtBytes)
     }
 

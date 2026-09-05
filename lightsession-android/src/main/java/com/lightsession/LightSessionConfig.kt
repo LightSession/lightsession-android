@@ -259,16 +259,20 @@ public data class LightSessionConfig @JvmOverloads constructor(
      * How long the app may sit in the background before the next foreground
      * starts a *new* session, milliseconds.
      *
-     * Must match `LS_SESSION__IDLE_TIMEOUT_SECS` on the ingest service, whose
-     * default is 30 seconds. The server's reaper finalises a session once it has
-     * been idle that long and then forgets it; without rotating here, coming back
-     * to the foreground resumes into a session the server has already closed, and
-     * the data lands on a row that has to be reconciled after the fact.
+     * Must match the ingest service's session window, which is 20 seconds. The
+     * server's reaper finalises a session once its key has gone that long without a
+     * batch and then forgets it; without rotating here, coming back to the
+     * foreground resumes into a session the server has already closed, and the data
+     * lands on a row that has to be reconciled after the fact.
      *
      * Matching it is the point. A shorter value here splits sessions the server
      * would have kept whole; a longer one keeps sending to a session it has closed.
+     * It reads as short for a session timeout because a foregrounded app never falls
+     * idle by it — the recorder's tick keeps batches flowing while the app is in
+     * front — so the window is really the grace on a *backgrounded* app, after which
+     * the recorder is stopped and the batches it was keeping alive stop with it.
      */
-    val sessionTimeoutMs: Long = 30_000,
+    val sessionTimeoutMs: Long = 20_000,
 
     /**
      * Frames buffered in memory before a flush is triggered, regardless of the
