@@ -2030,8 +2030,12 @@ internal class ScreenMapperIntegration private constructor() {
                     generateCacheKey(toScreenId),
                 )
             }
-            val toCacheKey = generateCacheKey(toScreenId.toString())
-            if (!cacheManager.isScreenFullyCaptured(toCacheKey)) {
+            // Guarded like the twin below, and the guard is not pedantry: `generateId` is null
+            // whenever `screenParams` is, and `toScreenId.toString()` turned that null into the
+            // *literal string* "null" — one shared cache key for every screen in that state. The
+            // first of them marked as captured made all the others skip their screenshot forever.
+            val toCacheKey = toScreenId?.let { generateCacheKey(it) }
+            if (toCacheKey != null && !cacheManager.isScreenFullyCaptured(toCacheKey)) {
                 isScreenshotScheduledForCurrentScreen = true
                 scheduleScreenshot()
             } else {
