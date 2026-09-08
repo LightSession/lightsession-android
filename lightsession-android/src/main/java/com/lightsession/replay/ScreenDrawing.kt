@@ -9,7 +9,9 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.util.Base64
 import kotlin.coroutines.resume
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import android.util.Log
 import android.view.PixelCopy
 import android.view.View
@@ -866,15 +868,24 @@ internal class ScreenDrawing {
             }
         } ?: return Pair(null, null)
 
-        val bytes = encodeToJpeg(bitmap, ScalePresets.ORIGINAL) ?: return Pair(null, null)
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        val dimensions = if (bounds.outWidth > 0 && bounds.outHeight > 0) {
-            Pair(bounds.outWidth, bounds.outHeight)
-        } else {
-            null
+        // Off the caller's dispatcher, which is the main thread: `takeScreenshot` runs in
+        // `lifecycleScope` (Main.immediate) and the PixelCopy callback resumes there too. Measured
+        // on a device at the screen's own resolution: 22ms of JPEG compress plus 13ms of Base64 —
+        // 35ms, two whole frames — per real screenshot, on the thread drawing the UI. Neither half
+        // touches a View: the bitmap is already captured and `encodeToJpeg` is documented safe off
+        // the main thread, and Base64 is bytes to text.
+        return withContext(Dispatchers.Default) {
+            val bytes = encodeToJpeg(bitmap, ScalePresets.ORIGINAL)
+                ?: return@withContext Pair(null, null)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            val dimensions = if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                Pair(bounds.outWidth, bounds.outHeight)
+            } else {
+                null
+            }
+            Pair(Base64.encodeToString(bytes, Base64.NO_WRAP), dimensions)
         }
-        return Pair(Base64.encodeToString(bytes, Base64.NO_WRAP), dimensions)
     }
 
     fun captureScreenAsBase64(): Pair<String?, Pair<Int, Int>?> {
