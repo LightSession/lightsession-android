@@ -109,15 +109,18 @@ internal class NetworkDataSender : DataSender {
                 .post(json.toString().toRequestBody(JSON))
                 .build()
 
-            val response = client.newCall(request).execute()
-
-            if (response.isSuccessful) {
-                Log.d(TAG, "Screen data sent successfully: $screenId (${width}x${height})")
-                Result.success(Unit)
-            } else {
-                val error = "Failed to send screen data: ${response.code} - ${response.message}"
-                Log.e(TAG, error)
-                Result.failure(Exception(error))
+            // `use`, because `execute()` hands over a live connection and reading only
+            // `code`/`message` never returns it to the pool. Three of these leaked a socket
+            // per call; `SessionDataManager.send()` had it right all along.
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    Log.d(TAG, "Screen data sent successfully: $screenId (${width}x${height})")
+                    Result.success(Unit)
+                } else {
+                    val error = "Failed to send screen data: ${response.code} - ${response.message}"
+                    Log.e(TAG, error)
+                    Result.failure(Exception(error))
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error sending screen data", e)
@@ -160,15 +163,18 @@ internal class NetworkDataSender : DataSender {
                 .put(json.toString().toRequestBody(JSON))
                 .build()
 
-            val response = client.newCall(request).execute()
-
-            if (response.isSuccessful) {
-                Log.d(TAG, "Screenshot updated successfully: $screenId (${width}x${height})")
-                Result.success(Unit)
-            } else {
-                val error = "Failed to update screenshot: ${response.code} - ${response.message}"
-                Log.e(TAG, error)
-                Result.failure(Exception(error))
+            // `use`, because `execute()` hands over a live connection and reading only
+            // `code`/`message` never returns it to the pool. Three of these leaked a socket
+            // per call; `SessionDataManager.send()` had it right all along.
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    Log.d(TAG, "Screenshot updated successfully: $screenId (${width}x${height})")
+                    Result.success(Unit)
+                } else {
+                    val error = "Failed to update screenshot: ${response.code} - ${response.message}"
+                    Log.e(TAG, error)
+                    Result.failure(Exception(error))
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error updating screenshot", e)
@@ -206,15 +212,18 @@ internal class NetworkDataSender : DataSender {
                 .post(json.toString().toRequestBody(JSON))
                 .build()
 
-            val response = client.newCall(request).execute()
-
-            if (response.isSuccessful) {
-                Log.d(TAG, "Navigation flow sent successfully: $fromScreen -> $toScreen")
-                Result.success(Unit)
-            } else {
-                val error = "Failed to send navigation flow: ${response.code} - ${response.message}"
-                Log.e(TAG, error)
-                Result.failure(Exception(error))
+            // `use`, because `execute()` hands over a live connection and reading only
+            // `code`/`message` never returns it to the pool. Three of these leaked a socket
+            // per call; `SessionDataManager.send()` had it right all along.
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    Log.d(TAG, "Navigation flow sent successfully: $fromScreen -> $toScreen")
+                    Result.success(Unit)
+                } else {
+                    val error = "Failed to send navigation flow: ${response.code} - ${response.message}"
+                    Log.e(TAG, error)
+                    Result.failure(Exception(error))
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error sending navigation flow", e)
