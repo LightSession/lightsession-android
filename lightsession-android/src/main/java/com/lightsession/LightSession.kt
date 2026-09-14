@@ -289,6 +289,9 @@ public class LightSession private constructor() {
             Log.w("LightSession", "startRecording before init; ignored")
             return
         }
+        // An explicit start makes any pending background resume moot; said so, rather than left
+        // to a resume that would now be re-enabling an already-enabled recorder.
+        Recording.appOverrides()
         if (Recording.enabled) return
 
         // Rolled before the flag flips, so nothing from this moment lands in the session that
@@ -313,6 +316,11 @@ public class LightSession private constructor() {
             Log.w("LightSession", "stopRecording before init; ignored")
             return
         }
+        // Before the early return, not after — that ordering was a shipped bug. With the app
+        // background-paused, `enabled` is already false and this function used to return without
+        // recording the *intent*, so the next foreground resumed a recorder the app had just
+        // stopped. An explicit stop cancels any pending background resume, then proceeds.
+        Recording.appOverrides()
         if (!Recording.enabled) return
 
         // Flag first, so nothing new arrives while the flush is in flight.

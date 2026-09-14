@@ -33,17 +33,6 @@ internal class FlushTriggers(
     }
 
     /**
-     * True while recording is off *because the app is in the background*, and only then.
-     *
-     * The flag exists to tell that apart from recording the app itself turned off through
-     * `stopRecording`. Foreground must resume the first case and must not touch the second —
-     * re-enabling a recorder the app deliberately stopped would record a stretch it asked not to
-     * have. So the pause is taken only when recording was on, and the resume only when this pause
-     * is the reason it is off.
-     */
-    private var pausedForBackground = false
-
-    /**
      * Attaches to the process, not to an Activity.
      *
      * `ActivityLifecycleCallbacks` fires on every rotation and on every hop between
@@ -89,12 +78,10 @@ internal class FlushTriggers(
         // batches cease, and the server ends the session once its window passes with none
         // arriving. Flushed first, above, so nothing recorded up to this moment is lost.
         //
-        // Guarded so this pause is distinguishable from `stopRecording`: only a recorder that was
-        // running is paused here, and only such a pause is resumed on return.
-        if (Recording.enabled) {
-            Recording.enabled = false
-            pausedForBackground = true
-        }
+        // The pause/resume pair lives on [Recording] rather than here, and the move was a bug
+        // fix: `stopRecording` must be able to cancel a pending resume, and it cannot reach a
+        // flag private to this class. See [Recording.pauseForBackground].
+        Recording.pauseForBackground()
     }
 
     /**
@@ -118,10 +105,11 @@ internal class FlushTriggers(
         sessionDataManager.rotateIfIdle()
         sessionDataManager.retryPending()
 
-        // Resume only what backgrounding paused. Recording the app itself stopped stays stopped.
-        if (pausedForBackground) {
-            pausedForBackground = false
-            Recording.enabled = true
+        // Resume only what backgrounding paused. Recording the app itself stopped stays
+        // stopped — including an app that said stop *while* paused, which is why the state
+        // lives on [Recording] where `stopRecording` can cancel it.
+        if (Recording.resumeFromBackground()) {
+            Log.d(TAG, "recording resumed with the app")
         }
     }
 

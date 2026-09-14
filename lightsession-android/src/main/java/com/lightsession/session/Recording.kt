@@ -53,4 +53,51 @@ internal object Recording {
     @Volatile
     var enabled: Boolean = true
         internal set
+
+    /**
+     * True while recording is off *because the app went to background*, and only then.
+     *
+     * It lives here, beside the gate it modifies, because two callers coordinate through it and
+     * neither can see the other: `FlushTriggers` pauses on background and resumes on return, and
+     * `LightSession.stopRecording` must be able to cancel a pending resume. The first version kept
+     * this flag private to `FlushTriggers`, and that produced a shipped bug: an explicit
+     * `stopRecording()` while background-paused hit `if (!enabled) return` and left the flag
+     * standing, so the next foreground silently resumed recording the app had just asked to stop.
+     */
+    @Volatile
+    private var pausedForBackground: Boolean = false
+
+    /**
+     * Backgrounding stops a running recorder, and remembers that *it* was the one to do so.
+     *
+     * A recorder that was already off is left alone — the app stopped it, and the app's decision
+     * outranks the lifecycle's.
+     */
+    internal fun pauseForBackground() {
+        if (enabled) {
+            enabled = false
+            pausedForBackground = true
+        }
+    }
+
+    /**
+     * Foreground resumes only what backgrounding paused. Returns whether it did, for the caller's
+     * log line.
+     */
+    internal fun resumeFromBackground(): Boolean {
+        if (!pausedForBackground) return false
+        pausedForBackground = false
+        enabled = true
+        return true
+    }
+
+    /**
+     * The app spoke: whatever it says next is the whole truth, so a pending background resume is
+     * cancelled. Called by both `startRecording` and `stopRecording` before they consult [enabled]
+     * — an explicit stop while paused must stick across the next foreground, and an explicit start
+     * makes the pause moot.
+     */
+    internal fun appOverrides() {
+        pausedForBackground = false
+    }
 }
