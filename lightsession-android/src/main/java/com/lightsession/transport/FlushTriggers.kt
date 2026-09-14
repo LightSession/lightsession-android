@@ -42,13 +42,25 @@ internal class FlushTriggers(
      * actually end, and the last point at which the process is reliably alive.
      */
     fun register(application: Application) {
-        ProcessLifecycleOwner.get().lifecycle.addObserver(this)
+        // Hopped to the main thread when needed, because `addObserver` refuses any other:
+        // androidx's LifecycleRegistry throws IllegalStateException off-main, and nothing in
+        // `LightSession.init`'s contract promises the main thread — an app initialising from a
+        // startup executor is ordinary, and its crash would land in the *host* app. The hop is
+        // this bridge's job for the same reason the Flutter plugin hops before init: whoever
+        // changed the thread changes it back.
+        runOnMain { ProcessLifecycleOwner.get().lifecycle.addObserver(this) }
         application.registerComponentCallbacks(this)
         Log.d(TAG, "flush triggers registered: background, low memory, trim memory")
     }
 
+
+    private inline fun runOnMain(crossinline block: () -> Unit) {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) block()
+        else android.os.Handler(android.os.Looper.getMainLooper()).post { block() }
+    }
+
     fun unregister(application: Application) {
-        ProcessLifecycleOwner.get().lifecycle.removeObserver(this)
+        runOnMain { ProcessLifecycleOwner.get().lifecycle.removeObserver(this) }
         application.unregisterComponentCallbacks(this)
     }
 
