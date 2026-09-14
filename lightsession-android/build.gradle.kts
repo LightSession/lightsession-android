@@ -865,7 +865,37 @@ publishing {
             // change for any app whose users background it — sessions get shorter and more
             // numerous, which is the corrected picture, and still a change in what the
             // dashboard says.
-            version = "0.30.0"
+            //
+            // 0.31.0 is eleven defects an audit of this module turned up, three of them
+            // measured on a device rather than reasoned about.
+            //
+            // The one to read first is the masking gap. The scan stopped descending at a
+            // Compose host, believing the semantics tree reported interop views; it does not
+            // carry a classic View's text, so a TextView or EditText inside `AndroidView { }`
+            // was covered by nobody. A card number shipped legible while the Compose text
+            // beside it masked correctly — the failure that passes a glance. Any app embedding
+            // a legacy form, a map or a payment widget in Compose was affected.
+            //
+            // Two crash paths into the host app: `init` published its ready flag before the
+            // fields behind it existed, so a caller racing init died on
+            // UninitializedPropertyAccessException, and `register` called a main-thread-only
+            // androidx API from whatever thread init ran on.
+            //
+            // Attribution: `reset()` stamped the signed-out user's final actions with the next
+            // person's anonymous id, deterministically, on every sign-out; deferred frame
+            // batches read the session id after rotation had replaced it.
+            //
+            // The rest: three unclosed OkHttp responses leaking a connection per screen, a
+            // Compose NavController listener never detached (doubling navigations after a
+            // recompose), a null screen id becoming the literal cache key "null" so every
+            // screen in that state skipped its screenshot, an explicit stopRecording being
+            // resumed by the next foreground, and two main-thread costs measured and moved off
+            // it — 35ms per real screenshot, 13ms per breadcrumb write against a loaded spool.
+            //
+            // Minor rather than patch, and the masking fix alone would settle it: an app that
+            // was shipping uncovered interop text starts covering it, which changes what its
+            // stored frames look like. No API changes.
+            version = "0.31.0"
 
             afterEvaluate {
                 from(components["release"])
