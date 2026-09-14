@@ -98,9 +98,16 @@ internal class MaskScanner {
 
         if (view is RootForTest) {
             collectCompose(view, maskText, maskImages, into)
-            // No descent: a Compose host's children are composition nodes, not Views.
-            // Interop views hosted inside it are reported by the semantics tree.
-            return
+            // The walk continues past the host, and the earlier version's reason for stopping was
+            // half right in the way that hurts: a Compose host's children are indeed composition
+            // nodes, not Views — *except* interop. `AndroidView { TextView(...) }` attaches a real
+            // View subtree under the host, and the semantics tree does not carry a classic View's
+            // text, so stopping here left that text covered by nobody. Measured on a device in
+            // `InteropMaskingTest`: a card number in a hosted TextView shipped legible while the
+            // Compose text beside it masked correctly. Composition content contributes no child
+            // Views, so what this descent finds is exactly the interop subtrees and nothing else;
+            // where Compose and the View walk both cover a rectangle, two grey boxes on the same
+            // spot cost nothing.
         }
 
         when {
