@@ -246,8 +246,15 @@ public class LightSession private constructor() {
      */
     public fun reset() {
         if (!isInitialized) return
-        identity.reset()
+        // Rotation first, identity second, and the order is the fix for a measured bug: the
+        // crumb spool stamps `user_id` by reading `identity.effectiveId` at write time, so
+        // resetting the identity first stamped everything still buffered — the signed-in
+        // user's final actions — with the *next* person's fresh anonymous id. Proven on a
+        // device in `RotationAttributionTest`: an interaction recorded under a signed-in user
+        // shipped under the post-reset id. Flushing under the old identity first is the whole
+        // point of flushing at all.
         sessionDataManager.startNewSession("identity_reset")
+        identity.reset()
         Log.d("LightSession", "reset")
     }
 
