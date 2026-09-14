@@ -118,6 +118,16 @@ internal class ScreenMapperIntegration private constructor() {
     private class ComposeController(
         val controller: WeakReference<NavController>,
         val owner: WeakReference<Activity>,
+        /**
+         * The listener this registration attached, so unregistering can detach it. It was not
+         * kept, once: unregister removed the entry from this set and left the listener on the
+         * NavController — which outlives its composable whenever it is hoisted to a ViewModel —
+         * so the next `withNavigationTracking()` attached a *second* one, and every navigation
+         * fired twice: the duplicate flushed the first's pending report early and then minted a
+         * self-edge. The conventional path always kept its listener in a map; this is the same
+         * discipline.
+         */
+        val listener: NavController.OnDestinationChangedListener,
     )
 
     /**
@@ -1369,7 +1379,15 @@ internal class ScreenMapperIntegration private constructor() {
     }
 
     private fun pruneComposeControllers() {
-        registeredComposeControllers.removeAll { it.controller.get() == null || it.owner.get() == null }
+        registeredComposeControllers.removeAll { entry ->
+            val controller = entry.controller.get()
+            val gone = controller == null || entry.owner.get() == null
+            // A dead owner with a live controller still gets its listener back: the controller
+            // may be about to be re-registered under a new Activity, and a stale listener would
+            // double it.
+            if (gone && controller != null) controller.removeOnDestinationChangedListener(entry.listener)
+            gone
+        }
     }
 
     /** Whether this Activity's own composition handed over a NavController. */
@@ -1434,7 +1452,11 @@ internal class ScreenMapperIntegration private constructor() {
         // composition, so the foreground Activity is the right answer and is the only one available
         // — a NavController does not name the Activity that created it.
         registeredComposeControllers.add(
-            ComposeController(WeakReference(navController), WeakReference(currentActivityWeakRef?.get())),
+            ComposeController(
+                WeakReference(navController),
+                WeakReference(currentActivityWeakRef?.get()),
+                listener,
+            ),
         )
     }
 
@@ -2030,8 +2052,12 @@ internal class ScreenMapperIntegration private constructor() {
                     generateCacheKey(toScreenId),
                 )
             }
-            val toCacheKey = generateCacheKey(toScreenId.toString())
-            if (!cacheManager.isScreenFullyCaptured(toCacheKey)) {
+            // Guarded like the twin below, and the guard is not pedantry: `generateId` is null
+            // whenever `screenParams` is, and `toScreenId.toString()` turned that null into the
+            // *literal string* "null" — one shared cache key for every screen in that state. The
+            // first of them marked as captured made all the others skip their screenshot forever.
+            val toCacheKey = toScreenId?.let { generateCacheKey(it) }
+            if (toCacheKey != null && !cacheManager.isScreenFullyCaptured(toCacheKey)) {
                 isScreenshotScheduledForCurrentScreen = true
                 scheduleScreenshot()
             } else {
@@ -2300,9 +2326,18 @@ internal class ScreenMapperIntegration private constructor() {
     }
 
     internal fun unregisterComposeNavController(navController: NavController) {
-        registeredComposeControllers.removeAll {
-            val controller = it.controller.get()
-            controller == null || it.owner.get() == null || controller == navController
+        registeredComposeControllers.removeAll { entry ->
+            val controller = entry.controller.get()
+            val dead = controller == null || entry.owner.get() == null
+            val leaving = controller == navController
+            // Detached from the controller itself, not merely forgotten. A NavController hoisted
+            // into a ViewModel outlives the composable that registered it, so an entry removed
+            // from this set alone left its listener attached — and the next registration stacked
+            // a second one, doubling every navigation into a flushed report plus a self-edge.
+            if ((dead || leaving) && controller != null) {
+                controller.removeOnDestinationChangedListener(entry.listener)
+            }
+            dead || leaving
         }
     }
 

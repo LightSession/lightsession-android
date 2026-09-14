@@ -33,6 +33,17 @@ public class LightSession private constructor() {
     }
 
     private var accessKey: String? = null
+
+    /**
+     * Published *last* in [init], synchronised, and volatile — all three, because each guards a
+     * different door. Every public entry point reads this flag and then dereferences the lateinit
+     * fields behind it, from whatever thread the customer called on. Setting it before those
+     * fields exist opened a window where identify()/reset() passed the guard and crashed the host
+     * app with UninitializedPropertyAccessException; a non-volatile flag let another thread see
+     * `true` without seeing the fields at all; and an unsynchronised check-then-set let two
+     * threads both run init, registering every trigger twice.
+     */
+    @Volatile
     private var isInitialized = false
     private lateinit var config: LightSessionConfig
     private lateinit var sessionDataManager: SessionDataManager
@@ -246,8 +257,15 @@ public class LightSession private constructor() {
      */
     public fun reset() {
         if (!isInitialized) return
-        identity.reset()
+        // Rotation first, identity second, and the order is the fix for a measured bug: the
+        // crumb spool stamps `user_id` by reading `identity.effectiveId` at write time, so
+        // resetting the identity first stamped everything still buffered — the signed-in
+        // user's final actions — with the *next* person's fresh anonymous id. Proven on a
+        // device in `RotationAttributionTest`: an interaction recorded under a signed-in user
+        // shipped under the post-reset id. Flushing under the old identity first is the whole
+        // point of flushing at all.
         sessionDataManager.startNewSession("identity_reset")
+        identity.reset()
         Log.d("LightSession", "reset")
     }
 
@@ -282,6 +300,9 @@ public class LightSession private constructor() {
             Log.w("LightSession", "startRecording before init; ignored")
             return
         }
+        // An explicit start makes any pending background resume moot; said so, rather than left
+        // to a resume that would now be re-enabling an already-enabled recorder.
+        Recording.appOverrides()
         if (Recording.enabled) return
 
         // Rolled before the flag flips, so nothing from this moment lands in the session that
@@ -306,6 +327,11 @@ public class LightSession private constructor() {
             Log.w("LightSession", "stopRecording before init; ignored")
             return
         }
+        // Before the early return, not after — that ordering was a shipped bug. With the app
+        // background-paused, `enabled` is already false and this function used to return without
+        // recording the *intent*, so the next foreground resumed a recorder the app had just
+        // stopped. An explicit stop cancels any pending background resume, then proceeds.
+        Recording.appOverrides()
         if (!Recording.enabled) return
 
         // Flag first, so nothing new arrives while the flush is in flight.
@@ -314,6 +340,7 @@ public class LightSession private constructor() {
         Log.i("LightSession", "recording stopped")
     }
 
+    @Synchronized
     public fun init(application: Application, config: LightSessionConfig) {
         if (isInitialized) {
             return
@@ -331,7 +358,6 @@ public class LightSession private constructor() {
         // Same ordering, and for a stronger reason: every producer reads this, and one that
         // starts before it is set would record a stretch the app asked not to have.
         Recording.enabled = config.startRecordingOnInit
-        this.isInitialized = true
 
         identity = Identity.from(application.applicationContext)
         sessionDataManager = SessionDataManager(application.applicationContext, config)
@@ -381,6 +407,12 @@ public class LightSession private constructor() {
             trackModals = config.trackModals,
             trueColourWireframes = config.trueColourWireframes,
         )
+
+        // Last, once everything the public API dereferences exists. `Identity.from` does disk IO,
+        // which made the old early-publish window wide enough to hit from an ordinary login
+        // callback racing init. A caller arriving before this line returns quietly on the guard —
+        // the same answer it gets before init is called at all — instead of crashing the host.
+        this.isInitialized = true
     }
 
 }

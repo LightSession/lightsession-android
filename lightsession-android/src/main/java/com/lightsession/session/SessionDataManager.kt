@@ -880,13 +880,23 @@ internal class SessionDataManager(
         // fetch.
         val deviceInfo = getDeviceInfo()
 
+        // The stamp is taken here, inside the lock, alongside `batchId` — because the deferred
+        // branch below runs after this function returns, and the rotation that requested the
+        // flush replaces `sessionId` the moment it does.
+        val stampSessionId = sessionId
+        val stampUserId = userId
+        val stampUserType = userType
+
         if (frames.isNotEmpty()) {
             // Outside `batchLock` when deferred, which is safe: the queues have already
-            // been drained into `frames`, and the spool has a lock of its own.
+            // been drained into `frames`, the stamp travels by value, and the spool has a
+            // lock of its own.
             if (deferFrames) {
-                coroutineScope.launch { spoolFrames(batchId, batchNumber, reason, frames) }
+                coroutineScope.launch {
+                    spoolFrames(batchId, batchNumber, reason, frames, stampSessionId, stampUserId, stampUserType)
+                }
             } else {
-                spoolFrames(batchId, batchNumber, reason, frames)
+                spoolFrames(batchId, batchNumber, reason, frames, stampSessionId, stampUserId, stampUserType)
             }
         }
         if (navigations.isNotEmpty() || interactions.isNotEmpty() || identifies.isNotEmpty() ||
@@ -928,13 +938,21 @@ internal class SessionDataManager(
         batchId: String,
         batchNumber: Int,
         reason: String,
-        frames: List<FrameData>
+        frames: List<FrameData>,
+        // The stamp, taken by the caller *inside* `batchLock` — never read from the live fields
+        // here. This can run on the IO scope after a rotation has already replaced `sessionId`,
+        // and reading the field then stamps the old session's frames with the new session's id
+        // (and, after a sign-out, with the next person's identity). Proven on a device in
+        // `RotationAttributionTest`: with the IO pool busy, the stamp and the batch id disagreed.
+        stampSessionId: String,
+        stampUserId: String,
+        stampUserType: String,
     ) = traced(Tracing.SPOOL) {
         val batchMetadata = mapOf(
             "batch_id" to batchId,
-            "session_id" to sessionId,
-            "user_id" to userId,
-            "user_type" to userType,
+            "session_id" to stampSessionId,
+            "user_id" to stampUserId,
+            "user_type" to stampUserType,
             "app_version" to appVersion,
             "total_frame_count" to frames.size.toString(),
             "real_frame_count" to frames.count { !it.isRepeatedFrame }.toString(),
