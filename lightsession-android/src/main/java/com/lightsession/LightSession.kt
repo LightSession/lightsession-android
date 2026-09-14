@@ -33,6 +33,17 @@ public class LightSession private constructor() {
     }
 
     private var accessKey: String? = null
+
+    /**
+     * Published *last* in [init], synchronised, and volatile — all three, because each guards a
+     * different door. Every public entry point reads this flag and then dereferences the lateinit
+     * fields behind it, from whatever thread the customer called on. Setting it before those
+     * fields exist opened a window where identify()/reset() passed the guard and crashed the host
+     * app with UninitializedPropertyAccessException; a non-volatile flag let another thread see
+     * `true` without seeing the fields at all; and an unsynchronised check-then-set let two
+     * threads both run init, registering every trigger twice.
+     */
+    @Volatile
     private var isInitialized = false
     private lateinit var config: LightSessionConfig
     private lateinit var sessionDataManager: SessionDataManager
@@ -329,6 +340,7 @@ public class LightSession private constructor() {
         Log.i("LightSession", "recording stopped")
     }
 
+    @Synchronized
     public fun init(application: Application, config: LightSessionConfig) {
         if (isInitialized) {
             return
@@ -346,7 +358,6 @@ public class LightSession private constructor() {
         // Same ordering, and for a stronger reason: every producer reads this, and one that
         // starts before it is set would record a stretch the app asked not to have.
         Recording.enabled = config.startRecordingOnInit
-        this.isInitialized = true
 
         identity = Identity.from(application.applicationContext)
         sessionDataManager = SessionDataManager(application.applicationContext, config)
@@ -396,6 +407,12 @@ public class LightSession private constructor() {
             trackModals = config.trackModals,
             trueColourWireframes = config.trueColourWireframes,
         )
+
+        // Last, once everything the public API dereferences exists. `Identity.from` does disk IO,
+        // which made the old early-publish window wide enough to hit from an ordinary login
+        // callback racing init. A caller arriving before this line returns quietly on the guard —
+        // the same answer it gets before init is called at all — instead of crashing the host.
+        this.isInitialized = true
     }
 
 }
