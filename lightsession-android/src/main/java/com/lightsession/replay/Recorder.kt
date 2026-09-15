@@ -126,6 +126,13 @@ internal class Recorder {
      */
     private val firstFrameAttempts = AtomicInteger(0)
 
+    /**
+     * The embedder's generation when the last capture was asked for, or null if none has been.
+     *
+     * Tick thread only, which is the only place it is read or written.
+     */
+    private var lastCapturedGeneration: Long? = null
+
     /** Wall clock until which captures use the burst interval. */
     private val burstUntil = AtomicLong(0)
 
@@ -294,19 +301,21 @@ internal class Recorder {
                 isFirstCapture.set(true)
                 firstFrameAttempts.set(0)
                 lastDeliveredFrame = null
+                lastCapturedGeneration = null
                 return
             }
 
             // A surface paints without a View draw pass, so for a window that hosts one the draw
             // listener below is deaf and `isScreenContentChanged` stays false forever. Measured on
             // a Flutter session: two frames at startup, then repeat markers through twenty seconds
-            // of scrolling and navigation. So a surface window is treated as always changed and
-            // the capture is taken every tick — with [emitFrame]'s byte comparison downstream
-            // putting the repeat markers back for the frames that really were identical. The
-            // economy is the same; only the place it is decided moves, from before the capture to
-            // after it, because after it is the only place a surface's stillness can be seen.
+            // of scrolling and navigation.
+            val reported = com.lightsession.masking.SuppliedMasks.generationNow()
             val changed = isScreenContentChanged.getAndSet(false) ||
-                screenDrawing.lastWindowHostedSurface
+                surfaceMayHavePainted(
+                    hostsSurface = screenDrawing.lastWindowHostedSurface,
+                    reportedGeneration = reported,
+                    generationAtLastCapture = lastCapturedGeneration,
+                )
 
             // A screen mid-transition shows two screens at once with both of their masks, and
             // the mask cannot be made correct for such a frame — see [CompositionActivity] — so
@@ -352,6 +361,10 @@ internal class Recorder {
                                 "capturing only on change from here",
                         )
                     }
+                    // Recorded where the capture is decided, not where it lands: the question the
+                    // next tick asks is whether the embedder has painted since this frame was
+                    // asked for.
+                    lastCapturedGeneration = reported
                     captureFrame()
                 }
                 TickAction.Repeat -> emitMarker()
@@ -473,6 +486,7 @@ internal class Recorder {
             isFirstCapture.set(true)
             firstFrameAttempts.set(0)
             lastDeliveredFrame = null
+            lastCapturedGeneration = null
             burstUntil.set(0)
             screenDrawing.clearObjectPools()
             Log.d("LightSessionCore", "view monitoring uninstalled")
@@ -625,6 +639,35 @@ internal fun isRepeatOfLastFrame(
     if (bytes == null) return false
     if (isFirstFrame) return false
     return bytes.contentEquals(lastDelivered)
+}
+
+
+/**
+ * Whether a window whose content is a surface may have painted since the last capture.
+ *
+ * The draw listener the recorder normally trusts cannot see a surface paint, so this stands in for
+ * it — and what it stands on depends on whether anything is reporting.
+ *
+ * An embedder that hands in mask rectangles also hands in a generation, bumped on every frame it
+ * paints. That is an exact answer: the generation has not moved, so nothing was painted, so the
+ * surface still shows what the last capture already has. Which restores the economy the repeated
+ * frame signal is for — a Flutter app sitting on a still screen pays a four-byte marker per tick,
+ * exactly as a native one does, instead of a capture and a JPEG encode it then throws away.
+ *
+ * With nothing reporting there is no such answer and none can be had: a `SurfaceView` publishes no
+ * per-frame signal any public API can read. A video player, a map and a camera preview all land
+ * here, and the honest response is to assume the surface painted and let `isRepeatOfLastFrame`
+ * settle it afterwards from the bytes. That costs a capture per tick on a screen that turns out to
+ * be still, which is the price of having no signal rather than a choice being made badly.
+ */
+internal fun surfaceMayHavePainted(
+    hostsSurface: Boolean,
+    reportedGeneration: Long?,
+    generationAtLastCapture: Long?,
+): Boolean {
+    if (!hostsSurface) return false
+    if (reportedGeneration == null) return true
+    return reportedGeneration != generationAtLastCapture
 }
 
 /** What a capture tick does with this instant. */
