@@ -895,7 +895,37 @@ publishing {
             // Minor rather than patch, and the masking fix alone would settle it: an app that
             // was shipping uncovered interop text starts covering it, which changes what its
             // stored frames look like. No API changes.
-            version = "0.31.0"
+            //
+            // 0.32.0 is the replay of a screen that is painted into a surface, which until now
+            // came back as a solid black rectangle delivered as a frame like any other.
+            //
+            // Both capture paths were blind to it and neither said so. The software draw walks
+            // Views; a SurfaceView contributes nothing there and does not fail while contributing
+            // nothing, so the hardware-bitmap latch that exists for the other unreadable case
+            // never fired. PixelCopy from the Window reads the window's own surface, which
+            // carries a transparent hole where the SurfaceView sits — and JPEG has no alpha, so
+            // the hole encoded as black. Such a window now skips the software draw and each
+            // SurfaceView under it is copied through the overload that reads its own layer,
+            // composited underneath the window the way SurfaceFlinger does it.
+            //
+            // The same screen also looked eternally still, because a surface paints without a
+            // View draw pass and the recorder's change detector is deaf to that. It is now
+            // sampled on every tick, with stillness decided afterwards from the encoded bytes —
+            // or, when an embedder reports a generation, from that instead: measured on a still
+            // Flutter screen, 4 captures over twenty-five seconds against 26 without it.
+            //
+            // New API, which is what settles minor over patch: `setScreenMasks` and
+            // `clearScreenMasks`. A toolkit that paints its own screens is the only party that
+            // knows where their text is, and MaskScanner finds none of it by walking Views — the
+            // scan succeeds and returns empty, and empty reads as nothing to cover. Reports carry
+            // a generation so a frame whose rectangles were measured on a different frame is
+            // dropped rather than masked in the wrong places, and a null report means the
+            // embedder could not measure, which drops frames until one arrives.
+            //
+            // This is not only Flutter. A video player, a map view, a camera preview and a game
+            // are the same shape, and an app with any of them starts getting real frames where it
+            // was getting black ones.
+            version = "0.32.0"
 
             afterEvaluate {
                 from(components["release"])
