@@ -340,6 +340,33 @@ public class LightSession private constructor() {
         Log.i("LightSession", "recording stopped")
     }
 
+    /**
+     * Tells the SDK where the sensitive content is, for a screen it cannot read.
+     *
+     * For embedders whose screens are painted into a surface — Flutter above all — where the
+     * masker's own walk finds no text because there are no views holding any. The embedder
+     * measures its own frame and reports the rectangles here; captures cover them exactly as
+     * they cover the rectangles the walk finds natively.
+     *
+     * @param generation a counter the embedder bumps on **every frame it paints**, reported or
+     *   not. Captures record the generation they planned with and drop the frame if it moved
+     *   before the pixels landed — the only staleness signal that exists for a painter whose
+     *   draws the view system cannot see.
+     * @param rects what to cover, in **screen pixels**. Empty when the screen holds nothing
+     *   coverable. Null when the embedder tried to measure and failed — from then on every
+     *   capture is dropped until a good report arrives, because "could not measure" shipped as
+     *   "nothing to cover" is a leak.
+     */
+    public fun setScreenMasks(generation: Long, rects: List<android.graphics.Rect>?) {
+        if (!isInitialized) return
+        com.lightsession.masking.SuppliedMasks.set(generation, rects)
+    }
+
+    /** Withdraws the embedder's report; the masker's own walk is authoritative again. */
+    public fun clearScreenMasks() {
+        com.lightsession.masking.SuppliedMasks.clear()
+    }
+
     @Synchronized
     public fun init(application: Application, config: LightSessionConfig) {
         if (isInitialized) {

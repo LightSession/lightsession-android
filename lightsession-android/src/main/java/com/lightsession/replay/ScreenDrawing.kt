@@ -517,9 +517,17 @@ internal class ScreenDrawing {
             // more. Nothing here can repair that — the geometry for these pixels is gone — so the
             // frame does not ship.
             //
+            // Two nets, one per kind of painter. `drewDuringCapture` hears View draws; a surface
+            // paints without one, so its net is the embedder's generation counter — bumped on
+            // every frame the embedder paints, recorded into the plan, compared here. Either
+            // moving means the same thing: these rectangles were measured on a screen these
+            // pixels no longer show.
+            //
             // Read on this thread; only add/remove need the main one. Masking is on by default, so
             // this is checked whenever there is anything to protect.
-            if (Masking.enabled && drewDuringCapture.get()) {
+            val suppliedMoved = plan.suppliedGeneration != null &&
+                com.lightsession.masking.SuppliedMasks.generationNow() != plan.suppliedGeneration
+            if (Masking.enabled && (drewDuringCapture.get() || suppliedMoved)) {
                 Log.d("ScreenCaptureUtils", "screen drew mid-capture; frame not shipped")
                 recycleBitmap(target)
                 mainHandler.post {
@@ -581,7 +589,7 @@ internal class ScreenDrawing {
      * @throws Exception if a scan fails; the caller drops the frame rather than shipping it.
      */
     private fun planMasks(layers: List<SurfaceLayer>): MaskPlan = traced(Tracing.PLAN_MASKS) {
-        if (!Masking.enabled) return@traced MaskPlan(layers.map { emptyList() }, emptyList())
+        if (!Masking.enabled) return@traced MaskPlan(layers.map { emptyList() }, emptyList(), null)
 
         val perLayer = layers.map { layer ->
             if (layer.root.visibility != View.VISIBLE ||
@@ -590,6 +598,30 @@ internal class ScreenDrawing {
                 emptyList()
             } else {
                 masker.scan(layer.root, Masking.text, Masking.images)
+            }
+        }.toMutableList()
+
+        // What the embedder said to cover, for content the scan above cannot see. A surface's
+        // text is invisible to a View walk — the scan completes and returns nothing — so a screen
+        // painted by Flutter is masked entirely from this report.
+        //
+        // Null rects mean the embedder tried to measure its frame and failed, and the answer to
+        // that is the same one MaskScanner gives for its own failures: throw, so the caller drops
+        // the frame. "Could not measure" shipped as "nothing to cover" is the exact confusion the
+        // scanner's own contract exists to prevent.
+        val supplied = com.lightsession.masking.SuppliedMasks.snapshot()
+        if (supplied != null && perLayer.isNotEmpty()) {
+            val rects = supplied.rects
+                ?: throw IllegalStateException("the embedder could not measure its screen")
+            if (rects.isNotEmpty()) {
+                // Onto the *window* layer that holds the surface, never onto the surface layer
+                // itself: the window is copied over its surfaces, so masks painted with the
+                // surface would be erased by the very next copy. Picking the window above it also
+                // keeps a native dialog composited over the Flutter masks rather than under them.
+                val at = layers
+                    .indexOfFirst { it.source is Source.FromWindow && hostsSurfaceContent(it.root) }
+                    .let { if (it >= 0) it else layers.lastIndex }
+                perLayer[at] = perLayer[at] + rects
             }
         }
 
@@ -600,7 +632,7 @@ internal class ScreenDrawing {
             uncomposited.addAll(masker.scan(view, Masking.text, Masking.images))
         }
 
-        MaskPlan(perLayer, uncomposited)
+        MaskPlan(perLayer, uncomposited, supplied?.generation)
     }
 
     /**
@@ -619,6 +651,12 @@ internal class ScreenDrawing {
     private class MaskPlan(
         val perLayer: List<List<Rect>>,
         val uncomposited: List<Rect>,
+        /**
+         * The generation of the embedder's mask report this plan was built with, or null when no
+         * embedder has spoken. Compared against the current generation when the copy completes:
+         * a report that moved mid-capture describes pixels this frame does not have.
+         */
+        val suppliedGeneration: Long?,
     )
 
     /**
