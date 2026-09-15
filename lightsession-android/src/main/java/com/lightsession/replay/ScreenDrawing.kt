@@ -201,7 +201,25 @@ internal class ScreenDrawing {
         baseWindow: android.view.Window?,
         onResult: (Bitmap?) -> Unit,
     ) {
-        if (!surfaceCaptureRequired) {
+        val window = baseWindow
+            ?: com.lightsession.mapper.ScreenMapperIntegration.getInstance()
+                .currentActivity()?.window
+
+        // A window that hosts a surface goes straight to PixelCopy. The software draw does not
+        // fail on a surface — that is exactly the problem: `SurfaceView.draw` contributes
+        // nothing, no exception is thrown, the hardware-bitmap latch never fires, and the
+        // capture comes back a black rectangle where the surface's pixels belong. Measured on a
+        // real device against a Flutter screen: frame one was the window background, frame two
+        // was solid black, and no error was logged anywhere. PixelCopy reads what the compositor
+        // actually put on screen, so it is the only capture that can see this content — the same
+        // reason it already serves the hardware-bitmap case, arrived at from the opposite side.
+        //
+        // A video player, a map and a camera preview are the same shape, so this is checked
+        // generically rather than by looking for any particular toolkit.
+        val hostsSurface = window?.peekDecorView()?.let(::hostsSurfaceContent) ?: false
+        lastWindowHostedSurface = hostsSurface
+
+        if (!surfaceCaptureRequired && !hostsSurface) {
             val drawn = captureToBitmap(scaleFactor)
             if (drawn != null || !surfaceCaptureRequired) {
                 // Either it worked, or it failed for a reason PixelCopy would not fix.
@@ -211,12 +229,31 @@ internal class ScreenDrawing {
             // The draw set the flag: this app renders something a software canvas
             // cannot take. Fall through and never try the draw again.
         }
-        captureViaSurface(
-            scaleFactor,
-            baseWindow ?: com.lightsession.mapper.ScreenMapperIntegration.getInstance()
-                .currentActivity()?.window,
-            onResult,
-        )
+        captureViaSurface(scaleFactor, window, onResult)
+    }
+
+    /**
+     * Whether the last capture's window held a visible surface.
+     *
+     * Read by [Recorder]: a surface paints without a View draw pass, so the draw listener that
+     * feeds `isScreenContentChanged` never fires for it and the recorder would otherwise decide
+     * the screen is eternally still. Measured on a Flutter session: two frames, then repeat
+     * markers through a whole session of scrolling and navigation.
+     */
+    @Volatile
+    internal var lastWindowHostedSurface: Boolean = false
+        private set
+
+    /** Whether any visible [android.view.SurfaceView] or [android.view.TextureView] is under [view]. */
+    private fun hostsSurfaceContent(view: View): Boolean {
+        if (view.visibility != View.VISIBLE) return false
+        if (view is android.view.SurfaceView || view is android.view.TextureView) return true
+        if (view is android.view.ViewGroup) {
+            for (index in 0 until view.childCount) {
+                if (hostsSurfaceContent(view.getChildAt(index))) return true
+            }
+        }
+        return false
     }
 
     /**
@@ -239,10 +276,27 @@ internal class ScreenDrawing {
      * copy loop would then silently skip masking one.
      */
     private class SurfaceLayer(
-        val window: android.view.Window,
+        val source: Source,
         val root: View,
         val bounds: Rect,
     )
+
+    /**
+     * Where one layer's pixels are read from.
+     *
+     * Two kinds, because `PixelCopy` has two overloads that see different things and the
+     * difference is not a detail. `SurfacePixelCopyProbeTest` measures it: a `SurfaceView` does
+     * not draw into its window's surface, it publishes on a **separate** layer that
+     * `SurfaceFlinger` composites underneath, and the window's surface carries a transparent hole
+     * where it sits. So a window copy of a screen whose content is all surface comes back
+     * `#00000000` everywhere the content is — and JPEG has no alpha, so that ships as solid
+     * black. Measured on a Flutter screen before this existed: a black frame delivered as if it
+     * were the screen, with nothing logged.
+     */
+    private sealed class Source {
+        class FromWindow(val window: android.view.Window) : Source()
+        class FromSurface(val view: android.view.SurfaceView) : Source()
+    }
 
     /**
      * Every window that can be copied, furthest back first.
@@ -273,9 +327,15 @@ internal class ScreenDrawing {
 
         if (baseWindow != null) {
             val screen = ScreenGeometry.size()
+            // Surfaces first, then the window over them, which is the order SurfaceFlinger
+            // composites in: a SurfaceView sits *below* its window and the window's own surface
+            // is transparent where it sits, so drawing the window second lets the content show
+            // through. Reversing this would paint the hole over the content and put the black
+            // back.
+            addSurfacesOf(baseWindow.decorView, layers)
             layers.add(
                 SurfaceLayer(
-                    baseWindow,
+                    Source.FromWindow(baseWindow),
                     baseWindow.decorView,
                     Rect(0, 0, screen.width, screen.height),
                 ),
@@ -288,9 +348,10 @@ internal class ScreenDrawing {
             val window = findDialogWindow(root) ?: continue
             val location = IntArray(2)
             root.getLocationOnScreen(location)
+            addSurfacesOf(root, layers)
             layers.add(
                 SurfaceLayer(
-                    window,
+                    Source.FromWindow(window),
                     root,
                     Rect(
                         location[0],
@@ -302,6 +363,44 @@ internal class ScreenDrawing {
             )
         }
         return layers
+    }
+
+
+    /**
+     * Adds a copy layer for every live [android.view.SurfaceView] under [root].
+     *
+     * `SurfaceView` only. A `TextureView` is drawn by the View hierarchy into the window's own
+     * surface, so the window copy already contains it and a second read would be the same pixels
+     * twice — it still forces the PixelCopy path, via [hostsSurfaceContent], because a *software*
+     * draw cannot see it either.
+     *
+     * A surface with no valid `Surface` behind it is skipped rather than requested: `PixelCopy`
+     * rejects those by throwing, and a frame is not worth an exception.
+     */
+    private fun addSurfacesOf(root: View, into: MutableList<SurfaceLayer>) {
+        if (root.visibility != View.VISIBLE) return
+        if (root is android.view.SurfaceView) {
+            if (root.width <= 0 || root.height <= 0) return
+            if (!root.holder.surface.isValid) return
+            val location = IntArray(2)
+            root.getLocationOnScreen(location)
+            into.add(
+                SurfaceLayer(
+                    Source.FromSurface(root),
+                    root,
+                    Rect(
+                        location[0],
+                        location[1],
+                        location[0] + root.width,
+                        location[1] + root.height,
+                    ),
+                ),
+            )
+            return
+        }
+        if (root is android.view.ViewGroup) {
+            for (index in 0 until root.childCount) addSurfacesOf(root.getChildAt(index), into)
+        }
     }
 
     private fun findDialogWindow(view: View): android.view.Window? {
@@ -345,6 +444,19 @@ internal class ScreenDrawing {
         onResult: (Bitmap?) -> Unit,
     ) {
         val layers = surfaceLayers(baseWindow)
+        // What the frame is being assembled from. Cheap, debug level, and the only way to tell a
+        // screen whose surfaces were found from one whose were missed — the two produce the same
+        // frame size and the same absence of errors, and differ only in whether it is black.
+        Log.d(
+            "ScreenCaptureUtils",
+            "capturing ${layers.size} layer(s): " +
+                layers.joinToString {
+                    when (it.source) {
+                        is Source.FromWindow -> "window${it.bounds.toShortString()}"
+                        is Source.FromSurface -> "surface${it.bounds.toShortString()}"
+                    }
+                },
+        )
         if (layers.isEmpty()) {
             Log.w("ScreenCaptureUtils", "no foreground window to copy from")
             onResult(null)
@@ -405,9 +517,17 @@ internal class ScreenDrawing {
             // more. Nothing here can repair that — the geometry for these pixels is gone — so the
             // frame does not ship.
             //
+            // Two nets, one per kind of painter. `drewDuringCapture` hears View draws; a surface
+            // paints without one, so its net is the embedder's generation counter — bumped on
+            // every frame the embedder paints, recorded into the plan, compared here. Either
+            // moving means the same thing: these rectangles were measured on a screen these
+            // pixels no longer show.
+            //
             // Read on this thread; only add/remove need the main one. Masking is on by default, so
             // this is checked whenever there is anything to protect.
-            if (Masking.enabled && drewDuringCapture.get()) {
+            val suppliedMoved = plan.suppliedGeneration != null &&
+                com.lightsession.masking.SuppliedMasks.generationNow() != plan.suppliedGeneration
+            if (Masking.enabled && (drewDuringCapture.get() || suppliedMoved)) {
                 Log.d("ScreenCaptureUtils", "screen drew mid-capture; frame not shipped")
                 recycleBitmap(target)
                 mainHandler.post {
@@ -469,7 +589,7 @@ internal class ScreenDrawing {
      * @throws Exception if a scan fails; the caller drops the frame rather than shipping it.
      */
     private fun planMasks(layers: List<SurfaceLayer>): MaskPlan = traced(Tracing.PLAN_MASKS) {
-        if (!Masking.enabled) return@traced MaskPlan(layers.map { emptyList() }, emptyList())
+        if (!Masking.enabled) return@traced MaskPlan(layers.map { emptyList() }, emptyList(), null)
 
         val perLayer = layers.map { layer ->
             if (layer.root.visibility != View.VISIBLE ||
@@ -478,6 +598,30 @@ internal class ScreenDrawing {
                 emptyList()
             } else {
                 masker.scan(layer.root, Masking.text, Masking.images)
+            }
+        }.toMutableList()
+
+        // What the embedder said to cover, for content the scan above cannot see. A surface's
+        // text is invisible to a View walk — the scan completes and returns nothing — so a screen
+        // painted by Flutter is masked entirely from this report.
+        //
+        // Null rects mean the embedder tried to measure its frame and failed, and the answer to
+        // that is the same one MaskScanner gives for its own failures: throw, so the caller drops
+        // the frame. "Could not measure" shipped as "nothing to cover" is the exact confusion the
+        // scanner's own contract exists to prevent.
+        val supplied = com.lightsession.masking.SuppliedMasks.snapshot()
+        if (supplied != null && perLayer.isNotEmpty()) {
+            val rects = supplied.rects
+                ?: throw IllegalStateException("the embedder could not measure its screen")
+            if (rects.isNotEmpty()) {
+                // Onto the *window* layer that holds the surface, never onto the surface layer
+                // itself: the window is copied over its surfaces, so masks painted with the
+                // surface would be erased by the very next copy. Picking the window above it also
+                // keeps a native dialog composited over the Flutter masks rather than under them.
+                val at = layers
+                    .indexOfFirst { it.source is Source.FromWindow && hostsSurfaceContent(it.root) }
+                    .let { if (it >= 0) it else layers.lastIndex }
+                perLayer[at] = perLayer[at] + rects
             }
         }
 
@@ -488,7 +632,7 @@ internal class ScreenDrawing {
             uncomposited.addAll(masker.scan(view, Masking.text, Masking.images))
         }
 
-        MaskPlan(perLayer, uncomposited)
+        MaskPlan(perLayer, uncomposited, supplied?.generation)
     }
 
     /**
@@ -507,6 +651,12 @@ internal class ScreenDrawing {
     private class MaskPlan(
         val perLayer: List<List<Rect>>,
         val uncomposited: List<Rect>,
+        /**
+         * The generation of the embedder's mask report this plan was built with, or null when no
+         * embedder has spoken. Compared against the current generation when the copy completes:
+         * a report that moved mid-capture describes pixels this frame does not have.
+         */
+        val suppliedGeneration: Long?,
     )
 
     /**
@@ -533,7 +683,10 @@ internal class ScreenDrawing {
         }
 
         val layer = layers[index]
-        val direct = layers.size == 1
+        // Straight into the target only for a lone window, which covers the whole screen. A
+        // surface layer occupies its own rectangle and has to be blitted there, and a screen
+        // with a surface always has at least two layers anyway.
+        val direct = layers.size == 1 && layers[0].source is Source.FromWindow
         val layerWidth = ((layer.bounds.width()) * scale).toInt().coerceAtLeast(1)
         val layerHeight = ((layer.bounds.height()) * scale).toInt().coerceAtLeast(1)
 
@@ -544,12 +697,12 @@ internal class ScreenDrawing {
         }
 
         val request = {
-            PixelCopy.request(layer.window, null, destination, { status ->
+            val onCopied = PixelCopy.OnPixelCopyFinishedListener { status ->
                 if (status != PixelCopy.SUCCESS) {
                     Log.w("ScreenCaptureUtils", "PixelCopy failed with status $status")
                     if (!direct) recycleBitmap(destination)
                     onDone(false)
-                    return@request
+                    return@OnPixelCopyFinishedListener
                 }
                 if (!direct) {
                     val canvas = getCanvasFromPool()
@@ -583,7 +736,15 @@ internal class ScreenDrawing {
                     Masking.draw(canvas, plan.perLayer[index])
                 }
                 copyLayers(layers, plan, index + 1, target, scale, onDone)
-            }, copyHandler())
+            }
+            // The overload is the whole point: a window copy cannot see a SurfaceView's pixels,
+            // only the transparent hole it leaves behind. See [Source].
+            when (val source = layer.source) {
+                is Source.FromWindow ->
+                    PixelCopy.request(source.window, null, destination, onCopied, copyHandler())
+                is Source.FromSurface ->
+                    PixelCopy.request(source.view, destination, onCopied, copyHandler())
+            }
         }
 
         try {
