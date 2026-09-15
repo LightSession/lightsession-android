@@ -293,10 +293,20 @@ internal class Recorder {
                 // from the previous stretch.
                 isFirstCapture.set(true)
                 firstFrameAttempts.set(0)
+                lastDeliveredFrame = null
                 return
             }
 
-            val changed = isScreenContentChanged.getAndSet(false)
+            // A surface paints without a View draw pass, so for a window that hosts one the draw
+            // listener below is deaf and `isScreenContentChanged` stays false forever. Measured on
+            // a Flutter session: two frames at startup, then repeat markers through twenty seconds
+            // of scrolling and navigation. So a surface window is treated as always changed and
+            // the capture is taken every tick — with [emitFrame]'s byte comparison downstream
+            // putting the repeat markers back for the frames that really were identical. The
+            // economy is the same; only the place it is decided moves, from before the capture to
+            // after it, because after it is the only place a surface's stillness can be seen.
+            val changed = isScreenContentChanged.getAndSet(false) ||
+                screenDrawing.lastWindowHostedSurface
 
             // A screen mid-transition shows two screens at once with both of their masks, and
             // the mask cannot be made correct for such a frame — see [CompositionActivity] — so
@@ -372,16 +382,31 @@ internal class Recorder {
      * to fail, which is exactly what a device does not do on demand.
      */
     private fun emitFrame(bytes: ByteArray?) {
+        if (isRepeatOfLastFrame(bytes, isFirstCapture.get(), lastDeliveredFrame)) {
+            emitMarker()
+            return
+        }
         onBitmapBytesReady?.invoke(bytes)
         // Only bytes close it. `encodeToJpeg` returns null when encoding throws, and
         // `ReplayIntegration.handleCaptureResult` counts that as a delivery and stores nothing —
         // so clearing the flag unconditionally would put the session back exactly where the
         // marker case did: no real frame, and no reason left to take one.
         if (bytes != null) {
+            lastDeliveredFrame = bytes
             isFirstCapture.set(false)
             firstFrameAttempts.set(0)
         }
     }
+
+    /**
+     * The last real frame handed downstream, kept for [emitFrame]'s comparison.
+     *
+     * Encoder thread only, which is where every [emitFrame] runs. Cleared when recording stops
+     * or monitoring is uninstalled, so a resumed recording never compares against a frame from
+     * the previous stretch.
+     */
+    @Volatile
+    private var lastDeliveredFrame: ByteArray? = null
 
     /** Four bytes meaning "the same as the one before". Never a first frame. */
     private fun emitMarker() {
@@ -447,6 +472,7 @@ internal class Recorder {
             isScreenContentChanged.set(false)
             isFirstCapture.set(true)
             firstFrameAttempts.set(0)
+            lastDeliveredFrame = null
             burstUntil.set(0)
             screenDrawing.clearObjectPools()
             Log.d("LightSessionCore", "view monitoring uninstalled")
@@ -567,6 +593,38 @@ internal class Recorder {
             Log.d("LightSessionCore", "cleaned up ${dead.size} dead window root(s)")
         }
     }
+}
+
+
+/**
+ * Whether a freshly encoded frame says nothing the last delivered one did not.
+ *
+ * Pulled out of `Recorder` to be tested, for the same reason [tickAction] was: `Recorder` cannot
+ * be built on a JVM, it takes a main-thread `Handler`.
+ *
+ * It exists because a surface window has to be captured on every tick. The View draw listener
+ * that normally decides whether anything changed cannot see a surface paint, so the decision
+ * moves from before the capture to after it, where a surface does leave evidence — its bytes.
+ * JPEG encoding is deterministic for identical pixels, so an exact comparison answers it. Exact
+ * rather than a hash, because a false "same" ships a stale frame; the cost is one retained frame
+ * and a byte compare, both on the encoder thread.
+ *
+ * [isFirstFrame] is the ordering that matters, and it is not an optimisation. A stretch whose
+ * first delivery is a marker is a session the renderer refuses outright — "the same as the one
+ * before", with nothing before it — which is the fault `Recorder.isFirstCapture` records
+ * eighteen production sessions dying of. So the first frame of a stretch is never deduplicated,
+ * however identical it looks.
+ */
+internal fun isRepeatOfLastFrame(
+    bytes: ByteArray?,
+    isFirstFrame: Boolean,
+    lastDelivered: ByteArray?,
+): Boolean {
+    // Null is an encode failure, not a repeat: it has its own handling downstream, where it
+    // counts as a delivery that stores nothing.
+    if (bytes == null) return false
+    if (isFirstFrame) return false
+    return bytes.contentEquals(lastDelivered)
 }
 
 /** What a capture tick does with this instant. */
