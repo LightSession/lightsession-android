@@ -925,7 +925,36 @@ publishing {
             // This is not only Flutter. A video player, a map view, a camera preview and a game
             // are the same shape, and an app with any of them starts getting real frames where it
             // was getting black ones.
-            version = "0.32.0"
+            //
+            // 0.33.0 is the wireframe of a screen this SDK cannot walk, which until now was a
+            // single grey rectangle the size of the display on every screen of a Flutter app.
+            //
+            // `SkeletonGenerator` builds a wireframe from the platform's view hierarchy, and a
+            // toolkit that paints into a surface gives that walk one `FlutterView` with nothing
+            // inside it: one node found, one rectangle drawn, no error and nothing logged. The
+            // party that knows what is on such a screen is the toolkit that painted it, so
+            // `setScreenContent` lets it say — the companion to `setScreenMasks`, one describing
+            // what to draw where the other describes what to cover.
+            //
+            // The supplied tree joins the existing pipeline at the node tree `scanViewHierarchy`
+            // produces, so paint order, the empty-rectangle rule, the recolour pass and the
+            // server's renderer are shared rather than duplicated, and a described screen is
+            // coloured by the same table a Compose one is.
+            //
+            // Three fixes were needed before the seam delivered anything, each found by running a
+            // real Flutter app against a capture server and reading the payload. The mapper learns
+            // a screen changed from a Compose snapshot apply, which an app with no Compose never
+            // produces — and the embedder's report arrives before the watch that would act on it
+            // is armed, so a description is now announced and acted on even when it arrived first.
+            // A description is global while a navigation is instant, so one that names another
+            // screen is refused rather than filed under the wrong name. And the ratchet, which
+            // compares rectangle counts, refused every correction that happened to be smaller: a
+            // description is the toolkit stating what it painted, so a newer one wins on being
+            // newer.
+            //
+            // Minor rather than patch: new public API, and any app whose screens an embedder
+            // describes starts storing a different picture than the one it had.
+            version = "0.33.0"
 
             afterEvaluate {
                 from(components["release"])
