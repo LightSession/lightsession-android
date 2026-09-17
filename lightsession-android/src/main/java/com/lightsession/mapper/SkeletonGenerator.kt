@@ -361,6 +361,76 @@ internal class SkeletonGenerator {
     }
 
     /**
+     * The wireframe of a screen an embedder described, instead of one this SDK walked.
+     *
+     * The walk is what cannot be done for a surface-rendering toolkit; everything after it can,
+     * and is. The supplied tree is turned into the same [SkeletonNode] tree `scanViewHierarchy`
+     * produces and handed to the same [flattenForWire], so paint order, the empty-rectangle rule,
+     * the recolour pass and the server's renderer all see exactly what they see for a native
+     * screen. A second flattening here would be a second set of rules to keep in step.
+     *
+     * Colour follows the same table a Compose node follows, and for the same reason: a supplied
+     * wireframe that used its own palette would be recognisable as the odd one out in a dashboard
+     * showing both. A node that declares its own colour keeps it — that is the embedder saying
+     * something the palette cannot know — and everything else is coloured by kind, with a
+     * container drawn as an outline when it has children and filled when it does not.
+     */
+    internal fun frameFrom(
+        supplied: SuppliedScreen.Screen,
+        backgroundColor: Int,
+    ): SkeletonFrame? = traced(Tracing.WIREFRAME) {
+        if (supplied.width <= 0 || supplied.height <= 0) return@traced null
+
+        val rects = ArrayList<SkeletonRect>(64)
+        flattenForWire(toSkeletonNode(supplied.root), rects)
+
+        SkeletonFrame(
+            width = supplied.width,
+            height = supplied.height,
+            background = backgroundColor,
+            rects = rects,
+        )
+    }
+
+    /** One supplied node and its children, in the shape the rest of this class already speaks. */
+    private fun toSkeletonNode(node: SuppliedScreen.Node): SkeletonNode {
+        val type = runCatching { NodeType.valueOf(node.kind) }.getOrDefault(NodeType.UNKNOWN)
+        val children = node.children.map(::toSkeletonNode)
+        val isLeaf = children.isEmpty()
+
+        // The same table `parseGroupTree` uses for a Compose node. Kept in step by being the same
+        // rules rather than by being remembered.
+        val (paletteColor, style) = when {
+            type in listOf(
+                NodeType.TEXT,
+                NodeType.IMAGE,
+                NodeType.BUTTON,
+                NodeType.INPUT,
+                NodeType.CARD,
+            ) -> Pair(defaultColors[type] ?: Color.LTGRAY, Paint.Style.FILL)
+
+            type == NodeType.CONTAINER && isLeaf ->
+                Pair("#E0E0E0".toColorInt(), Paint.Style.FILL)
+
+            type == NodeType.CONTAINER && !isLeaf ->
+                Pair("#BDBDBD".toColorInt(), Paint.Style.STROKE)
+
+            else -> Pair(defaultColors[type] ?: Color.LTGRAY, Paint.Style.FILL)
+        }
+
+        // A declared colour is a fill by definition: the embedder is saying this rectangle is
+        // painted, which an outline would contradict.
+        val declared = node.color
+        return SkeletonNode(
+            rect = node.bounds,
+            type = type,
+            color = declared ?: paletteColor,
+            style = if (declared != null) Paint.Style.FILL else style,
+            children = children,
+        )
+    }
+
+    /**
      * Whether a rectangle is the whole canvas.
      *
      * Used to drop a modal window's own furniture from its wireframe, and only there. A
@@ -479,6 +549,15 @@ internal class SkeletonGenerator {
         bitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
         return Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
     }
+
+    /**
+     * The window background, for a caller that builds a frame without going through the walk.
+     *
+     * The supplied-screen path still wants the app's own background — an embedder describes what
+     * it painted, not the theme it painted onto — so the theme lookup stays here and is reached
+     * rather than reimplemented.
+     */
+    internal fun windowBackgroundColor(activity: Activity): Int = getWindowBackgroundColor(activity)
 
     private fun getWindowBackgroundColor(activity: Activity): Int {
         val typedValue = TypedValue()

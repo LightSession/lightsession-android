@@ -58,15 +58,32 @@ internal class LateContent {
         pending = null
     }
 
+    /**
+     * Fires the arm from somewhere other than a snapshot apply.
+     *
+     * A snapshot apply is Compose's announcement that the screen changed, and it is the only one
+     * this class listens to — which makes it deaf on an app with no Compose in it at all. A Flutter
+     * app is exactly that: its screens arrive through `setScreenContent`, its state lives in Dart,
+     * and no `MutableState` is ever written, so the wireframe taken on arrival was the screen's
+     * picture forever. Measured before this existed: the first payload of a Flutter screen carried
+     * five full-display rectangles and nothing ever replaced them.
+     *
+     * The embedder's report is that app's announcement, so it is routed here rather than given a
+     * mechanism of its own — the claim-then-run, the one-shot arm and the cancel on touch and
+     * navigation are all rules this screen needs whichever way the news arrives.
+     */
+    fun applyExternally() {
+        val claimed = synchronized(lock) {
+            pending.also { pending = null }
+        }
+        claimed?.invoke()
+    }
+
     private fun ensureObserverLocked() {
         if (observer != null) return
-        observer = Snapshot.registerApplyObserver { _, _ ->
-            // Claim-then-run, so two applies racing fire the callback once and a cancel that
-            // lands between them fires it not at all.
-            val claimed = synchronized(lock) {
-                pending.also { pending = null }
-            }
-            claimed?.invoke()
-        }
+        // Claim-then-run lives in [applyExternally], so two applies racing fire the callback once
+        // and a cancel that lands between them fires it not at all — whichever entry point the
+        // news came through.
+        observer = Snapshot.registerApplyObserver { _, _ -> applyExternally() }
     }
 }

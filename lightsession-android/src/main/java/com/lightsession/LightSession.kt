@@ -367,6 +367,34 @@ public class LightSession private constructor() {
         com.lightsession.masking.SuppliedMasks.clear()
     }
 
+    /**
+     * Tells the SDK what is on a screen it cannot read, so it can draw a wireframe of it.
+     *
+     * The companion to [setScreenMasks] and the same bargain: the SDK builds a wireframe by
+     * walking the platform's view hierarchy, and a toolkit that paints into a surface gives that
+     * walk one view with nothing inside it. Without this, every screen of such an app reaches the
+     * dashboard as a single grey rectangle the size of the display — not an error, and nothing
+     * logs it.
+     *
+     * Reported per **settled screen** rather than per frame. A wireframe is a picture of a layout
+     * rather than of an instant, so unlike mask rectangles it carries no generation and needs to
+     * match no particular frame's pixels.
+     *
+     * Rectangles are in **screen pixels**, and a node's colour is the one it paints, or null to
+     * let the SDK colour it the way it colours a node of that kind natively.
+     *
+     * @see com.lightsession.mapper.SuppliedScreen
+     */
+    public fun setScreenContent(screen: com.lightsession.mapper.SuppliedScreen.Screen) {
+        if (!isInitialized) return
+        com.lightsession.mapper.SuppliedScreen.set(screen)
+    }
+
+    /** Withdraws the embedder's description; the view walk is authoritative again. */
+    public fun clearScreenContent() {
+        com.lightsession.mapper.SuppliedScreen.clear()
+    }
+
     @Synchronized
     public fun init(application: Application, config: LightSessionConfig) {
         if (isInitialized) {
