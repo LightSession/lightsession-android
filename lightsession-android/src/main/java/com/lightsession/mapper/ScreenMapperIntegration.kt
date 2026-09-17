@@ -327,6 +327,22 @@ internal class ScreenMapperIntegration private constructor() {
     @Volatile
     private var wireframeBuiltFromRevision: Long = -1
 
+    /**
+     * Whether the last wireframe scanned came from the embedder rather than from a view walk.
+     *
+     * It decides whether the ratchet applies. The ratchet compares rectangle counts because a view
+     * walk that catches a screen mid-load scans poor, and a poorer scan of the same screen is worse
+     * information — so "more rectangles" is a fair stand-in for "more of the screen". A description
+     * is not that. It is the toolkit stating what it painted, so a *newer* one is better information
+     * than an older one whatever its size, and a screen that is genuinely simpler than the one
+     * before it would otherwise be refused forever.
+     *
+     * Measured on a device: a settings screen of sixteen rectangles could not replace a
+     * transitional description of fifty-two, because the wrong picture was the larger one.
+     */
+    @Volatile
+    private var lastScanCameFromDescription = false
+
     private val lateContent = LateContent().also { watcher ->
         // A Flutter screen announces itself through `setScreenContent` rather than through a
         // snapshot apply, and without this the announcement reached nobody: the wireframe was taken
@@ -462,6 +478,7 @@ internal class ScreenMapperIntegration private constructor() {
             ?.takeIf { it.screenName == null || it.screenName == lastScreen }
         if (supplied != null) {
             wireframeBuiltFromRevision = SuppliedScreen.revisionNow()
+            lastScanCameFromDescription = true
             onComplete(
                 skeletonGenerator.frameFrom(
                     supplied,
@@ -471,6 +488,7 @@ internal class ScreenMapperIntegration private constructor() {
             return
         }
 
+        lastScanCameFromDescription = false
         val overlay = modalRootView?.get()?.takeIf { it.isAttachedToWindow }
         if (overlay != null) {
             skeletonGenerator.generateOverlaySkeletonFrame(activity, overlay, onComplete)
@@ -581,7 +599,7 @@ internal class ScreenMapperIntegration private constructor() {
                 scanWireframe(current) { frame ->
                     if (frame == null || lastScreen != screenName) return@scanWireframe
                     val bar = cacheManager.wireframeRects(screenCacheKey)
-                    if (frame.rects.size > bar) {
+                    if (frame.rects.size > bar || lastScanCameFromDescription) {
                         shipRicherWireframe(
                             current, frame, bar, screenId, screenName, screenType,
                             screenWidth, screenHeight, appVersionCode, appVersionName, theme,
@@ -635,7 +653,7 @@ internal class ScreenMapperIntegration private constructor() {
         scanWireframe(activity) { frame ->
             if (frame == null || !Recording.enabled) return@scanWireframe
             val bar = cacheManager.wireframeRects(screenCacheKey)
-            if (frame.rects.size > bar) {
+            if (frame.rects.size > bar || lastScanCameFromDescription) {
                 shipRicherWireframe(
                     activity, frame, bar, screenId, screenName, screenType,
                     screenWidth, screenHeight, appVersionCode, appVersionName, theme,
