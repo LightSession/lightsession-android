@@ -69,6 +69,19 @@ public object SuppliedScreen {
         public val width: Int,
         public val height: Int,
         public val root: Node,
+        /**
+         * Which screen this describes, as the embedder named it, or null if it did not say.
+         *
+         * A description is one standing fact and a navigation is instant, so without this the two
+         * can disagree — the layout of the screen being left, read while the screen being arrived
+         * at is the one being drawn. Measured on a device before it existed: a gallery screen was
+         * filed with the hub's fourteen icons, and the ratchet then refused every correction
+         * because the wrong description happened to be the larger one.
+         *
+         * Null is treated as "no claim" and used as before, which is what an embedder that reports
+         * before naming its first screen produces.
+         */
+        public val screenName: String? = null,
     )
 
     @Volatile
@@ -116,12 +129,29 @@ public object SuppliedScreen {
     /**
      * Forgets the standing description; the view walk is authoritative again.
      *
-     * For an embedder going away — an engine detaching.
+     * For an embedder going away — an engine detaching — rather than for a screen changing, which
+     * is [invalidateForNavigation].
      */
     public fun clear() {
         current = null
     }
 
+    /**
+     * Drops the description because the screen it described is no longer the screen.
+     *
+     * A description is global and a navigation is instant, so between the two the standing one
+     * belongs to the page the person just left. Measured before this existed: a Flutter app's
+     * second and third screens were each filed with the *hub's* wireframe — the right number of
+     * rectangles, in the right places, for the wrong screen — and the ratchet then refused every
+     * correction, because a simpler screen has fewer rectangles than the one whose picture it
+     * inherited.
+     *
+     * The latch survives, so the mapper waits for the new description rather than falling back to
+     * a walk that would find nothing.
+     */
+    internal fun invalidateForNavigation() {
+        current = null
+    }
 
     /** The standing description, or null when no embedder has spoken. */
     internal fun snapshot(): Screen? = current

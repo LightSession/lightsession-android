@@ -453,7 +453,13 @@ internal class ScreenMapperIntegration private constructor() {
         // Before the overlay branch on purpose. A windowed modal over a Flutter screen is still
         // drawn by Flutter, so the embedder's description already contains it — while the overlay
         // path would walk the modal's own view tree and find, again, nothing.
+        // A description that names a screen other than the one being drawn is the previous
+        // screen's, arriving in the window between a navigation and the embedder redescribing.
+        // Using it files one screen's layout under another's name, and the ratchet then refuses the
+        // right one for being smaller. Ignored rather than waited for: the walk's answer is poor
+        // but honest, and the embedder's next report upgrades it through [LateContent].
         val supplied = SuppliedScreen.snapshot()
+            ?.takeIf { it.screenName == null || it.screenName == lastScreen }
         if (supplied != null) {
             wireframeBuiltFromRevision = SuppliedScreen.revisionNow()
             onComplete(
@@ -1736,6 +1742,9 @@ internal class ScreenMapperIntegration private constructor() {
         pending.job.cancel()
         shellRoutes += pending.route
         lastScreen = pending.from
+        // The description belongs to the screen being left. See
+        // [SuppliedScreen.invalidateForNavigation].
+        SuppliedScreen.invalidateForNavigation()
         Log.d(
             "ScreenMapper",
             "Compose destination '${pending.route}' hosts a nested NavHost; treating it as a shell " +
@@ -1794,6 +1803,9 @@ internal class ScreenMapperIntegration private constructor() {
         // next screen has been reported.
         declaredSubScreen = null
         lastScreen = screenName
+        // The description belongs to the screen being left. See
+        // [SuppliedScreen.invalidateForNavigation].
+        SuppliedScreen.invalidateForNavigation()
         // Which tab this destination arrived on has to be learned, not assumed, and it
         // cannot be read yet — the NavController reports the destination before its
         // content composes. Not marked as special in any way: the reset above means the
@@ -1844,6 +1856,9 @@ internal class ScreenMapperIntegration private constructor() {
         ScreenTransition.begin()
         getOrCreateScreenNode(to, screenNodes[base]?.type ?: ScreenType.COMPOSE)
         lastScreen = to
+        // The description belongs to the screen being left. See
+        // [SuppliedScreen.invalidateForNavigation].
+        SuppliedScreen.invalidateForNavigation()
         trackNavigationFlow(from, to)
     }
 
