@@ -310,7 +310,32 @@ internal class ScreenMapperIntegration private constructor() {
     private val skeletonGenerator = SkeletonGenerator()
 
     /** Fires when content lands on a screen whose wireframe was already taken. See [watchForLateContent]. */
-    private val lateContent = LateContent()
+    /**
+     * Which description the wireframe on file was built from, or -1 for none.
+     *
+     * Exists because the embedder's news and the SDK's willingness to listen do not arrive in that
+     * order. A Flutter app describes its screen within the first frames — measured, three reports
+     * inside seventy milliseconds — and then goes quiet, because a still screen paints nothing and
+     * there is nothing to report. The watch that would act on a report is armed later, after the
+     * first payload's round trip. So by the time anyone was listening the app had already said
+     * everything it had to say, and the screen kept the wireframe taken before it spoke.
+     *
+     * Comparing revisions is what lets the arm ask the right question — *is the picture on file
+     * made of the description I have* — rather than "is there a description", which is true forever
+     * after the first one and never stops being true.
+     */
+    @Volatile
+    private var wireframeBuiltFromRevision: Long = -1
+
+    private val lateContent = LateContent().also { watcher ->
+        // A Flutter screen announces itself through `setScreenContent` rather than through a
+        // snapshot apply, and without this the announcement reached nobody: the wireframe was taken
+        // on arrival, before the embedder had described anything, and no Compose state was ever
+        // written to say it was worth taking again. Routed into the same one-shot arm so the rules
+        // that guard a rescan — the screen still being the one that armed it, recording still being
+        // on, the rescan budget — apply identically whichever way the news arrives.
+        SuppliedScreen.onDescribed = { watcher.applyExternally() }
+    }
 
     /**
      * Re-runs NavController discovery when the composition may have grown one. Armed for any
@@ -420,6 +445,26 @@ internal class ScreenMapperIntegration private constructor() {
      * to ship them.
      */
     private fun scanWireframe(activity: Activity, onComplete: (SkeletonFrame?) -> Unit) {
+        // A screen the embedder described is used in place of the walk, because for the apps this
+        // exists for the walk has nothing to find: a surface-rendering toolkit gives it one view and
+        // no children, and the wireframe comes out a single grey rectangle the size of the display.
+        // See [SuppliedScreen].
+        //
+        // Before the overlay branch on purpose. A windowed modal over a Flutter screen is still
+        // drawn by Flutter, so the embedder's description already contains it — while the overlay
+        // path would walk the modal's own view tree and find, again, nothing.
+        val supplied = SuppliedScreen.snapshot()
+        if (supplied != null) {
+            wireframeBuiltFromRevision = SuppliedScreen.revisionNow()
+            onComplete(
+                skeletonGenerator.frameFrom(
+                    supplied,
+                    skeletonGenerator.windowBackgroundColor(activity),
+                ),
+            )
+            return
+        }
+
         val overlay = modalRootView?.get()?.takeIf { it.isAttachedToWindow }
         if (overlay != null) {
             skeletonGenerator.generateOverlaySkeletonFrame(activity, overlay, onComplete)
@@ -543,6 +588,13 @@ internal class ScreenMapperIntegration private constructor() {
                     )
                 }
             }
+        }
+
+        // The arm is live now, so a description that arrived before it can be acted on. Bounded by
+        // the revision: once a wireframe has been built from the standing description this is
+        // false, and stays false until the embedder reports a new one.
+        if (SuppliedScreen.revisionNow() != wireframeBuiltFromRevision) {
+            lateContent.applyExternally()
         }
     }
 

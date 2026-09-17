@@ -74,8 +74,32 @@ public object SuppliedScreen {
     @Volatile
     private var current: Screen? = null
 
+    /**
+     * How many descriptions have arrived, ever.
+     *
+     * The mapper records which revision a wireframe was built from, so it can tell a description
+     * it has already drawn from one it has not. Without that it could only ask "is there a
+     * description", which is true forever after the first one and says nothing about whether the
+     * picture on file is made of it.
+     */
+    @Volatile
+    private var revision: Long = 0
 
 
+    /**
+     * Told when a new description arrives, so the SDK can take the wireframe again.
+     *
+     * The mapper decides when a screen's picture is worth replacing, and on a Compose app it
+     * learns that a screen changed from a snapshot apply. An app with no Compose in it never
+     * produces one — so a Flutter screen's wireframe was taken once, on arrival, before this
+     * object had been told anything, and nothing ever came along to say it was worth taking
+     * again.
+     *
+     * A report is that app's version of the same news, so it is announced rather than left to be
+     * polled.
+     */
+    @Volatile
+    internal var onDescribed: (() -> Unit)? = null
 
     /**
      * Replaces the standing description.
@@ -85,6 +109,8 @@ public object SuppliedScreen {
      */
     public fun set(screen: Screen) {
         current = screen
+        revision++
+        onDescribed?.invoke()
     }
 
     /**
@@ -100,5 +126,7 @@ public object SuppliedScreen {
     /** The standing description, or null when no embedder has spoken. */
     internal fun snapshot(): Screen? = current
 
+    /** Which description is standing, for a caller deciding whether it has already used it. */
+    internal fun revisionNow(): Long = revision
 
 }
