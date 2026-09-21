@@ -99,15 +99,17 @@ class LightSessionConfigTest {
         assertEquals("http://localhost:3002", c.normalizedApiUrl)
     }
 
+    @Suppress("DEPRECATION")
     @Test
-    fun `location lookup is on by default and can be switched off`() {
-        // Pinned because the default is the whole of the decision. On, so that upgrading
-        // the SDK does not silently empty a dashboard map somebody is using — and a switch
-        // at all, because what the lookup returns (IP, city, coordinates, operator, postal
-        // code) is personal data the app is the controller for, collected with no permission
-        // and no dialog.
-        assertTrue(config().collectLocation)
-
+    fun `the retired location switch still compiles and no longer means anything`() {
+        // Kept as a test rather than deleted with the feature, because the point of the
+        // field surviving its own removal is source compatibility: an app that passes it
+        // must keep building. If this stops compiling, someone deleted the parameter and
+        // broke every integration that sets it.
+        //
+        // Nothing asserts behaviour, because there is none left to assert. Location is
+        // resolved by the server from the address it accepted the batch from, which no
+        // SDK flag can reach.
         val quiet = LightSessionConfig(
             apiKey = "dev-key",
             ingestUrl = "http://localhost:5055",
@@ -115,5 +117,6 @@ class LightSessionConfigTest {
             collectLocation = false,
         )
         assertFalse(quiet.collectLocation)
+        assertTrue(config().collectLocation)
     }
 }

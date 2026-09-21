@@ -167,28 +167,31 @@ public data class LightSessionConfig @JvmOverloads constructor(
     val trackModals: Boolean = true,
 
     /**
-     * Look up approximate location from the device's IP address.
+     * No longer does anything. Kept so existing configuration still compiles.
      *
-     * When on, the SDK calls `/api/v1/ipinfo` once per session and attaches the answer to
-     * every batch's device info. What comes back and is stored is: the IP address itself,
-     * city, region, country, `loc` — latitude and longitude, city-accurate — the network
-     * operator, postal code and timezone.
+     * This switched a lookup the SDK used to perform: a call to `/api/v1/ipinfo` once per
+     * session, whose answer was attached to every batch's device info. Location is now
+     * resolved by the server, from the address it accepted the batch from, and this flag
+     * cannot reach that — the address arrives with the connection whatever the SDK does.
      *
-     * That is personal data under the GDPR and the LGPD, and it is collected without the
-     * person being asked, because an IP lookup needs no permission and shows no dialog. An
-     * app that ships this is the controller for it: it has to appear in the privacy policy,
-     * in the Play Store data-safety form, and in whatever consent flow the app already has.
-     * The SDK cannot do any of that on the app's behalf, which is why this is a switch
-     * rather than a detail.
+     * The honest reason for moving it, rather than keeping a switch that half-worked: the
+     * endpoint never geolocated. It answered with the caller's address and empty strings for
+     * everything else, so every session in every dashboard had a blank country while this
+     * flag sat here claiming to control one. The iOS SDK never called it at all. One
+     * resolution on the server fixes both, for every app already installed, with no release.
      *
-     * Turning it off stops the request, not just the field — there is no lookup and nothing
-     * to store. The cost is on the dashboard: sessions lose their country, and the map that
-     * plots them by coordinate goes empty, since both read out of this.
-     *
-     * Left on by default so that upgrading the SDK does not silently empty a map somebody is
-     * using. For an app shipping to people who are not the developer, off is the posture
-     * that needs no justification.
+     * What did not change is who is responsible for it. The data is still personal data
+     * under the GDPR and the LGPD, still collected without the person being asked, and the
+     * app that ships this SDK is still the controller: it belongs in the privacy policy, in
+     * the Play Store data-safety form, and in whatever consent flow the app already has.
+     * What changed is where it is switched — that belongs on the project, in LightSession,
+     * where it can be honoured for every platform at once, and it is not this field.
      */
+    @Deprecated(
+        "Location is resolved by the server from the connection address; this has no effect. " +
+            "Remove it from your configuration.",
+        level = DeprecationLevel.WARNING,
+    )
     val collectLocation: Boolean = true,
 
     /**

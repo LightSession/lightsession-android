@@ -268,23 +268,13 @@ internal class SessionDataManager(
         val androidVersion: String,
         val deviceModel: String,
         val manufacturer: String,
-        val locationInfo: LocationInfo? = null
     )
 
-    /**
-     * IP-based location information
-     */
-    @Serializable
-    data class LocationInfo(
-        val ip: String,
-        val city: String? = null,
-        val region: String? = null,
-        val country: String? = null,
-        val loc: String? = null,
-        val org: String? = null,
-        val postal: String? = null,
-        val timezone: String? = null
-    )
+    // No `locationInfo` here, and no lookup behind it. Where a session happened is
+    // resolved by the server from the address it accepted the batch from — see the
+    // note on `LightSessionConfig.collectLocation`. This used to carry the result of
+    // an extra request per session to `/api/v1/ipinfo`, which answered with the
+    // address and nothing else, and which the server now overwrites anyway.
 
     /**
      * App information for session tracking
@@ -316,21 +306,6 @@ internal class SessionDataManager(
      * low-memory callback. Without it a reader could see the timestamp updated but not the
      * value, and refetch on every batch forever.
      */
-    @Volatile
-    private var cachedLocationInfo: LocationInfo? = null
-
-    @Volatile
-    private var locationInfoTimestamp: Long = 0
-
-    /**
-     * Guards against piling up lookups.
-     *
-     * `getDeviceInfo` launched a fetch whenever the cache looked stale, and it runs once
-     * per batch — so against a slow or unreachable endpoint a new request went out every
-     * five seconds while none of them had come back yet. One in flight at a time.
-     */
-    private val locationFetchInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
-
     /**
      * Initialize the session manager with user context
      */
@@ -339,13 +314,6 @@ internal class SessionDataManager(
         this.appVersion = getAppVersion(context)
 
         sessionStartTime = System.currentTimeMillis()
-
-        // Fetch location info on initialization
-        if (config.collectLocation) {
-            coroutineScope.launch {
-                fetchLocationInfo()
-            }
-        }
 
         startBatchProcessor()
 
@@ -440,9 +408,6 @@ internal class SessionDataManager(
     internal companion object {
         /** How often the buffers are drained to disk when nothing else forces it. */
         private const val BATCH_INTERVAL_MS = 5_000L
-
-        /** How long a location lookup is reused before it is worth asking again. */
-        private const val LOCATION_CACHE_DURATION_MS = 30 * 60 * 1000L
 
         /**
          * Drops from the head of `queue` until `bytes` is at or below `target`.
@@ -1238,82 +1203,13 @@ internal class SessionDataManager(
     }
 
     /**
-     * Fetch IP location information from the API
-     */
-    private fun fetchLocationInfo(): LocationInfo? {
-        // Belt as well as braces. Both call sites check, and this is the one place the
-        // request is actually made — a future caller that forgot would otherwise be the
-        // whole of the failure.
-        if (!config.collectLocation) return null
-
-        // Check cache first
-        val currentTime = System.currentTimeMillis()
-        if (cachedLocationInfo != null &&
-            (currentTime - locationInfoTimestamp) < LOCATION_CACHE_DURATION_MS) {
-            return cachedLocationInfo
-        }
-
-        if (!locationFetchInFlight.compareAndSet(false, true)) return cachedLocationInfo
-
-        return try {
-            val request = Request.Builder()
-                .url("${config.normalizedApiUrl}/api/v1/ipinfo")
-                .get()
-                .build()
-
-            val response = okHttpClient.newCall(request).execute()
-
-            if (response.isSuccessful) {
-                val responseBody = response.body?.string()
-                response.close()
-
-                if (!responseBody.isNullOrEmpty()) {
-                    // Configure Json to ignore unknown keys like "readme"
-                    val jsonConfig = Json { ignoreUnknownKeys = true }
-                    val locationInfo = jsonConfig.decodeFromString<LocationInfo>(responseBody)
-                    cachedLocationInfo = locationInfo
-                    locationInfoTimestamp = currentTime
-
-                    // Deliberately without the values. This is a host app's logcat, and
-                    // where its user is sitting is not something to print into it — a log
-                    // is readable by any app with the permission on older devices, and by
-                    // anyone holding the phone with adb.
-                    Log.d("SessionDataManager", "location resolved")
-                    locationInfo
-                } else {
-                    null
-                }
-            } else {
-                Log.w("SessionDataManager", "Failed to fetch location info: ${response.code}")
-                response.close()
-                null
-            }
-        } catch (e: Exception) {
-            Log.e("SessionDataManager", "Error fetching location info", e)
-            null
-        } finally {
-            locationFetchInFlight.set(false)
-        }
-    }
-
-    /**
-     * Enhanced device info with IP location information
+     * What the device is, as the dashboard needs it.
+     *
+     * Where it is does not come from here. That is resolved by the server from the
+     * address it accepted the batch from, which is the only way that works for every
+     * platform and needs no release to change.
      */
     private fun getDeviceInfo(): DeviceInfo {
-
-        // Try to get cached location info synchronously, or use null if not available
-        val locationInfo = cachedLocationInfo
-
-        // If we don't have cached location info, fetch it asynchronously for next time
-        if (config.collectLocation &&
-            (locationInfo == null ||
-                (System.currentTimeMillis() - locationInfoTimestamp) > LOCATION_CACHE_DURATION_MS)
-        ) {
-            coroutineScope.launch {
-                fetchLocationInfo()
-            }
-        }
-
         val screen = ScreenGeometry.size()
 
         return DeviceInfo(
@@ -1327,7 +1223,6 @@ internal class SessionDataManager(
             androidVersion = Build.VERSION.RELEASE,
             deviceModel = Build.MODEL,
             manufacturer = Build.MANUFACTURER,
-            locationInfo = locationInfo
         )
     }
 
