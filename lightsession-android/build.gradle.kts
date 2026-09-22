@@ -954,7 +954,27 @@ publishing {
             //
             // Minor rather than patch: new public API, and any app whose screens an embedder
             // describes starts storing a different picture than the one it had.
-            version = "0.33.0"
+            //
+            // 0.34.0 is an error from a runtime that has no `Throwable` — a Dart exception in a
+            // Flutter app — recorded as the error it is rather than as a wrapper.
+            //
+            // The server groups errors on two things: the type, and the first frames that are the
+            // app's own code, as `class.method`. A Dart error wrapped in a synthetic exception
+            // would carry the wrapper's class name and no in-app frame, so every one would land in
+            // the same group. `recordError` takes the type, the message and `ErrorFrame`s in the
+            // runtime's own terms, with the embedder saying which frames are the app's — the only
+            // side that knows — and stores them in exactly the shape a caught JVM exception takes,
+            // attributed to the current screen and on the session timeline. It is never fatal,
+            // since the process reporting it has not died, and it obeys `captureErrors`.
+            //
+            // The SDK also stops looking up location. It called `/api/v1/ipinfo` once per session
+            // for a value that was an address and seven empty strings; the server resolves
+            // location from the address it accepts a batch from. Batches carry no location key,
+            // the shape iOS sessions already have. `collectLocation` stays, deprecated and inert,
+            // so no app that passes it stops building.
+            //
+            // Minor rather than patch: new public API, and a deprecation.
+            version = "0.34.0"
 
             afterEvaluate {
                 from(components["release"])
