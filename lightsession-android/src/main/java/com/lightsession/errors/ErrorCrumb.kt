@@ -99,6 +99,56 @@ internal object ErrorCrumb {
         })
     }
 
+    /**
+     * The same error-specific half, for an error an embedder reports rather than one this SDK saw
+     * thrown. See [ErrorFrame] for why it does not go through [build].
+     *
+     * One exception rather than a chain: the runtimes this serves do not carry a cause the way a
+     * `Throwable` does, and inventing an empty one would make the server read the error as wrapped.
+     * The same bounds apply as for a JVM error, because the reasons for them — a message carrying a
+     * request body, a trace thousands of frames deep — are not particular to the JVM.
+     *
+     * [mechanism] says how the error reached the SDK. `handled` means "the app survived", which is
+     * what the dashboard's crash badge reads it as, so an error that escaped the app's own code but
+     * did not end the process is `handled` and says what it escaped through here instead.
+     */
+    fun buildReported(
+        type: String,
+        message: String?,
+        frames: List<ErrorFrame>,
+        handled: Boolean,
+        mechanism: String,
+        thread: String,
+    ): JsonObject = buildJsonObject {
+        put("handled", handled)
+        put("mechanism", mechanism)
+        put("thread", thread)
+        put("exceptions", buildJsonArray {
+            add(buildJsonObject {
+                put("type", JsonPrimitive(type))
+                message?.let { put("message", JsonPrimitive(it.take(MAX_MESSAGE))) }
+                put("frames", buildJsonArray {
+                    for (frame in frames.take(MAX_FRAMES)) {
+                        add(buildJsonObject {
+                            put("class", JsonPrimitive(frame.module))
+                            put("method", JsonPrimitive(frame.function))
+                            frame.file?.let { put("file", JsonPrimitive(it)) }
+                            frame.line?.let { put("line", JsonPrimitive(it)) }
+                            put("in_app", JsonPrimitive(frame.inApp))
+                        })
+                    }
+                    if (frames.size > MAX_FRAMES) {
+                        add(buildJsonObject {
+                            put("class", JsonPrimitive("…"))
+                            put("method", JsonPrimitive("${frames.size - MAX_FRAMES} frames elided"))
+                            put("in_app", JsonPrimitive(false))
+                        })
+                    }
+                })
+            })
+        })
+    }
+
     private fun oneThrowable(t: Throwable, appPackage: String): JsonObject = buildJsonObject {
         put("type", JsonPrimitive(t.javaClass.name))
         t.message?.let { put("message", JsonPrimitive(it.take(MAX_MESSAGE))) }

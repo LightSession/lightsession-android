@@ -154,4 +154,63 @@ class ErrorCrumbTest {
         )
         assertFalse(built["thread_id"]!!.jsonPrimitive.content.isEmpty())
     }
+
+    /**
+     * An error from a runtime with no `Throwable`, reported in its own terms.
+     *
+     * Checked field by field against what the server fingerprints — the type, then `class.method`
+     * and `in_app` per frame — because a crumb that is valid JSON but uses another key would be
+     * stored, listed, and grouped by nothing.
+     */
+    @Test
+    fun `a reported error takes the shape a thrown one does`() {
+        val built = ErrorCrumb.buildReported(
+            type = "StateError",
+            message = "Bad state: no payment method",
+            frames = listOf(
+                ErrorFrame("_CheckoutFlow", "submit", "package:shop/checkout.dart", 137, inApp = true),
+                ErrorFrame("Timer", "_createTimer.<anonymous closure>", "dart:async-patch/timer_patch.dart", 18),
+            ),
+            handled = true,
+            mechanism = "platform_dispatcher",
+            thread = "main",
+        )
+
+        assertTrue(built["handled"]!!.jsonPrimitive.boolean)
+        assertEquals("platform_dispatcher", built["mechanism"]!!.jsonPrimitive.content)
+        assertEquals("main", built["thread"]!!.jsonPrimitive.content)
+
+        val chain = built["exceptions"]!!.jsonArray
+        assertEquals("one exception, not a chain with an invented cause", 1, chain.size)
+        val exception = chain[0].jsonObject
+        assertEquals("StateError", exception["type"]!!.jsonPrimitive.content)
+        assertEquals("Bad state: no payment method", exception["message"]!!.jsonPrimitive.content)
+
+        val top = exception["frames"]!!.jsonArray[0].jsonObject
+        assertEquals("_CheckoutFlow", top["class"]!!.jsonPrimitive.content)
+        assertEquals("submit", top["method"]!!.jsonPrimitive.content)
+        assertEquals("package:shop/checkout.dart", top["file"]!!.jsonPrimitive.content)
+        assertEquals(137, top["line"]!!.jsonPrimitive.int)
+        assertTrue(top["in_app"]!!.jsonPrimitive.boolean)
+        assertFalse(exception["frames"]!!.jsonArray[1].jsonObject["in_app"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `a reported error is held to the same bounds`() {
+        val built = ErrorCrumb.buildReported(
+            type = "StackOverflowError",
+            message = "x".repeat(100_000),
+            frames = List(5_000) { ErrorFrame("Recurse", "down", line = it, inApp = true) },
+            handled = true,
+            mechanism = "manual",
+            thread = "main",
+        )
+
+        val exception = built["exceptions"]!!.jsonArray[0].jsonObject
+        assertTrue(exception["message"]!!.jsonPrimitive.content.length < 100_000)
+        val frames = exception["frames"]!!.jsonArray
+        assertTrue("the trace is cut to the top", frames.size < 5_000)
+        assertEquals(0, frames[0].jsonObject["line"]!!.jsonPrimitive.int)
+        assertTrue(frames.last().jsonObject["method"]!!.jsonPrimitive.content.endsWith("frames elided"))
+    }
 }
