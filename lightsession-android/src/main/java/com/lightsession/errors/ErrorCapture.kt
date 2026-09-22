@@ -107,6 +107,36 @@ internal object ErrorCapture {
         )
     }
 
+    /**
+     * An error an embedder reports, attributed and delivered exactly as a caught one is.
+     *
+     * Never fatal. The runtimes that report through here run inside a process that has not died —
+     * a Dart exception that escapes every handler leaves the app running — so there is nothing to
+     * write before the process goes, and the ordinary flush is the right one.
+     */
+    fun captureReported(
+        type: String,
+        message: String?,
+        frames: List<ErrorFrame>,
+        handled: Boolean,
+        mechanism: String,
+        thread: String,
+        attributes: Map<String, Any?> = emptyMap(),
+    ) {
+        val manager = dataManager ?: return
+        val details = ErrorCrumb.buildReported(type, message, frames, handled, mechanism, thread)
+        val mapper = ScreenMapperIntegration.getInstance()
+        val screen = mapper.getCurrentScreen()
+            ?: mapper.currentActivity()?.javaClass?.simpleName
+        manager.addError(
+            details = details,
+            screen = screen,
+            screenId = mapper.getCurrentScreenId(),
+            attributes = attributes,
+            fatal = false,
+        )
+    }
+
 }
 
 /**

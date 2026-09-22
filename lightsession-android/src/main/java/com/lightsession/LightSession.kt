@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import com.lightsession.errors.ErrorCapture
+import com.lightsession.errors.ErrorFrame
 import com.lightsession.network.NetworkRecorder
 import com.lightsession.transport.NetworkDataSender
 import com.lightsession.mapper.ScreenMapperIntegration
@@ -213,6 +214,56 @@ public class LightSession private constructor() {
         }
         if (!config.captureErrors) return
         ErrorCapture.capture(throwable, handled = true, thread = Thread.currentThread(), attributes = attributes)
+    }
+
+    /**
+     * Records an error the SDK did not see thrown, from a runtime whose errors are not `Throwable`s.
+     *
+     * The companion to [recordRequest], and the same bargain: that one is for a request from a
+     * client no interceptor of ours sits in, this one for an error from a runtime no handler of ours
+     * sits in — a Dart exception in a Flutter app, a JavaScript one in React Native. The embedder
+     * describes it in its own terms, and it is stored in exactly the shape a caught JVM exception
+     * takes, attributed to the current screen and placed on the same timeline.
+     *
+     * [type] is the runtime's own name for the error — `StateError`, `TypeError` — and it matters:
+     * the server groups by it, so a wrapper name here would put every error of the runtime in one
+     * group. [frames] run from the throw site outward, and each says whether it is the app's own
+     * code; see [ErrorFrame.inApp] for why the embedder is the one to say.
+     *
+     * [handled] means the app survived, which is what the dashboard shows as the difference between
+     * an error and a crash. An error that escaped the app's own handlers without ending the process
+     * is `handled`, and [mechanism] records what it escaped through — `manual` for one the app
+     * reported itself.
+     *
+     * Obeys [LightSessionConfig.captureErrors]. Callable from any thread.
+     */
+    public fun recordError(
+        type: String,
+        message: String?,
+        frames: List<ErrorFrame>,
+        handled: Boolean = true,
+        mechanism: String = "manual",
+        thread: String = "main",
+        attributes: Map<String, Any?> = emptyMap(),
+    ) {
+        if (!isInitialized) {
+            Log.w("LightSession", "recordError called before init; ignored")
+            return
+        }
+        if (!config.captureErrors) return
+        // Guarded like recordRequest: a public entry point called from the customer's own error
+        // handler, where a bug of ours surfacing as an exception would be the worst possible place.
+        runCatching {
+            ErrorCapture.captureReported(
+                type = type,
+                message = message,
+                frames = frames,
+                handled = handled,
+                mechanism = mechanism,
+                thread = thread,
+                attributes = attributes,
+            )
+        }
     }
 
     /**
