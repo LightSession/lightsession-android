@@ -974,7 +974,22 @@ publishing {
             // so no app that passes it stops building.
             //
             // Minor rather than patch: new public API, and a deprecation.
-            version = "0.34.0"
+            //
+            // 0.35.0 files a Flutter app's screens under their own kind. A Flutter app names its
+            // screens through `setScreen`, the call React Native uses, and every host-reported screen
+            // was stored as `REACT_NATIVE` — the `FLUTTER` kind existed and nothing used it.
+            //
+            // `ReportedScreenKind` decides it on the Activity the screen was reported on: its class
+            // first, which answers for an ordinary Flutter app on any thread, and failing that, on
+            // the main thread only, a walk of its window for a `FlutterView`, which answers for a
+            // Flutter screen inside a native Activity. Matched by class name through superclasses,
+            // since the SDK does not depend on Flutter. An app without the embedding on its classpath
+            // learns that once and walks nothing, so a React Native app is told React Native exactly
+            // as before.
+            //
+            // Minor rather than patch: every Flutter app starts sending a kind it never sent, and a
+            // server that does not know `FLUTTER` stores those screens as `UNKNOWN` until it does.
+            version = "0.35.0"
 
             afterEvaluate {
                 from(components["release"])
