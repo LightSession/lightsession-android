@@ -879,6 +879,7 @@ internal class ScreenMapperIntegration private constructor() {
          *
          * Its own value rather than [REACT_NATIVE] for the reason [REACT_NATIVE] exists: a Flutter
          * screen labelled as React Native is a lie that reads as a bug to whoever opens the map.
+         * Told apart by [ReportedScreenKind], since both arrive through the same `setScreen`.
          */
         FLUTTER
     }
@@ -1578,12 +1579,13 @@ internal class ScreenMapperIntegration private constructor() {
         // something an integrator has to know about before the map is already wrong.
         hostNamedActivity = WeakReference(activity)
 
-        getOrCreateScreenNode(name, ScreenType.REACT_NATIVE).apply { routes.add(name) }
+        val type = ReportedScreenKind.of(activity)
+        getOrCreateScreenNode(name, type).apply { routes.add(name) }
 
         if (lastScreen != null) {
             trackNavigationFlow(lastScreen!!, name)
         } else {
-            sendInitialScreen(name, ScreenType.REACT_NATIVE, activity)
+            sendInitialScreen(name, type, activity)
         }
 
         enterDestination(name)
