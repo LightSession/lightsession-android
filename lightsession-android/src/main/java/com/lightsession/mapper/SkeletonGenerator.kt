@@ -427,6 +427,19 @@ internal class SkeletonGenerator {
             color = declared ?: paletteColor,
             style = if (declared != null) Paint.Style.FILL else style,
             children = children,
+            // Into the same slot a Compose shape fills, so the corners reach the wire and the
+            // renderer by the path they already take.
+            radii = node.radii
+                ?.takeIf { it.size == 4 }
+                ?.let {
+                    CornerRadii(
+                        topLeft = it[0].coerceAtLeast(0),
+                        topRight = it[1].coerceAtLeast(0),
+                        bottomRight = it[2].coerceAtLeast(0),
+                        bottomLeft = it[3].coerceAtLeast(0),
+                    )
+                }
+                ?.takeIf { !it.isSquare },
         )
     }
 
