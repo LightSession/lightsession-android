@@ -55,6 +55,8 @@ internal class SkeletonGenerator {
         val children: List<SkeletonNode> = emptyList(),
         /** Set only for a node whose composition declared a rounded shape. See [CornerShapes]. */
         val radii: CornerRadii? = null,
+        /** Whether [color] is one an embedder said it paints, rather than this SDK's palette. */
+        val declared: Boolean = false,
     )
 
     private enum class NodeType {
@@ -427,6 +429,7 @@ internal class SkeletonGenerator {
             color = declared ?: paletteColor,
             style = if (declared != null) Paint.Style.FILL else style,
             children = children,
+            declared = declared != null,
             // Into the same slot a Compose shape fills, so the corners reach the wire and the
             // renderer by the path they already take.
             radii = node.radii
@@ -515,6 +518,7 @@ internal class SkeletonGenerator {
                     color = node.color,
                     stroke = node.style == Paint.Style.STROKE,
                     radii = node.radii,
+                    declared = node.declared,
                 )
             )
         }
