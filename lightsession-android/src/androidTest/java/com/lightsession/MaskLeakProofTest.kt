@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.lightsession.replay.ScreenDrawing
@@ -158,15 +159,47 @@ class MaskLeakProofTest {
         return ink
     }
 
+    /**
+     * The same page as classic Views: a column of `TextView`s moved by `translationY`, which a View
+     * applies on its next draw with no layout pass — the other way a screen moves under a capture.
+     */
+    private var viewColumn: android.widget.LinearLayout? = null
+
+    private fun viewContent() {
+        compose.setContent {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { context ->
+                    android.widget.LinearLayout(context).apply {
+                        orientation = android.widget.LinearLayout.VERTICAL
+                        setBackgroundColor(Color.WHITE)
+                        repeat(60) { row ->
+                            addView(
+                                android.widget.TextView(context).apply {
+                                    text = "row $row carries text that masking is supposed to cover completely"
+                                    setTextColor(Color.BLACK)
+                                    textSize = 11f
+                                },
+                            )
+                        }
+                        viewColumn = this
+                    }
+                },
+            )
+        }
+        compose.waitForIdle()
+    }
+
     /** Captures [ATTEMPTS] frames while the column jumps, and reports the worst leak seen. */
-    private fun scanWhileMoving(label: String): Pair<Int, Int> {
-        content()
+    private fun scanWhileMoving(label: String, views: Boolean = false): Pair<Int, Int> {
+        if (views) viewContent() else content()
         val handler = Handler(Looper.getMainLooper())
         val moving = AtomicBoolean(true)
         val scroll = object : Runnable {
             override fun run() {
                 if (!moving.get()) return
                 shift = if (shift <= -STEP * 12) 0 else shift - STEP
+                viewColumn?.translationY = shift.toFloat()
                 handler.postDelayed(this, 8)
             }
         }
@@ -235,6 +268,18 @@ class MaskLeakProofTest {
         Log.i(TAG, "still: $leaked of $ATTEMPTS frames leaked")
         assertEquals(
             "a still screen leaked, so masking is broken independently of any race",
+            0,
+            leaked,
+        )
+    }
+
+    /** The claim for classic Views, which move without the layout pass Compose goes through. */
+    @Test
+    fun a_moving_view_screen_leaks_nothing() {
+        val (leaked, worst) = scanWhileMoving("moving-views", views = true)
+        assertEquals(
+            "$leaked of $ATTEMPTS frames came back with uncovered text on them, up to $worst " +
+                "pixels of it — the masks describe a layout the pixels do not have",
             0,
             leaked,
         )

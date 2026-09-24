@@ -18,6 +18,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -113,39 +114,99 @@ class SuppliedMasksTest {
     @Test
     fun a_report_that_moves_mid_capture_drops_the_frame() {
         withSurfaceScreen { scenario, width, height ->
-            SuppliedMasks.set(
-                generation = 1,
-                rects = listOf(Rect(width / 4, height / 4, width * 3 / 4, height * 3 / 4)),
-            )
-
-            var frame: Bitmap? = null
-            val done = CountDownLatch(1)
-            scenario.onActivity { activity ->
-                ScreenDrawing().captureToBitmapAsync(
-                    scaleFactor = ScreenDrawing.Companion.ScalePresets.ORIGINAL,
-                    baseWindow = activity.window,
-                ) { bitmap ->
-                    frame = bitmap
-                    done.countDown()
-                }
-            }
-            // `onActivity` does not return until its block has run, and the mask plan is read
-            // synchronously at the top of the capture — so by here the plan holds generation 1
-            // and the pixels have not landed yet. Bumping it now is exactly the race the counter
-            // exists to catch: the embedder painted a new frame while this one was being
-            // assembled, so these rectangles describe a screen these pixels no longer show.
-            SuppliedMasks.set(
-                generation = 2,
-                rects = listOf(Rect(0, 0, width, height / 8)),
-            )
-
-            assertTrue("the capture never came back", done.await(15, TimeUnit.SECONDS))
+            val planned = Rect(width / 4, height / 4, width * 3 / 4, height * 3 / 4)
+            SuppliedMasks.set(generation = 1, rects = listOf(planned))
+            // The embedder painted a new frame, with its text somewhere else, while this one was
+            // being assembled: these rectangles describe a screen these pixels no longer show.
+            val frame = captureWhileReporting(scenario, listOf(Rect(0, 0, width, height / 8)))
             assertNull(
                 "a frame shipped whose mask rectangles were measured on a different frame — " +
                     "which is how a mask ends up beside the words instead of over them",
                 frame,
             )
         }
+    }
+
+    @Test
+    fun a_report_that_repeats_its_rectangles_mid_capture_still_ships() {
+        withSurfaceScreen { scenario, width, height ->
+            val planned = Rect(width / 4, height / 4, width * 3 / 4, height * 3 / 4)
+            SuppliedMasks.set(generation = 1, rects = listOf(planned))
+            // What a spinner or a map does: a new frame every vsync, and nothing masked moved.
+            val frame = captureWhileReporting(scenario, listOf(Rect(planned)))
+            assertNotNull(
+                "the embedder painted again with its masks exactly where they were, and the frame " +
+                    "was dropped — a screen that repaints every frame would lose every frame",
+                frame,
+            )
+            assertEquals(
+                "shipped, and still covered where the report said",
+                MASK_COLOUR,
+                frame!!.getPixel(width / 2, height / 2),
+            )
+        }
+    }
+
+    /** The rules [SuppliedMasks.movedSince] decides by, one report at a time. */
+    @Test
+    fun rectangles_move_only_when_a_later_report_says_so() {
+        val a = listOf(Rect(0, 0, 10, 10))
+        val b = listOf(Rect(0, 20, 10, 30))
+
+        SuppliedMasks.set(generation = 5, rects = a)
+        assertFalse("nothing reported since", SuppliedMasks.movedSince(5))
+        SuppliedMasks.set(generation = 6, rects = listOf(Rect(0, 0, 10, 10)))
+        SuppliedMasks.set(generation = 7, rects = a)
+        assertFalse("two more frames, the same rectangles", SuppliedMasks.movedSince(5))
+
+        SuppliedMasks.set(generation = 8, rects = b)
+        SuppliedMasks.set(generation = 9, rects = a)
+        assertTrue(
+            "back where they were, but frame 8 had them elsewhere and may be the one copied",
+            SuppliedMasks.movedSince(5),
+        )
+        assertFalse("measured from frame 9 itself", SuppliedMasks.movedSince(9))
+
+        SuppliedMasks.set(generation = 10, rects = null)
+        assertTrue("a report that could not measure", SuppliedMasks.movedSince(9))
+
+        SuppliedMasks.set(generation = 20, rects = a)
+        SuppliedMasks.set(generation = 3, rects = a)
+        assertTrue("a count that went backwards is a restart, tied to nothing", SuppliedMasks.movedSince(20))
+
+        SuppliedMasks.clear()
+        assertTrue("an embedder that stopped reporting", SuppliedMasks.movedSince(3))
+    }
+
+    /**
+     * Captures the screen, and reports [rects] as a new frame while the copy is in flight.
+     *
+     * After the plan is read, which is not at the call any more: a surface capture waits for the
+     * next frame before it reads its plan. So the new report goes in from a frame callback, posted
+     * behind the capture's own work — the capture registered its callback first, its work goes to
+     * the front of the queue, and this lands after it, with the copy still out.
+     */
+    private fun captureWhileReporting(
+        scenario: ActivityScenario<ComponentActivity>,
+        rects: List<Rect>,
+    ): Bitmap? {
+        var frame: Bitmap? = null
+        val done = CountDownLatch(1)
+        scenario.onActivity { activity ->
+            ScreenDrawing().captureToBitmapAsync(
+                scaleFactor = ScreenDrawing.Companion.ScalePresets.ORIGINAL,
+                baseWindow = activity.window,
+            ) { bitmap ->
+                frame = bitmap
+                done.countDown()
+            }
+            val main = android.os.Handler(android.os.Looper.getMainLooper())
+            android.view.Choreographer.getInstance().postFrameCallback {
+                main.post { SuppliedMasks.set(generation = 2, rects = rects) }
+            }
+        }
+        assertTrue("the capture never came back", done.await(15, TimeUnit.SECONDS))
+        return frame
     }
 
     /** An Activity whose whole content is a surface painted [SURFACE_COLOUR], with masking on. */

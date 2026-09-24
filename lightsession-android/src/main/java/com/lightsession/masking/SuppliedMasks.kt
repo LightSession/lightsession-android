@@ -19,9 +19,17 @@ import android.graphics.Rect
  * scanning at the instant of capture; an embedder cannot, because its report crosses a bridge
  * and arrives when it arrives. So each report carries a generation — a counter the embedder
  * bumps on every frame it paints — and the capture path records the generation it planned with
- * and compares on completion. A frame whose generation moved mid-capture is a frame whose pixels
- * and rectangles describe different moments, and it is dropped. This is [replay.ScreenDrawing]'s
- * `drewDuringCapture` net rebuilt for a painter whose draws the view system cannot see.
+ * and asks, on completion, whether the rectangles moved since: [movedSince]. A frame painted
+ * mid-capture with its masks somewhere else is a frame whose pixels and rectangles describe
+ * different moments, and it is dropped. This is [replay.ScreenDrawing]'s `masksMoved` net
+ * rebuilt for a painter whose draws the view system cannot see.
+ *
+ * Moved, not merely painted. A generation that advanced with the same rectangles is a frame whose
+ * masks are exactly where the plan put them — a spinner turning, a map redrawing — and the answer
+ * used to be to drop it anyway, which on a screen that paints every frame dropped every frame:
+ * measured on the Flutter example's map screen, 19 of a session's 32 captures, every one with its
+ * rectangles unchanged. So each report remembers how long its rectangles have stood unchanged, and
+ * only a change drops.
  *
  * ## Invalid is not empty
  *
@@ -39,6 +47,11 @@ public object SuppliedMasks {
         val generation: Long,
         /** Screen pixels. Null means the embedder failed to measure — drop frames, see above. */
         val rects: List<Rect>?,
+        /**
+         * The first generation of the unbroken run of reports, ending with this one, that all
+         * carried exactly these rectangles.
+         */
+        val sameSince: Long,
     )
 
     @Volatile
@@ -52,7 +65,10 @@ public object SuppliedMasks {
      *   coverable, or null when the embedder could not measure this frame.
      */
     public fun set(generation: Long, rects: List<Rect>?) {
-        current = Report(generation, rects)
+        val previous = current
+        val unchanged = previous != null && rects != null && previous.rects == rects &&
+            generation > previous.generation
+        current = Report(generation, rects, if (unchanged) previous!!.sameSince else generation)
     }
 
     /** Forgets the standing report; the scanner's own walk is authoritative again. */
@@ -63,6 +79,22 @@ public object SuppliedMasks {
     /** The standing report, or null when no embedder has spoken. */
     internal fun snapshot(): Report? = current
 
-    /** The generation of the standing report, for the completion check. */
+    /** The generation of the standing report. */
     internal fun generationNow(): Long? = current?.generation
+
+    /**
+     * Whether the rectangles changed after the report of [planned] — the completion check.
+     *
+     * Moved when the embedder stopped reporting, when its latest report could not measure, when
+     * its count went backwards (it restarted, and nothing ties the new count to the old one), and
+     * when any report after [planned] carried different rectangles. Not moved only when every one
+     * of them carried exactly the rectangles [planned] did.
+     */
+    internal fun movedSince(planned: Long): Boolean {
+        val now = current ?: return true
+        if (now.generation == planned) return false
+        if (now.rects == null) return true
+        if (now.generation < planned) return true
+        return now.sameSince > planned
+    }
 }
