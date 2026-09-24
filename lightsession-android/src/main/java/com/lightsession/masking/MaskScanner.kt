@@ -6,6 +6,7 @@ import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.WebView
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.compose.ui.node.RootForTest
@@ -108,6 +109,23 @@ internal class MaskScanner {
             // Views, so what this descent finds is exactly the interop subtrees and nothing else;
             // where Compose and the View walk both cover a rectangle, two grey boxes on the same
             // spot cost nothing.
+        }
+
+        // A web page, covered whole and not walked into. What is on it is drawn by the page, not by
+        // any view this walk can read: a WebView is a ViewGroup with no TextView inside, so it passed
+        // through here uncovered and every capture of it shipped legible. Measured on an emulator
+        // with a local order-confirmation page: the name, the delivery address and the end of the
+        // card number were readable in the replay and in the screen map's stored screenshot, while
+        // the title above the page was masked. Either flag is enough, since a page carries both
+        // text and pictures; the replay shows a grey block where the page is, which is the price of
+        // not being able to tell which part of it is which.
+        //
+        // This is also what covers a web page inside a Flutter screen. The page is a real WebView in
+        // this window's tree, walked here whatever the embedder reports, and the embedder cannot
+        // see into it either.
+        if (view is WebView && (maskText || maskImages)) {
+            addViewRect(view, into)
+            return
         }
 
         when {
