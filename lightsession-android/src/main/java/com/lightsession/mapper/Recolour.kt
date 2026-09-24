@@ -137,8 +137,91 @@ internal object Recolour {
             }
         }
 
-        return frame.copy(rects = recoloured)
+        return frame.copy(
+            rects = ownSurfaces(recoloured, pixels, bitmapWidth, bitmapHeight, scaleX, scaleY, histogram, touched),
+        )
     }
+
+    /**
+     * How much of a container has to be its own, uncovered, for its own colour to be read there.
+     *
+     * Below this the container is its children, and what little shows between them — a hairline
+     * divider between list rows — is not a surface anybody sees. Measured against the case that
+     * forced the rule, a grid of six cards on a page, whose gaps were 18% of it.
+     */
+    private const val OWN_AREA = 0.1f
+
+    /**
+     * Containers whose colour turned out to be their children's, given the colour of what is left.
+     *
+     * A container's surface is the dominant colour of its pixels, and its pixels include its
+     * children's. When filled children in one colour cover most of it, that colour dominates and
+     * becomes the container's surface — and the renderer fills the container with it and draws the
+     * children on top in the same colour, where nothing can be told apart. Measured on a grid of six
+     * cards: the grid came out as one block the colour of the cards, and the cards were gone.
+     *
+     * So a surface the container shares with several filled children inside it is checked against
+     * the part of the container those children do not cover, which is the part of it that is
+     * actually seen. Only then, and only when that part is a real share of it: every other
+     * container comes out exactly as the first pass left it.
+     */
+    private fun ownSurfaces(
+        rects: List<SkeletonRect>,
+        pixels: IntArray,
+        bitmapWidth: Int,
+        bitmapHeight: Int,
+        scaleX: Float,
+        scaleY: Float,
+        histogram: IntArray,
+        touched: IntArray,
+    ): List<SkeletonRect> = rects.mapIndexed { index, rect ->
+        val surface = rect.surface
+        if (!rect.stroke || surface == null) return@mapIndexed rect
+
+        val sameColouredInside = rects.filterIndexed { other, inner ->
+            other != index &&
+                !inner.stroke &&
+                inner.color != TRANSPARENT &&
+                inner.left >= rect.left && inner.top >= rect.top &&
+                inner.right <= rect.right && inner.bottom <= rect.bottom &&
+                // The same bucket, not a neighbouring one. Both colours come out of the same
+                // sampling at a bucket's mid-point, so equal means the same colour; and one bucket
+                // apart is exactly what a Material page and the cards on it are.
+                inner.color == surface
+        }
+        // Two or more. One child the container's colour merges with it into one block, which still
+        // reads as the one block it is; what is lost is the separation between several, and that is
+        // the case this is for. It is also what keeps it off every screen it was not written for:
+        // measured on the native sample, the only containers it changed were buttons with one
+        // label inside, redrawn from a sliver of their own area that told nothing reliable.
+        if (sameColouredInside.size < 2) return@mapIndexed rect
+
+        fun scaled(r: SkeletonRect) = intArrayOf(
+            (r.left * scaleX).toInt(),
+            (r.top * scaleY).toInt(),
+            (r.right * scaleX).toInt(),
+            (r.bottom * scaleY).toInt(),
+        )
+        val bounds = scaled(rect)
+        val whole = sample(pixels, bitmapWidth, bitmapHeight, histogram, touched, bounds[0], bounds[1], bounds[2], bounds[3])
+            ?: return@mapIndexed rect
+        val own = sample(
+            pixels, bitmapWidth, bitmapHeight, histogram, touched, bounds[0], bounds[1], bounds[2], bounds[3],
+            exclude = sameColouredInside.map(::scaled),
+        ) ?: return@mapIndexed rect
+
+        when {
+            // Nearly all children, or nothing of its own drawn: nothing to tell it apart by.
+            own.counted < whole.counted * OWN_AREA || own.color == TRANSPARENT -> rect
+            // Its own part is that colour too. It is that colour.
+            own.dominant && own.color == surface -> rect
+            // Its own part is another colour, and that is the one it shows.
+            own.dominant && !(isMaskColour(own.color) && !bearsMask(rect.kind)) -> rect.copy(surface = own.color)
+            // Its own part is a mixture, which is what an outline means.
+            else -> rect.copy(surface = null)
+        }
+    }
+
 
     /**
      * One rectangle's colour, or null if it covers no pixels.
@@ -148,8 +231,11 @@ internal object Recolour {
      * actually used are reset, since clearing all of them per rectangle costs more than the
      * counting does.
      */
-    /** What [sample] found: a colour, and whether it covered [DOMINANCE] of the pixels. */
-    private class Sampled(val color: Int, val dominant: Boolean)
+    /**
+     * What [sample] found: a colour, whether it covered [DOMINANCE] of the pixels, and how many
+     * drawn pixels there were to judge by.
+     */
+    private class Sampled(val color: Int, val dominant: Boolean, val counted: Int = 0)
 
     /**
      * The kinds the mask is drawn *over*, for which grey is the honest colour of the screen.
@@ -191,6 +277,9 @@ internal object Recolour {
         top: Int,
         right: Int,
         bottom: Int,
+        // Regions inside this one to leave out, as [left, top, right, bottom] in bitmap pixels.
+        // Empty on every call but [ownSurfaces]'s, and then the loop below is what it always was.
+        exclude: List<IntArray> = emptyList(),
     ): Sampled? {
         val x0 = left.coerceIn(0, width - 1)
         val y0 = top.coerceIn(0, height - 1)
@@ -209,8 +298,13 @@ internal object Recolour {
         var y = y0
         while (y < y1) {
             val row = y * width
+            val holes = if (exclude.isEmpty()) null else exclude.filter { y >= it[1] && y < it[3] }
             var x = x0
             while (x < x1) {
+                if (holes != null && holes.any { x >= it[0] && x < it[2] }) {
+                    x += STRIDE
+                    continue
+                }
                 val pixel = pixels[row + x]
                 visited++
                 // A pixel no window painted. The pool erases to transparent, so alpha below full
@@ -242,7 +336,7 @@ internal object Recolour {
         if (visited == 0) return null
         // Pixels existed to look at and none of them were drawn: the region is off the window,
         // not off the screen edge. See the caller for what transparent means to the renderer.
-        if (counted == 0) return Sampled(TRANSPARENT, dominant = true)
+        if (counted == 0) return Sampled(TRANSPARENT, dominant = true, counted = 0)
 
         var best = 0
         var bestCount = 0
@@ -265,13 +359,13 @@ internal object Recolour {
                 ((((best shr 10) and 0x1F) shl LEVELS_SHIFT) + half shl 16) or
                 ((((best shr 5) and 0x1F) shl LEVELS_SHIFT) + half shl 8) or
                 (((best and 0x1F) shl LEVELS_SHIFT) + half)
-            Sampled(colour, dominant = true)
+            Sampled(colour, dominant = true, counted = counted)
         } else {
             val colour = opaque or
                 ((red / counted).toInt() shl 16) or
                 ((green / counted).toInt() shl 8) or
                 (blue / counted).toInt()
-            Sampled(colour, dominant = false)
+            Sampled(colour, dominant = false, counted = counted)
         }
     }
 

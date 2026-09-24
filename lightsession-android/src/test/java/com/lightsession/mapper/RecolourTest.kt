@@ -122,6 +122,95 @@ class RecolourTest {
         assertEquals(PALETTE_GREEN, hollow.color)
     }
 
+    /** A grid of 2×3 filled tiles over [ground], with gaps of [gap] pixels between and around. */
+    private fun grid(ground: Int, tile: Int, gap: Int): Pair<IntArray, List<SkeletonRect>> {
+        val w = (W - gap * 3) / 2
+        val h = (H - gap * 4) / 3
+        val tiles = (0 until 6).map { i ->
+            val left = gap + (i % 2) * (w + gap)
+            val top = gap + (i / 2) * (h + gap)
+            rect(left, top, left + w, top + h, kind = "CARD")
+        }
+        val painted = pixels { x, y ->
+            if (tiles.any { x >= it.left && x < it.right && y >= it.top && y < it.bottom }) tile else ground
+        }
+        return painted to tiles
+    }
+
+    private fun near(a: Int, b: Int, within: Int = 8) =
+        kotlin.math.abs(red(a) - red(b)) <= within &&
+            kotlin.math.abs(green(a) - green(b)) <= within &&
+            kotlin.math.abs(blue(a) - blue(b)) <= within
+
+    @Test
+    fun `a grid of cards is not the colour of its cards`() {
+        // The case that forced the rule. Six cards cover most of the grid, so their colour
+        // dominated it and became the grid's surface; the renderer filled the grid with it and drew
+        // the cards on top in the same colour, and the cards were gone. What of the grid is seen is
+        // the page between them.
+        val (painted, tiles) = grid(ground = WHITE, tile = CARD, gap = 16)
+        val container = rect(0, 0, W, H, kind = "CONTAINER", stroke = true)
+        val out = Recolour.apply(frame(container, *tiles.toTypedArray()), painted, W, H).rects
+
+        // The cards cover 64% of it: past DOMINANCE, which is how their colour became its own.
+        val surface = out.first().surface
+        assertTrue("the grid took its cards' colour: ${surface?.let(::hex)}", surface == null || !near(surface, CARD))
+        for (tile in out.drop(1)) assertTrue("a card lost its colour: ${hex(tile.color)}", near(tile.color, CARD))
+    }
+
+    @Test
+    fun `a coloured panel holding cards keeps its own colour, not theirs`() {
+        val blue = 0xFF1565C0.toInt()
+        // White cards over 72% of it, so white dominated the panel and it was drawn white.
+        val (painted, tiles) = grid(ground = blue, tile = WHITE, gap = 12)
+        val container = rect(0, 0, W, H, kind = "CONTAINER", stroke = true)
+        val surface = Recolour.apply(frame(container, *tiles.toTypedArray()), painted, W, H).rects.first().surface
+        assertTrue("the panel should be blue: ${surface?.let(::hex)}", surface != null && near(surface, blue))
+    }
+
+    @Test
+    fun `a card whose child is its own colour keeps the colour`() {
+        // The padding around the child is card too: the card is that colour, and says so.
+        val painted = pixels { _, _ -> CARD }
+        val card = rect(0, 0, W, H, kind = "CONTAINER", stroke = true)
+        val child = rect(40, 40, W - 40, H - 40, kind = "CONTAINER")
+        val surface = Recolour.apply(frame(card, child), painted, W, H).rects.first().surface
+        assertTrue("the card lost its own colour: ${surface?.let(::hex)}", surface != null && near(surface, CARD))
+    }
+
+    @Test
+    fun `one child in the container's colour leaves it as it was`() {
+        // One block reads as one block. Measured on the native sample: a button whose one label
+        // covered most of it, redrawn from a sliver of its own area — nothing to gain, and the
+        // screens this was not written for must come out as they did.
+        val painted = pixels { _, y -> if (y < H / 8) INK else WHITE }
+        val container = rect(0, 0, W, H, kind = "CONTAINER", stroke = true)
+        val label = rect(0, H / 8, W, H, kind = "CONTAINER")
+        val first = Recolour.apply(frame(container, label), painted, W, H).rects.first().surface
+        assertTrue("got ${first?.let(::hex)}", first != null && near(first, WHITE))
+    }
+
+    @Test
+    fun `hairline gaps between rows do not change a list`() {
+        // Rows covering all but a pixel between them: what shows of the list is a divider, and a
+        // divider is not a surface. The list keeps the colour it had before this rule existed.
+        val rows = (0 until 10).map { i -> rect(0, i * 40, W, i * 40 + 39, kind = "CONTAINER") }
+        val painted = pixels { _, y -> if (y % 40 == 39) INK else WHITE }
+        val list = rect(0, 0, W, H, kind = "CONTAINER", stroke = true)
+        val surface = Recolour.apply(frame(list, *rows.toTypedArray()), painted, W, H).rects.first().surface
+        assertTrue("the list changed colour: ${surface?.let(::hex)}", surface != null && near(surface, WHITE))
+    }
+
+    @Test
+    fun `a container with no child of its colour is left exactly as before`() {
+        val red = 0xFFC62828.toInt()
+        val painted = pixels { x, _ -> if (x < W / 4) INK else red }
+        val container = rect(0, 0, W, H, kind = "CONTAINER", stroke = true)
+        val text = rect(0, 0, W / 4, H, kind = "TEXT")
+        val out = Recolour.apply(frame(container, text), painted, W, H).rects
+        assertTrue(out.first().surface != null && near(out.first().surface!!, red))
+    }
+
     @Test
     fun `a container full of masked text is not grey`() {
         // The form. Every field is masked text, so the pixels inside the column, the card and the
