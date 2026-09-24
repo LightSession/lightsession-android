@@ -1028,7 +1028,17 @@ publishing {
             //
             // Minor rather than patch: every app with a web view sees a grey block in its replays
             // where it used to see the page.
-            version = "0.37.0"
+            //
+            // 0.37.1 covers a map, for the reason 0.37.0 covers a web page: a map paints its street
+            // names and pins into a picture of its own, so there was no text in it to find, and on
+            // an emulator Google's `SupportMapFragment` showed in all 26 replay frames of it. A map
+            // is now covered whole when text or images are masked. It is recognised by class name,
+            // since the SDK depends on no map library — the public map views of Google Maps, Mapbox,
+            // MapLibre, osmdroid, HERE and Huawei, and Google's fragment through the fragment that
+            // owns its view — which also covers `google_maps_flutter`'s map inside a Flutter screen.
+            //
+            // Patch: no API, and the same kind of change 0.37.0 made for web pages, to another view.
+            version = "0.37.1"
 
             afterEvaluate {
                 from(components["release"])
