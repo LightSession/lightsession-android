@@ -122,9 +122,10 @@ internal object ErrorCapture {
         mechanism: String,
         thread: String,
         attributes: Map<String, Any?> = emptyMap(),
+        symbols: ErrorSymbols? = null,
     ) {
         val manager = dataManager ?: return
-        val details = ErrorCrumb.buildReported(type, message, frames, handled, mechanism, thread)
+        val details = ErrorCrumb.buildReported(type, message, frames, handled, mechanism, thread, symbols)
         val mapper = ScreenMapperIntegration.getInstance()
         val screen = mapper.getCurrentScreen()
             ?: mapper.currentActivity()?.javaClass?.simpleName

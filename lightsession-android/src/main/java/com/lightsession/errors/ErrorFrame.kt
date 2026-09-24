@@ -38,4 +38,15 @@ public class ErrorFrame(
      * of any origin only when none is marked.
      */
     public val inApp: Boolean = false,
+    /**
+     * Where the frame was in the build, when the runtime can say nothing else about it.
+     *
+     * A release a runtime compiled without names — a Flutter app built with `--obfuscate` or
+     * `--split-debug-info` — reports its stack as addresses. Pass the address with an empty
+     * [module] and [function], and the build it belongs to as `symbols` on
+     * [com.lightsession.LightSession.recordError]; the server names the frame from that build's
+     * uploaded symbols before the error is grouped, and groups it on the address until they are
+     * uploaded. Sent as `addr`, in hex.
+     */
+    public val address: Long? = null,
 )
