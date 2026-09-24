@@ -115,6 +115,15 @@ internal object Recolour {
                 // pure black and paint a black band over the navigation strip.
                 sampled.color == TRANSPARENT -> rect.copy(color = TRANSPARENT, surface = null)
 
+                // A colour the app said it paints is the colour, and a sample is an estimate of it.
+                // Replacing it was harmless on a small rectangle and wrong on a big one: a screen's
+                // background, sampled over everything drawn on it, came back as the mean of an app
+                // bar, a header, three coloured boxes and a black footer — measured at `#C4C5D7`
+                // for a page that is `#FBF8FF`, because the page was 38% of the screen and one colour
+                // has to reach [DOMINANCE] to be read as itself. Only an embedder declares colours,
+                // so a walked screen never reaches this branch.
+                rect.declared -> rect
+
                 // The mask is this SDK's own paint, and a widget that merely *contains* masked
                 // text is not that colour. Measured on a form of eight text fields: every
                 // container above a field — the scroll column, the card, the screen root — came
@@ -184,10 +193,10 @@ internal object Recolour {
                 inner.color != TRANSPARENT &&
                 inner.left >= rect.left && inner.top >= rect.top &&
                 inner.right <= rect.right && inner.bottom <= rect.bottom &&
-                // The same bucket, not a neighbouring one. Both colours come out of the same
-                // sampling at a bucket's mid-point, so equal means the same colour; and one bucket
-                // apart is exactly what a Material page and the cards on it are.
-                inner.color == surface
+                // The same bucket, not a neighbouring one: one bucket apart is exactly what a
+                // Material page and the cards on it are. Compared as buckets rather than as values
+                // because a declared colour is exact and a sampled one is a bucket's mid-point.
+                sameBucket(inner.color, surface)
         }
         // Two or more. One child the container's colour merges with it into one block, which still
         // reads as the one block it is; what is lost is the separation between several, and that is
@@ -214,7 +223,7 @@ internal object Recolour {
             // Nearly all children, or nothing of its own drawn: nothing to tell it apart by.
             own.counted < whole.counted * OWN_AREA || own.color == TRANSPARENT -> rect
             // Its own part is that colour too. It is that colour.
-            own.dominant && own.color == surface -> rect
+            own.dominant && sameBucket(own.color, surface) -> rect
             // Its own part is another colour, and that is the one it shows.
             own.dominant && !(isMaskColour(own.color) && !bearsMask(rect.kind)) -> rect.copy(surface = own.color)
             // Its own part is a mixture, which is what an outline means.
@@ -266,6 +275,14 @@ internal object Recolour {
     }
 
     private const val TRANSPARENT = 0
+
+    /** Whether two colours fall in the same histogram bucket, the resolution sampling answers in. */
+    private fun sameBucket(a: Int, b: Int): Boolean {
+        fun bucket(c: Int) = ((((c shr 16) and 0xFF) shr LEVELS_SHIFT) shl 10) or
+            ((((c shr 8) and 0xFF) shr LEVELS_SHIFT) shl 5) or
+            ((c and 0xFF) shr LEVELS_SHIFT)
+        return bucket(a) == bucket(b)
+    }
 
     private fun sample(
         pixels: IntArray,

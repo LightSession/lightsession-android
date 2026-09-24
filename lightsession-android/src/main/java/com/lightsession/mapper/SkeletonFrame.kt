@@ -149,6 +149,14 @@ internal data class SkeletonRect(
      * nothing reports nothing here.
      */
     val radii: CornerRadii? = null,
+    /**
+     * Whether [color] is the one the app said it paints, as an embedder describing its screen does.
+     *
+     * Kept on the device and not sent: it tells [Recolour] that this colour is a fact rather than a
+     * palette placeholder waiting for the real one, and the renderer has no use for the difference.
+     * Never set for a screen this SDK walked, which has no colours of its own to declare.
+     */
+    val declared: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("l", left)

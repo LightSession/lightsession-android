@@ -211,6 +211,57 @@ class RecolourTest {
         assertTrue(out.first().surface != null && near(out.first().surface!!, red))
     }
 
+    /** A rectangle whose colour an embedder declared. */
+    private fun declared(l: Int, t: Int, r: Int, b: Int, color: Int, kind: String = "CONTAINER") =
+        SkeletonRect(l, t, r, b, kind, color, stroke = false, declared = true)
+
+    @Test
+    fun `a colour the app declared is kept, however its pixels average`() {
+        // The page behind everything: the app says it is this colour, and a third of the screen is.
+        // Sampled, it came back as the mean of everything on top of it.
+        val page = 0xFFFBF8FF.toInt()
+        val painted = pixels { x, y ->
+            when {
+                y < H / 4 -> 0xFF3F51B5.toInt()
+                y < H / 2 -> if (x < W / 2) 0xFFE57373.toInt() else 0xFF64B5F6.toInt()
+                y < (H * 5) / 8 -> INK
+                else -> page
+            }
+        }
+        val out = Recolour.apply(frame(declared(0, 0, W, H, page)), painted, W, H).rects.single()
+        assertEquals("the declared page colour was replaced", page, out.color)
+    }
+
+    @Test
+    fun `a declared colour is kept even where another colour dominates it`() {
+        // A card under a photograph: the pixels are the photograph, and the card is still the card.
+        val card = 0xFFF5F2FA.toInt()
+        val out = Recolour.apply(frame(declared(0, 0, W, H, card)), pixels { _, _ -> INK }, W, H)
+            .rects.single()
+        assertEquals(card, out.color)
+    }
+
+    @Test
+    fun `a declared rectangle nothing drew is still left out`() {
+        // Not on the screen is not on the screen, whatever colour it was going to be.
+        val out = Recolour.apply(frame(declared(0, 0, W, H, CARD)), IntArray(W * H), W, H).rects.single()
+        assertEquals(0, out.color)
+    }
+
+    @Test
+    fun `a grid of declared cards is still told apart from its grid`() {
+        // The cards' colour is declared and exact; the grid's is sampled, a bucket's mid-point. The
+        // two are compared as buckets, or the grid rule would never see that they are the same.
+        val card = 0xFFF5F2FA.toInt()
+        val (painted, tiles) = grid(ground = WHITE, tile = card, gap = 16)
+        val container = rect(0, 0, W, H, kind = "CONTAINER", stroke = true)
+        val cards = tiles.map { declared(it.left, it.top, it.right, it.bottom, card, kind = "CARD") }
+        val out = Recolour.apply(frame(container, *cards.toTypedArray()), painted, W, H).rects
+        val surface = out.first().surface
+        assertTrue("the grid took its cards' colour: ${surface?.let(::hex)}", surface == null || !near(surface, card))
+        for (tile in out.drop(1)) assertEquals(card, tile.color)
+    }
+
     @Test
     fun `a container full of masked text is not grey`() {
         // The form. Every field is masked text, so the pixels inside the column, the card and the
