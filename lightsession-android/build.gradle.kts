@@ -1011,7 +1011,24 @@ publishing {
             // sample's wireframes were checked for before and after.
             //
             // Patch: no API, and nothing changes on a screen without such a grid.
-            version = "0.36.1"
+            //
+            // 0.37.0 covers a web page. A `WebView` is a ViewGroup with no `TextView` in it — its
+            // page is drawn by the page, not by views the walk can read — so it passed through the
+            // mask scan uncovered, and every capture of it shipped legible: measured on an emulator,
+            // a name, a delivery address and the end of a card number were readable in the replay
+            // and in the screen map's stored screenshot, while the title above the page was masked.
+            // A `WebView` is now covered whole when text or images are masked, in a native screen
+            // and inside a Flutter one, whose page is a real `WebView` in the same window.
+            //
+            // It also keeps a colour an embedder declared. The recolour pass replaced every filled
+            // rectangle's colour with one sampled from its pixels, and on a screen's background that
+            // is the mean of everything drawn over it: a Flutter page that is `#FBF8FF` came out
+            // `#C4C5D7` wherever nothing covered it. Only a described screen declares colours, so a
+            // walked one is untouched.
+            //
+            // Minor rather than patch: every app with a web view sees a grey block in its replays
+            // where it used to see the page.
+            version = "0.37.0"
 
             afterEvaluate {
                 from(components["release"])
