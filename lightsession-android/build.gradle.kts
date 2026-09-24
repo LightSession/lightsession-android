@@ -1038,7 +1038,19 @@ publishing {
             // owns its view — which also covers `google_maps_flutter`'s map inside a Flutter screen.
             //
             // Patch: no API, and the same kind of change 0.37.0 made for web pages, to another view.
-            version = "0.37.1"
+            //
+            // 0.38.0 lets `recordError` carry an error from a build that kept no names — a Flutter
+            // release built with `--obfuscate` or `--split-debug-info`, whose stacks are addresses
+            // under a header naming the build. `ErrorFrame` takes an `address`, sent as `addr` in
+            // hex, and `recordError` takes `symbols`, the build's kind, id and architecture, sent as a
+            // `symbols` block on the crumb. The server names the frames from that build's uploaded
+            // symbols before it groups the error. On an emulator, the four errors of an obfuscated
+            // release of the Flutter example landed, once named, in the groups the same errors from
+            // a readable build already had.
+            //
+            // Minor rather than patch: new public API, `ErrorFrame.address` and `ErrorSymbols`. Both
+            // optional, so an error with names is sent exactly as before.
+            version = "0.38.0"
 
             afterEvaluate {
                 from(components["release"])
