@@ -67,7 +67,9 @@ public data class LightSessionConfig @JvmOverloads constructor(
      *
      * A `WebView` is covered whole, in a native screen and inside a Flutter one alike: its
      * page is drawn by the page, not by views that can be read, so there is no telling its
-     * text from the rest of it. A replay shows a grey block where a web page is.
+     * text from the rest of it. A replay shows a grey block where a web page is. A map is
+     * covered the same way and for the same reason — it paints its street names into a
+     * picture of its own; see `NativeMaps` for which maps are recognised.
      */
     val maskText: Boolean = true,
 
