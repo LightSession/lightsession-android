@@ -119,10 +119,20 @@ internal object ErrorCrumb {
         handled: Boolean,
         mechanism: String,
         thread: String,
+        symbols: ErrorSymbols? = null,
     ): JsonObject = buildJsonObject {
         put("handled", handled)
         put("mechanism", mechanism)
         put("thread", thread)
+        symbols?.let {
+            put("symbols", buildJsonObject {
+                put("kind", JsonPrimitive(it.kind))
+                // Lowercase, as the server stores it and every runtime prints it.
+                put("build_id", JsonPrimitive(it.buildId.lowercase()))
+                it.arch?.let { arch -> put("arch", JsonPrimitive(arch)) }
+                it.appPackage?.let { app -> put("app_package", JsonPrimitive(app)) }
+            })
+        }
         put("exceptions", buildJsonArray {
             add(buildJsonObject {
                 put("type", JsonPrimitive(type))
@@ -135,6 +145,7 @@ internal object ErrorCrumb {
                             frame.file?.let { put("file", JsonPrimitive(it)) }
                             frame.line?.let { put("line", JsonPrimitive(it)) }
                             put("in_app", JsonPrimitive(frame.inApp))
+                            frame.address?.let { put("addr", JsonPrimitive("0x" + java.lang.Long.toHexString(it))) }
                         })
                     }
                     if (frames.size > MAX_FRAMES) {

@@ -195,6 +195,52 @@ class ErrorCrumbTest {
         assertFalse(exception["frames"]!!.jsonArray[1].jsonObject["in_app"]!!.jsonPrimitive.boolean)
     }
 
+    /**
+     * A release built without names: frames that are only addresses, and the build they are in.
+     * The server names them from that build's uploaded symbols, so the two have to arrive in the
+     * shape it reads — `addr` in hex per frame, and the build id lowercase, as it stores it.
+     */
+    @Test
+    fun `an error from a build without names carries its addresses and its build`() {
+        val built = ErrorCrumb.buildReported(
+            type = "Ii",
+            message = "Instance of 'Ii'",
+            frames = listOf(
+                ErrorFrame("", "", address = 0x8b4afL),
+                ErrorFrame("", "", address = 0x96677L),
+            ),
+            handled = false,
+            mechanism = "platform_dispatcher",
+            thread = "main",
+            symbols = ErrorSymbols("dart", "4D0D11E06E16AE21CC804C1B4C35834C", "arm64", "shop"),
+        )
+
+        val symbols = built["symbols"]!!.jsonObject
+        assertEquals("dart", symbols["kind"]!!.jsonPrimitive.content)
+        assertEquals("4d0d11e06e16ae21cc804c1b4c35834c", symbols["build_id"]!!.jsonPrimitive.content)
+        assertEquals("arm64", symbols["arch"]!!.jsonPrimitive.content)
+        assertEquals("shop", symbols["app_package"]!!.jsonPrimitive.content)
+
+        val frames = built["exceptions"]!!.jsonArray[0].jsonObject["frames"]!!.jsonArray
+        assertEquals("0x8b4af", frames[0].jsonObject["addr"]!!.jsonPrimitive.content)
+        assertEquals("0x96677", frames[1].jsonObject["addr"]!!.jsonPrimitive.content)
+        assertEquals("", frames[0].jsonObject["method"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `an error with names sends no addresses and no build`() {
+        val built = ErrorCrumb.buildReported(
+            type = "StateError",
+            message = null,
+            frames = listOf(ErrorFrame("Checkout", "submit", inApp = true)),
+            handled = true,
+            mechanism = "manual",
+            thread = "main",
+        )
+        assertFalse("symbols" in built)
+        assertFalse("addr" in built["exceptions"]!!.jsonArray[0].jsonObject["frames"]!!.jsonArray[0].jsonObject)
+    }
+
     @Test
     fun `a reported error is held to the same bounds`() {
         val built = ErrorCrumb.buildReported(

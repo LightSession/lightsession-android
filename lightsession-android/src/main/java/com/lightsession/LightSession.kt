@@ -6,6 +6,7 @@ import android.content.SharedPreferences
 import android.util.Log
 import com.lightsession.errors.ErrorCapture
 import com.lightsession.errors.ErrorFrame
+import com.lightsession.errors.ErrorSymbols
 import com.lightsession.network.NetworkRecorder
 import com.lightsession.transport.NetworkDataSender
 import com.lightsession.mapper.ScreenMapperIntegration
@@ -235,6 +236,9 @@ public class LightSession private constructor() {
      * is `handled`, and [mechanism] records what it escaped through — `manual` for one the app
      * reported itself.
      *
+     * A release built without names reports [frames] as addresses — see [ErrorFrame.address] —
+     * and [symbols] says which build they belong to, so the server can name them.
+     *
      * Obeys [LightSessionConfig.captureErrors]. Callable from any thread.
      */
     public fun recordError(
@@ -245,6 +249,7 @@ public class LightSession private constructor() {
         mechanism: String = "manual",
         thread: String = "main",
         attributes: Map<String, Any?> = emptyMap(),
+        symbols: ErrorSymbols? = null,
     ) {
         if (!isInitialized) {
             Log.w("LightSession", "recordError called before init; ignored")
@@ -262,6 +267,7 @@ public class LightSession private constructor() {
                 mechanism = mechanism,
                 thread = thread,
                 attributes = attributes,
+                symbols = symbols,
             )
         }
     }
