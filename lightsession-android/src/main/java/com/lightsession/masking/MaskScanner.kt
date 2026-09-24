@@ -128,6 +128,13 @@ internal class MaskScanner {
             return
         }
 
+        // A map, for the same reason: it paints its street names and pins into a picture of its
+        // own, so there is no text in it to find. See [NativeMaps] for how one is recognised.
+        if ((maskText || maskImages) && NativeMaps.isMap(view)) {
+            addViewRect(view, into)
+            return
+        }
+
         when {
             // EditText is a TextView, and it is caught by the same branch — which is
             // what we want. A field's contents are the most sensitive thing on a screen.
