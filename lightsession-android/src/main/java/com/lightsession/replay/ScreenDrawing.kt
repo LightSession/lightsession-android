@@ -600,14 +600,16 @@ internal class ScreenDrawing {
             // queued sits at the front of that queue, so by the time this runs they have all run.
             mainHandler.post {
                 // Two nets, one per kind of painter. `masksMoved` hears View draws and compares
-                // their geometry; a surface paints without one, so its net is the embedder's
-                // generation counter — bumped on every frame the embedder paints, recorded into
-                // the plan, compared here. Either means the same thing: these rectangles were measured on a screen these
+                // their geometry; a surface paints without one, so its net is the embedder's own
+                // report — a generation per painted frame, the plan's recorded into it, and
+                // `SuppliedMasks.movedSince` saying whether the rectangles changed after it.
+                // Either means the same thing: these rectangles were measured on a screen these
                 // pixels may no longer show. Nothing here can repair that — the geometry for these
                 // pixels is gone — so the frame does not ship.
                 val viewsMoved = masksMoved.get()
-                val suppliedMoved = plan.suppliedGeneration != null &&
-                    com.lightsession.masking.SuppliedMasks.generationNow() != plan.suppliedGeneration
+                val suppliedMoved = plan.suppliedGeneration?.let {
+                    com.lightsession.masking.SuppliedMasks.movedSince(it)
+                } ?: false
                 stopWatchingForDraws()
                 if (Masking.enabled && (viewsMoved || suppliedMoved)) {
                     Log.d(

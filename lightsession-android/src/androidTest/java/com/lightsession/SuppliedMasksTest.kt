@@ -18,6 +18,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -124,6 +125,57 @@ class SuppliedMasksTest {
                 frame,
             )
         }
+    }
+
+    @Test
+    fun a_report_that_repeats_its_rectangles_mid_capture_still_ships() {
+        withSurfaceScreen { scenario, width, height ->
+            val planned = Rect(width / 4, height / 4, width * 3 / 4, height * 3 / 4)
+            SuppliedMasks.set(generation = 1, rects = listOf(planned))
+            // What a spinner or a map does: a new frame every vsync, and nothing masked moved.
+            val frame = captureWhileReporting(scenario, listOf(Rect(planned)))
+            assertNotNull(
+                "the embedder painted again with its masks exactly where they were, and the frame " +
+                    "was dropped — a screen that repaints every frame would lose every frame",
+                frame,
+            )
+            assertEquals(
+                "shipped, and still covered where the report said",
+                MASK_COLOUR,
+                frame!!.getPixel(width / 2, height / 2),
+            )
+        }
+    }
+
+    /** The rules [SuppliedMasks.movedSince] decides by, one report at a time. */
+    @Test
+    fun rectangles_move_only_when_a_later_report_says_so() {
+        val a = listOf(Rect(0, 0, 10, 10))
+        val b = listOf(Rect(0, 20, 10, 30))
+
+        SuppliedMasks.set(generation = 5, rects = a)
+        assertFalse("nothing reported since", SuppliedMasks.movedSince(5))
+        SuppliedMasks.set(generation = 6, rects = listOf(Rect(0, 0, 10, 10)))
+        SuppliedMasks.set(generation = 7, rects = a)
+        assertFalse("two more frames, the same rectangles", SuppliedMasks.movedSince(5))
+
+        SuppliedMasks.set(generation = 8, rects = b)
+        SuppliedMasks.set(generation = 9, rects = a)
+        assertTrue(
+            "back where they were, but frame 8 had them elsewhere and may be the one copied",
+            SuppliedMasks.movedSince(5),
+        )
+        assertFalse("measured from frame 9 itself", SuppliedMasks.movedSince(9))
+
+        SuppliedMasks.set(generation = 10, rects = null)
+        assertTrue("a report that could not measure", SuppliedMasks.movedSince(9))
+
+        SuppliedMasks.set(generation = 20, rects = a)
+        SuppliedMasks.set(generation = 3, rects = a)
+        assertTrue("a count that went backwards is a restart, tied to nothing", SuppliedMasks.movedSince(20))
+
+        SuppliedMasks.clear()
+        assertTrue("an embedder that stopped reporting", SuppliedMasks.movedSince(3))
     }
 
     /**
