@@ -1050,7 +1050,21 @@ publishing {
             //
             // Minor rather than patch: new public API, `ErrorFrame.address` and `ErrorSymbols`. Both
             // optional, so an error with names is sent exactly as before.
-            version = "0.38.0"
+            //
+            // 0.38.1 keeps the frames of a screen that redraws without moving. On the surface path —
+            // every Flutter app, and a native one with a map, a video or hardware bitmaps — a frame
+            // was withheld whenever the screen drew while it was being copied, so a map screen lost
+            // 16 of 18 captures and its replay froze. A frame is now withheld only when what the
+            // masks cover moved: each frame drawn during the copy is scanned again right after it
+            // and compared with the plan, the plan itself is read right after a frame, and an
+            // embedder's reports withhold only when their rectangles change. Measured on an
+            // emulator: none of 18 withheld on the native map screen, 1 of 29 on the Flutter one,
+            // both maps still covered, and the leak tests — Compose, classic Views moved by a
+            // property, a Flutter list scrolled — leaked nothing.
+            //
+            // Patch: no API. A surface capture now waits for the next vsync before it reads its
+            // plan, and an animated screen sends real frames where it sent repeat markers.
+            version = "0.38.1"
 
             afterEvaluate {
                 from(components["release"])
