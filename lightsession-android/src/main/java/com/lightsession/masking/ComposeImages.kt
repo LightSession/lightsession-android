@@ -66,6 +66,21 @@ import java.util.WeakHashMap
  * images — `MaskScanner.scan`'s callers drop the frame when it throws, and a dropped frame is the
  * cheap half of that trade.
  *
+ * ## A host that moves without its composition changing
+ *
+ * "The rectangles change only when the composition does" is true of the composition and not of
+ * where it sits. A `ComposeView` in a `ScrollView` or a `RecyclerView` row moves with its parent's
+ * scroll, and nothing in the composition is written — no apply, so the cache stood, and its
+ * rectangles are in window space. `ComposeImageInScrollingViewTest` measured it: a 160 dp image
+ * covered before its `ScrollView` scrolled 400 px, and 168,000 of its pixels in the clear after,
+ * the mask left behind where it had been. Every app that hosts Compose inside classic Views and
+ * scrolls them showed its images that way.
+ *
+ * So each answer remembers where its host was and how big. A host that only moved takes its
+ * rectangles with it, which is exact: the composition did not change, so everything in it moved
+ * by the same amount. A host whose size changed is walked again, because a composition laid out
+ * against new constraints can put its images anywhere, and that too arrives without an apply.
+ *
  * ## What is not covered
  *
  * Custom drawing — `Canvas`, `drawWithContent`, a `Modifier.background(brush)` — is not an image
@@ -87,8 +102,17 @@ internal object ComposeImages {
     private var stale = true
 
     /** Keyed by host view, so two windows — a sheet over a screen — do not share an answer. */
-    private val cache: MutableMap<View, List<Rect>> =
+    private val cache: MutableMap<View, Cached> =
         Collections.synchronizedMap(WeakHashMap())
+
+    /** One host's answer, and where the host was, and how big, when it was worked out. */
+    private class Cached(
+        val rects: List<Rect>,
+        val x: Int,
+        val y: Int,
+        val width: Int,
+        val height: Int,
+    )
 
     /**
      * The screen-space rectangles of every image in this host's composition.
@@ -100,8 +124,15 @@ internal object ComposeImages {
     fun rectsIn(host: View, generator: SkeletonGenerator): List<Rect> {
         ensureObserver()
 
+        val location = IntArray(2)
+        host.getLocationOnScreen(location)
         if (!stale) {
-            cache[host]?.let { return it }
+            cache[host]?.takeIf { it.width == host.width && it.height == host.height }?.let { cached ->
+                val dx = location[0] - cached.x
+                val dy = location[1] - cached.y
+                if (dx == 0 && dy == 0) return cached.rects
+                return cached.rects.map { Rect(it).apply { offset(dx, dy) } }
+            }
         } else {
             // One apply invalidates every window: a state write can move anything, and the cost of
             // being wrong about which is a mask over the wrong pixels.
@@ -136,7 +167,7 @@ internal object ComposeImages {
         }
         tree.computeLayoutInfos().forEach { walk(it) }
 
-        cache[host] = rects
+        cache[host] = Cached(rects, location[0], location[1], host.width, host.height)
         return rects
     }
 
