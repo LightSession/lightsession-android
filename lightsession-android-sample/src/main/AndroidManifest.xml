@@ -11,6 +11,9 @@
         android:supportsRtl="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.Lightsessionandroid">
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${mapsApiKey}" />
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -45,6 +48,11 @@
              drives it from adb rather than depending on a tap. -->
         <activity
             android:name="com.sample.lightsession.NetworkPlaygroundActivity"
+            android:exported="true" />
+        <!-- A map shown the way most apps show one, in Google's fragment. Exported so a test run
+             can open it from adb. -->
+        <activity
+            android:name="com.sample.lightsession.MapActivity"
             android:exported="true" />
         <activity
             android:name="com.sample.lightsession.ComposeWithNavigationActivity"

@@ -21,6 +21,10 @@ android {
         versionName = "2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // The maps service's key, when the build has one: -PMAPS_API_KEY=… Never written here.
+        // Without one the map draws no tiles, and it is still a map on the screen.
+        manifestPlaceholders["mapsApiKey"] = (project.findProperty("MAPS_API_KEY") as String?) ?: "none"
     }
 
     buildTypes {
@@ -53,6 +57,10 @@ dependencies {
     implementation(libs.appcompat)
     implementation(libs.material)
     implementation(libs.constraintlayout)
+
+    // Only for MapActivity: a map is a native view that paints its own words, and the SDK has to
+    // cover it without depending on any map library itself.
+    implementation("com.google.android.gms:play-services-maps:20.0.0")
 
     // Jetpack Compose
     implementation("androidx.compose.ui:ui:1.7.0")
