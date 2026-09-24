@@ -989,7 +989,19 @@ publishing {
             //
             // Minor rather than patch: every Flutter app starts sending a kind it never sent, and a
             // server that does not know `FLUTTER` stores those screens as `UNKNOWN` until it does.
-            version = "0.35.0"
+            //
+            // 0.36.0 rounds the corners of a described screen. A screen an embedder describes
+            // reached the wireframe square, because `SuppliedScreen.Node` had no way to say its
+            // shape was rounded — every button, card and sheet of a Flutter app drawn as a plain box
+            // while the same widgets in Compose came out rounded.
+            //
+            // The node takes the four corners in screen pixels, in visual order, and they go into
+            // the slot a Compose shape fills, so they reach the wire as `rad` and the renderer by the
+            // path they already take. Null, anything that is not four values, and all zeros are
+            // square.
+            //
+            // Minor rather than patch: new public API.
+            version = "0.36.0"
 
             afterEvaluate {
                 from(components["release"])
