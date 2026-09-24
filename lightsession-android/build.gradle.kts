@@ -1064,7 +1064,17 @@ publishing {
             //
             // Patch: no API. A surface capture now waits for the next vsync before it reads its
             // plan, and an animated screen sends real frames where it sent repeat markers.
-            version = "0.38.1"
+            //
+            // 0.38.2 covers a Compose image where its host moved it. Image masks were cached until
+            // the next state write, and a `ComposeView` scrolled by a `ScrollView` or a
+            // `RecyclerView` writes none, so the mask stayed where the image had been: 168,000
+            // pixels of a 160 dp image in the clear after a 400 px scroll, on both capture paths,
+            // and 94,500 of a centred one after its host was resized. The cache now remembers where
+            // its host was and how big; a host that moved takes its rectangles with it, and one
+            // that was resized is walked again.
+            //
+            // Patch: no API, and a leak closed in the same masking the last releases worked on.
+            version = "0.38.2"
 
             afterEvaluate {
                 from(components["release"])
