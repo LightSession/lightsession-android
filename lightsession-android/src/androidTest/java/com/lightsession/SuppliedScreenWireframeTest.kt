@@ -50,7 +50,8 @@ class SuppliedScreenWireframeTest {
         bottom: Int,
         color: Int? = null,
         children: List<SuppliedScreen.Node> = emptyList(),
-    ) = SuppliedScreen.Node(Rect(left, top, right, bottom), kind, color, children)
+        radii: IntArray? = null,
+    ) = SuppliedScreen.Node(Rect(left, top, right, bottom), kind, color, children, radii)
 
     @Test
     fun a_described_screen_becomes_the_rectangles_it_describes() {
@@ -176,5 +177,56 @@ class SuppliedScreenWireframeTest {
         val rects = SkeletonGenerator().frameFrom(screen, BACKGROUND)!!.rects
         assertEquals("the zero-width container is gone, the root and the text remain", 2, rects.size)
         assertEquals(listOf("CONTAINER", "TEXT"), rects.map { it.kind })
+    }
+
+    @Test
+    fun a_described_corner_reaches_the_wire() {
+        val screen = SuppliedScreen.Screen(
+            width = 1080,
+            height = 2400,
+            root = node(
+                "CONTAINER", 0, 0, 1080, 2400,
+                children = listOf(
+                    // A stadium button, which says only how tall it is; and a sheet, rounded on top.
+                    node("BUTTON", 40, 100, 600, 220, radii = intArrayOf(60, 60, 60, 60)),
+                    node("CARD", 40, 400, 1040, 900, radii = intArrayOf(48, 48, 0, 0)),
+                ),
+            ),
+        )
+
+        val rects = SkeletonGenerator().frameFrom(screen, BACKGROUND)!!.rects
+        val button = rects.single { it.kind == "BUTTON" }
+        val card = rects.single { it.kind == "CARD" }
+
+        assertEquals(listOf(60, 60, 60, 60), button.toJson().getJSONArray("rad").let { json ->
+            List(json.length()) { json.getInt(it) }
+        })
+        assertEquals(listOf(48, 48, 0, 0), card.toJson().getJSONArray("rad").let { json ->
+            List(json.length()) { json.getInt(it) }
+        })
+    }
+
+    @Test
+    fun a_node_that_says_nothing_about_corners_is_square() {
+        val screen = SuppliedScreen.Screen(
+            width = 1080,
+            height = 2400,
+            root = node(
+                "CONTAINER", 0, 0, 1080, 2400,
+                children = listOf(
+                    node("BUTTON", 40, 100, 600, 220),
+                    node("BUTTON", 40, 300, 600, 420, radii = intArrayOf(0, 0, 0, 0)),
+                    // Three values is not a shape. Nothing is drawn rather than a guess.
+                    node("BUTTON", 40, 500, 600, 620, radii = intArrayOf(10, 10, 10)),
+                ),
+            ),
+        )
+
+        val buttons = SkeletonGenerator().frameFrom(screen, BACKGROUND)!!.rects.filter { it.kind == "BUTTON" }
+        assertEquals(3, buttons.size)
+        for (button in buttons) {
+            assertNull(button.radii)
+            assertFalse(button.toJson().has("rad"))
+        }
     }
 }

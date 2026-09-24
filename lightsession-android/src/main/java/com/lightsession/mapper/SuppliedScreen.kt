@@ -61,6 +61,17 @@ public object SuppliedScreen {
          */
         public val color: Int? = null,
         public val children: List<Node> = emptyList(),
+        /**
+         * The corners of this node's shape, in **screen pixels**, in visual order: top left, top
+         * right, bottom right, bottom left.
+         *
+         * Null is square, and so is anything that is not four values — the embedder saying nothing
+         * about corners rather than something wrong about them. Only what the app's own shape
+         * declared belongs here: a Material button is round because its theme said so, and an app
+         * that squared its corners must not get a house style drawn over them. A radius past half
+         * the shorter side is clamped when drawn, so a stadium can say how tall it is and be right.
+         */
+        public val radii: IntArray? = null,
     )
 
     /** A whole screen, as the embedder last described it. */
