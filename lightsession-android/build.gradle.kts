@@ -1001,7 +1001,17 @@ publishing {
             // square.
             //
             // Minor rather than patch: new public API.
-            version = "0.36.0"
+            //
+            // 0.36.1 keeps the cards of a grid apart from the grid. A container's surface is the
+            // dominant colour of its pixels, children included, so a grid mostly covered by cards
+            // took the cards' colour and the renderer drew the cards on top in it, where they
+            // vanished. When a container shares its colour with two or more filled children, that
+            // colour is now read from the part they do not cover, when that part is at least a
+            // tenth of it; every other container comes out exactly as before, which the native
+            // sample's wireframes were checked for before and after.
+            //
+            // Patch: no API, and nothing changes on a screen without such a grid.
+            version = "0.36.1"
 
             afterEvaluate {
                 from(components["release"])
