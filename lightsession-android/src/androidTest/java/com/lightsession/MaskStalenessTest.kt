@@ -9,11 +9,16 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.unit.IntOffset
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.lightsession.replay.ScreenDrawing
@@ -29,7 +34,8 @@ import org.junit.runner.RunWith
 import com.lightsession.masking.Masking
 
 /**
- * A frame whose masks and pixels describe different moments must not ship.
+ * A frame whose masks and pixels describe different moments must not ship — and a frame whose masks
+ * are where they were must.
  *
  * ## The race this guards
  *
@@ -39,7 +45,16 @@ import com.lightsession.masking.Masking
  * copied pixels do not have, and the text they were meant to cover is left in plain view.
  *
  * The scan was moved ahead of the copy so the two are nearly simultaneous, but "nearly" is not a
- * guarantee. This covers what is left: a draw inside the window means the frame is withheld.
+ * guarantee. This covers what is left: a frame drawn inside the window with its masks somewhere
+ * else means the frame is withheld.
+ *
+ * ## Why a draw alone is not enough to withhold
+ *
+ * It used to be. A screen that redraws without moving anything — a spinner, a shimmer, a map — then
+ * lost nearly every frame, and its replay froze on the last one before it started. A rectangle that
+ * is still where the plan put it still covers what it covered, so what withholds a frame is the
+ * masks moving, and a screen that only redraws keeps its frames. Both halves are asserted here, over
+ * the same busy screen: redrawn in place, and moved.
  *
  * ## Why this counts instead of asserting once
  *
@@ -56,10 +71,10 @@ import com.lightsession.masking.Masking
  * that is the half that blocks the main thread.
  *
  * So this asks the question the mechanism can actually answer: over many captures of a screen that
- * keeps drawing, is *any* of them withheld — and over a screen that is still, is *none*. That the
- * guard fires sometimes rather than always is not a weakness in the test. It is the measurement:
- * what is left to catch after the scan moved ahead of the copy is a fraction of frames, not most
- * of them.
+ * keeps moving, is *any* of them withheld — and over a screen that is still, or only redraws, is
+ * *none*. That the guard fires sometimes rather than always is not a weakness in the test. It is
+ * the measurement: what is left to catch after the scan moved ahead of the copy is a fraction of
+ * frames, not most of them.
  *
  * Run with:
  *   ./gradlew :lightsession-android:connectedDebugAndroidTest \
@@ -159,8 +174,10 @@ class MaskStalenessTest {
         )
     }
 
-    @Test
-    fun a_screen_drawing_mid_capture_is_withheld() {
+    /** Hundreds of text nodes, so the watched window is wide enough for a draw to land in it. */
+    private var shift by mutableIntStateOf(0)
+
+    private fun busyScreen() {
         // Heavy on purpose. The window being watched runs from arming to the decision, and most
         // of it is `planMasks` walking the semantics tree — so a screen with hundreds of text
         // nodes makes that window wide enough for a draw to land in it every time.
@@ -169,14 +186,25 @@ class MaskStalenessTest {
         // window of ~10 ms and a pump at 8 ms mostly miss each other. Widening the window is the
         // honest fix; loosening the assertion would have been the other kind.
         compose.setContent {
-            Column(Modifier.fillMaxSize().background(ComposeColor.White)) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .background(ComposeColor.White)
+                    .offset { IntOffset(0, shift) },
+            ) {
                 repeat(BUSY_ROWS) { row ->
                     Text("row $row is text and therefore gets a rectangle", fontSize = 5.sp)
                 }
             }
         }
         compose.waitForIdle()
+    }
 
+    /**
+     * Captures [ATTEMPTS] frames while [step] runs every millisecond on the main thread, and says
+     * how many were withheld and how many draws the screen made meanwhile.
+     */
+    private fun captureWhile(step: () -> Unit): Pair<Int, Int> {
         val decor = compose.activity.window.decorView
         val handler = Handler(Looper.getMainLooper())
         val pumping = AtomicBoolean(true)
@@ -187,7 +215,7 @@ class MaskStalenessTest {
         val pump = object : Runnable {
             override fun run() {
                 if (!pumping.get()) return
-                decor.invalidate()
+                step()
                 handler.postDelayed(this, 1)
             }
         }
@@ -208,15 +236,36 @@ class MaskStalenessTest {
             compose.runOnUiThread { decor.viewTreeObserver.removeOnDrawListener(counter) }
             drawing.release()
         }
+        return withheld to draws.get()
+    }
 
-        Log.i(
-            TAG,
-            "drawing screen: $withheld of $ATTEMPTS withheld, " +
-                "over ${draws.get()} draw(s) from the fixture",
+    @Test
+    fun a_screen_redrawing_in_place_still_captures() {
+        busyScreen()
+        val decor = compose.activity.window.decorView
+        // What a spinner or a map does to the window: draws, and moves nothing that is masked.
+        val (withheld, draws) = captureWhile { decor.invalidate() }
+
+        Log.i(TAG, "redrawing screen: $withheld of $ATTEMPTS withheld, over $draws draw(s)")
+        assertTrue("the fixture never drew, so this measured nothing", draws > 0)
+        assertEquals(
+            "the screen redrew $draws times without moving anything and $withheld of $ATTEMPTS " +
+                "captures were withheld; a frame whose masks are still over its text is being lost",
+            0,
+            withheld,
         )
+    }
+
+    @Test
+    fun a_screen_moving_mid_capture_is_withheld() {
+        busyScreen()
+        // What a fling does: every draw puts the text somewhere else.
+        val (withheld, draws) = captureWhile { shift = if (shift <= -900) 0 else shift - 90 }
+
+        Log.i(TAG, "moving screen: $withheld of $ATTEMPTS withheld, over $draws draw(s)")
         assertTrue(
-            "the screen drew ${draws.get()} times and not one of $ATTEMPTS captures was withheld; " +
-                "a frame whose masks and pixels describe different moments is shipping",
+            "the screen drew $draws times, moving each time, and not one of $ATTEMPTS captures " +
+                "was withheld; a frame whose masks and pixels describe different moments is shipping",
             withheld > 0,
         )
     }

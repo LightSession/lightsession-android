@@ -21,7 +21,7 @@ import android.graphics.Rect
  * bumps on every frame it paints — and the capture path records the generation it planned with
  * and compares on completion. A frame whose generation moved mid-capture is a frame whose pixels
  * and rectangles describe different moments, and it is dropped. This is [replay.ScreenDrawing]'s
- * `drewDuringCapture` net rebuilt for a painter whose draws the view system cannot see.
+ * `masksMoved` net rebuilt for a painter whose draws the view system cannot see.
  *
  * ## Invalid is not empty
  *

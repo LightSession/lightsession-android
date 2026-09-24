@@ -77,13 +77,42 @@ internal class ScreenDrawing {
     private var globalScaleFactor = ScalePresets.MEDIUM_QUALITY
 
     /**
-     * Whether the screen drew between reading the mask geometry and finishing the copy.
+     * Whether a frame drawn between reading the mask geometry and finishing the copy put what the
+     * masks cover somewhere else.
      *
      * The safety net for what is left of the gap. [planMasks] reads live Views; `PixelCopy` reads
      * a surface the compositor produced. Moving the scan to the front made those two nearly
      * simultaneous, but "nearly" is not a guarantee — a list flung mid-capture can still draw in
      * between, and then the rectangles describe a layout the copied pixels do not have and text
      * comes out uncovered.
+     *
+     * ## Moved, not merely drawn
+     *
+     * This used to be set by any draw at all, and a draw is not what makes a frame unsafe: a
+     * rectangle that is still where the plan put it still covers what it covered. A screen that
+     * redraws without moving anything — a spinner, a shimmer, a video, a map, all of them covered
+     * or not text at all — drew inside nearly every capture, so nearly every frame of it was
+     * withheld and its replay froze on whatever came before. Measured on the sample's map screen:
+     * 16 of 18 captures withheld, and none with this.
+     *
+     * So each frame drawn inside the window is scanned again and compared with the plan, and only
+     * a difference withholds the frame. The comparison is the same scan the plan was built with,
+     * so "the same" means exactly what the masks would have been for that frame.
+     *
+     * ## Read after the frame, never during it
+     *
+     * `OnDrawListener` fires *before* the frame is drawn, and at that moment the frame's geometry
+     * is not final: Compose lays out inside `dispatchDraw`, which runs after it. A scan there reads
+     * the previous frame's layout and calls a moved screen unmoved. `ComposeLayoutTimingProbeTest`
+     * measures it: text moved 200 px reads at its old place inside the listener and at its new one
+     * right after the frame. A screen that keeps moving would still be caught a frame late; one that
+     * moves once, while a copy is in flight, would ship uncovered. So the listener only queues the
+     * scan, at the front of the main queue, and it runs the moment the frame is done: after its
+     * layout, before the next frame's input or animation can change anything.
+     *
+     * The decision is taken on the main thread for the same reason: a check queued at the front runs
+     * before it, so every frame drawn before the decision has been compared by then. A scan that
+     * fails counts as moved.
      *
      * Its own listener rather than `Recorder.isScreenContentChanged`, which looks like the same
      * signal and is not. That one is how the recorder decides there is something worth capturing;
@@ -93,9 +122,19 @@ internal class ScreenDrawing {
      * The window it covers is short, which is the whole point of reading the geometry first.
      * Measured on an emulator at full scale: 10 to 26 ms from arming to the decision. `MaskStalenessTest`
      * had to drive draws every millisecond to land inside it reliably — at 8 ms apart they mostly
-     * missed, which is a fair description of how rarely this now fires in the wild.
+     * missed. A still screen draws nothing in it and pays nothing for the check.
      */
-    private val drewDuringCapture = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val masksMoved = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Whether a comparison is already queued for the frame being drawn. Main thread. */
+    private var geometryCheckQueued = false
+
+    /**
+     * What the current capture compares its frames against: the layers it copies, and the
+     * rectangles the scan found in each. Null outside a capture, and until the plan is read.
+     * Main thread.
+     */
+    private var watched: Pair<List<SurfaceLayer>, List<List<Rect>>>? = null
 
     /** The draw listeners installed for the current capture, with the roots they sit on. */
     private var captureWatch: List<Pair<java.lang.ref.WeakReference<View>, ViewTreeObserver.OnDrawListener>> =
@@ -443,6 +482,48 @@ internal class ScreenDrawing {
         baseWindow: android.view.Window?,
         onResult: (Bitmap?) -> Unit,
     ) {
+        // One at a time. The wait below is for a vsync, and a screen that is off has none: without
+        // this every tick while it is dark would queue another capture, and all of them would run
+        // in the first frame after it lights up.
+        if (surfaceCapturePending) {
+            onResult(null)
+            return
+        }
+        surfaceCapturePending = true
+
+        // Right after the next frame, never between a frame being asked for and drawn.
+        //
+        // A View moved by a property — `translationY`, `scrollTo`, an offset — reports its new
+        // place the moment it is set, and is drawn there only on the next frame. A plan read in
+        // between describes the frame about to be drawn while `PixelCopy` copies the one already
+        // on screen: the masks sit where the text is going, not where it is. The frame that
+        // follows then matches the plan exactly, so comparing drawn frames against the plan — see
+        // [masksMoved] — cannot see it. Measured in `MaskLeakProofTest` with a column of
+        // `TextView`s moved by `translationY` from a handler: 13 of 40 frames shipped legible
+        // rows when the plan was read the moment the capture was asked for.
+        //
+        // Every change made before a frame is drawn by that frame, so the instant it ends is the
+        // one instant the live geometry is exactly what is on screen. The frame callback runs at
+        // the start of the next frame; the work queued from it at the front of the main queue runs
+        // the moment that frame's traversal is done. A still screen has no traversal to wait for
+        // and loses at most a vsync.
+        android.view.Choreographer.getInstance().postFrameCallback {
+            mainHandler.postAtFrontOfQueue {
+                surfaceCapturePending = false
+                captureViaSurfaceAfterFrame(scaleFactor, baseWindow, onResult)
+            }
+        }
+    }
+
+    /** Whether a surface capture is waiting for its frame. Main thread. */
+    private var surfaceCapturePending = false
+
+    /** The body of [captureViaSurface], run the moment a frame has finished. Main thread. */
+    private fun captureViaSurfaceAfterFrame(
+        scaleFactor: Float,
+        baseWindow: android.view.Window?,
+        onResult: (Bitmap?) -> Unit,
+    ) {
         val layers = surfaceLayers(baseWindow)
         // What the frame is being assembled from. Cheap, debug level, and the only way to tell a
         // screen whose surfaces were found from one whose were missed — the two produce the same
@@ -497,6 +578,9 @@ internal class ScreenDrawing {
             onResult(null)
             return
         }
+        // Synchronously after the scan, on the same thread: no frame can be drawn in between, so
+        // the first frame the watch compares is compared against this.
+        watched = layers to plan.scanned
 
         // ARGB_8888 regardless of scale. PixelCopy rejects destinations it cannot write,
         // and the software path's RGB_565-below-half-scale optimisation is one of them.
@@ -512,38 +596,34 @@ internal class ScreenDrawing {
                 return@copyLayers
             }
 
-            // The net. Something drew while this frame was being assembled, so the pixels and the
-            // rectangles describe different moments and the masks may not be over the text any
-            // more. Nothing here can repair that — the geometry for these pixels is gone — so the
-            // frame does not ship.
-            //
-            // Two nets, one per kind of painter. `drewDuringCapture` hears View draws; a surface
-            // paints without one, so its net is the embedder's generation counter — bumped on
-            // every frame the embedder paints, recorded into the plan, compared here. Either
-            // moving means the same thing: these rectangles were measured on a screen these
-            // pixels no longer show.
-            //
-            // Read on this thread; only add/remove need the main one. Masking is on by default, so
-            // this is checked whenever there is anything to protect.
-            val suppliedMoved = plan.suppliedGeneration != null &&
-                com.lightsession.masking.SuppliedMasks.generationNow() != plan.suppliedGeneration
-            if (Masking.enabled && (drewDuringCapture.get() || suppliedMoved)) {
-                Log.d("ScreenCaptureUtils", "screen drew mid-capture; frame not shipped")
-                recycleBitmap(target)
-                mainHandler.post {
-                    stopWatchingForDraws()
-                    onResult(null)
-                }
-                return@copyLayers
-            }
-
-            // Each layer covered itself on the way past; what is left is the windows nothing
-            // copied, which have to be covered somewhere or they are not covered at all.
-            withCaptureCanvas(target, effectiveScale) { canvas ->
-                Masking.draw(canvas, plan.uncomposited)
-            }
+            // The net, decided on the main thread: every comparison a frame drawn during the copy
+            // queued sits at the front of that queue, so by the time this runs they have all run.
             mainHandler.post {
+                // Two nets, one per kind of painter. `masksMoved` hears View draws and compares
+                // their geometry; a surface paints without one, so its net is the embedder's
+                // generation counter — bumped on every frame the embedder paints, recorded into
+                // the plan, compared here. Either means the same thing: these rectangles were measured on a screen these
+                // pixels may no longer show. Nothing here can repair that — the geometry for these
+                // pixels is gone — so the frame does not ship.
+                val viewsMoved = masksMoved.get()
+                val suppliedMoved = plan.suppliedGeneration != null &&
+                    com.lightsession.masking.SuppliedMasks.generationNow() != plan.suppliedGeneration
                 stopWatchingForDraws()
+                if (Masking.enabled && (viewsMoved || suppliedMoved)) {
+                    Log.d(
+                        "ScreenCaptureUtils",
+                        "screen moved mid-capture (" +
+                            (if (viewsMoved) "views" else "embedder") + "); frame not shipped",
+                    )
+                    recycleBitmap(target)
+                    onResult(null)
+                    return@post
+                }
+                // Each layer covered itself on the way past; what is left is the windows nothing
+                // copied, which have to be covered somewhere or they are not covered at all.
+                withCaptureCanvas(target, effectiveScale) { canvas ->
+                    Masking.draw(canvas, plan.uncomposited)
+                }
                 onResult(target)
             }
         }
@@ -557,14 +637,42 @@ internal class ScreenDrawing {
      * failing, it just loses the net for that frame.
      */
     private fun watchForDraws(layers: List<SurfaceLayer>) {
-        drewDuringCapture.set(false)
+        masksMoved.set(false)
+        geometryCheckQueued = false
+        watched = null
         captureWatch = layers.mapNotNull { layer ->
             val root = layer.root
-            val listener = ViewTreeObserver.OnDrawListener { drewDuringCapture.set(true) }
+            val listener = ViewTreeObserver.OnDrawListener { queueGeometryCheck() }
             runCatching { root.viewTreeObserver.addOnDrawListener(listener) }
                 .map { java.lang.ref.WeakReference(root) to listener }
                 .getOrNull()
         }
+    }
+
+    /**
+     * A frame is about to be drawn: compares its geometry with the plan once it has been. See
+     * [masksMoved] for why it cannot be compared here.
+     *
+     * Once per frame, however many of the capture's layers share the window that drew.
+     */
+    private fun queueGeometryCheck() {
+        if (geometryCheckQueued || masksMoved.get()) return
+        geometryCheckQueued = true
+        mainHandler.postAtFrontOfQueue(::checkGeometry)
+    }
+
+    /** Main thread, right after a frame drawn during a capture. */
+    private fun checkGeometry() {
+        geometryCheckQueued = false
+        // The capture has ended, and its decision has been taken without this frame.
+        if (captureWatch.isEmpty()) return
+        val (layers, planned) = watched ?: run {
+            masksMoved.set(true)
+            return
+        }
+        if (!Masking.enabled) return
+        val now = runCatching { scanLayers(layers) }.getOrNull()
+        if (now != planned) masksMoved.set(true)
     }
 
     /** Main thread. Idempotent, because a capture can end down several paths. */
@@ -573,6 +681,7 @@ internal class ScreenDrawing {
             ref.get()?.let { runCatching { it.viewTreeObserver.removeOnDrawListener(listener) } }
         }
         captureWatch = emptyList()
+        watched = null
     }
 
     /**
@@ -589,17 +698,13 @@ internal class ScreenDrawing {
      * @throws Exception if a scan fails; the caller drops the frame rather than shipping it.
      */
     private fun planMasks(layers: List<SurfaceLayer>): MaskPlan = traced(Tracing.PLAN_MASKS) {
-        if (!Masking.enabled) return@traced MaskPlan(layers.map { emptyList() }, emptyList(), null)
+        if (!Masking.enabled) {
+            val none = layers.map { emptyList<Rect>() }
+            return@traced MaskPlan(none, none, emptyList(), null)
+        }
 
-        val perLayer = layers.map { layer ->
-            if (layer.root.visibility != View.VISIBLE ||
-                layer.root.width <= 0 || layer.root.height <= 0
-            ) {
-                emptyList()
-            } else {
-                masker.scan(layer.root, Masking.text, Masking.images)
-            }
-        }.toMutableList()
+        val scanned = scanLayers(layers)
+        val perLayer = scanned.toMutableList()
 
         // What the embedder said to cover, for content the scan above cannot see. A surface's
         // text is invisible to a View walk — the scan completes and returns nothing — so a screen
@@ -632,7 +737,21 @@ internal class ScreenDrawing {
             uncomposited.addAll(masker.scan(view, Masking.text, Masking.images))
         }
 
-        MaskPlan(perLayer, uncomposited, supplied?.generation)
+        MaskPlan(perLayer, scanned, uncomposited, supplied?.generation)
+    }
+
+    /**
+     * What the scanner finds in each layer, parallel to [layers]: the part of a plan a View draw
+     * can move, and so the part [checkGeometry] compares. Main thread; throws as the scanner does.
+     */
+    private fun scanLayers(layers: List<SurfaceLayer>): List<List<Rect>> = layers.map { layer ->
+        if (layer.root.visibility != View.VISIBLE ||
+            layer.root.width <= 0 || layer.root.height <= 0
+        ) {
+            emptyList()
+        } else {
+            masker.scan(layer.root, Masking.text, Masking.images)
+        }
     }
 
     /**
@@ -650,6 +769,11 @@ internal class ScreenDrawing {
      */
     private class MaskPlan(
         val perLayer: List<List<Rect>>,
+        /**
+         * The scanner's own rectangles per layer, before the embedder's are added — what a later
+         * frame is compared against to tell whether the masks moved under the copy.
+         */
+        val scanned: List<List<Rect>>,
         val uncomposited: List<Rect>,
         /**
          * The generation of the embedder's mask report this plan was built with, or null when no
