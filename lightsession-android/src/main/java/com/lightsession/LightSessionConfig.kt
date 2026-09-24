@@ -64,6 +64,10 @@ public data class LightSessionConfig @JvmOverloads constructor(
      * On by default. Text is where the sensitive content lives, and a privacy default
      * should fail towards covering rather than towards leaking. See [Masking] for why
      * this happens on the device rather than on the server, and what it costs.
+     *
+     * A `WebView` is covered whole, in a native screen and inside a Flutter one alike: its
+     * page is drawn by the page, not by views that can be read, so there is no telling its
+     * text from the rest of it. A replay shows a grey block where a web page is.
      */
     val maskText: Boolean = true,
 
