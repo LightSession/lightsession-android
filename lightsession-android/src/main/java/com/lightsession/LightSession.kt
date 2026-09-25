@@ -452,6 +452,18 @@ public class LightSession private constructor() {
         com.lightsession.mapper.SuppliedScreen.clear()
     }
 
+    /**
+     * Tells the SDK the appearance the app draws in, when it chooses one itself.
+     *
+     * For a toolkit that decides its own theme — a Flutter app with `ThemeMode.dark` draws dark on
+     * a device in light mode — where the platform's night mode, which is what captures are filed
+     * under, says otherwise. `null` follows the platform again. A native app needs none of this:
+     * forcing a theme natively goes through the platform, and the SDK reads it from there.
+     */
+    public fun setAppearance(dark: Boolean?) {
+        com.lightsession.mapper.SuppliedScreen.dark = dark
+    }
+
     @Synchronized
     public fun init(application: Application, config: LightSessionConfig) {
         if (isInitialized) {
