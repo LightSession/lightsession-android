@@ -99,6 +99,22 @@ public object SuppliedScreen {
     private var current: Screen? = null
 
     /**
+     * The appearance the embedder draws in, or null to follow the platform's.
+     *
+     * A capture is filed under a theme, and the SDK reads it from the platform's night mode — which
+     * is the app's too for a native app, since a native app that forces dark mode does it through
+     * the platform. A toolkit can draw dark on its own: a Flutter app with `ThemeMode.dark` paints
+     * dark with the device in light mode, and nothing in the platform's configuration says so.
+     * Measured with such an app on an emulator: its screen, dark to the pixel, was filed as
+     * `Light` — wireframe and screenshot both, in the slot its light rendering would take.
+     *
+     * App-wide rather than per screen: an app's theme is not a property of one screen, and a new
+     * screen is captured before its description arrives.
+     */
+    @Volatile
+    internal var dark: Boolean? = null
+
+    /**
      * How many descriptions have arrived, ever.
      *
      * The mapper records which revision a wireframe was built from, so it can tell a description
@@ -145,6 +161,7 @@ public object SuppliedScreen {
      */
     public fun clear() {
         current = null
+        dark = null
     }
 
     /**

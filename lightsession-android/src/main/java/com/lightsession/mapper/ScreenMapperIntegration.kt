@@ -1063,15 +1063,8 @@ internal class ScreenMapperIntegration private constructor() {
         }.getOrDefault("unknown")
     }
 
-    private fun getCurrentTheme(context: Context): String {
-        val uiMode = context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
-        return when (uiMode) {
-            Configuration.UI_MODE_NIGHT_YES -> "Dark"
-            Configuration.UI_MODE_NIGHT_NO -> "Light"
-            Configuration.UI_MODE_NIGHT_UNDEFINED -> "Undefined"
-            else -> "Unknown"
-        }
-    }
+    private fun getCurrentTheme(context: Context): String =
+        themeName(context.resources.configuration.uiMode, SuppliedScreen.dark)
 
     private fun isActivityUsingCompose(activity: Activity): Boolean {
         val contentView = activity.window.decorView.findViewById<ViewGroup>(android.R.id.content)
@@ -2647,4 +2640,19 @@ public fun NavHostController.withNavigationTracking(): NavHostController {
         }
     }
     return this
+}
+
+/**
+ * The theme a capture is filed under: the embedder's appearance when it gave one, the platform's
+ * night mode otherwise. One function for every capture, so a screen's wireframe and its screenshot
+ * cannot land in different slots. See [SuppliedScreen.dark].
+ */
+internal fun themeName(uiMode: Int, embedderDark: Boolean?): String {
+    if (embedderDark != null) return if (embedderDark) "Dark" else "Light"
+    return when (uiMode and Configuration.UI_MODE_NIGHT_MASK) {
+        Configuration.UI_MODE_NIGHT_YES -> "Dark"
+        Configuration.UI_MODE_NIGHT_NO -> "Light"
+        Configuration.UI_MODE_NIGHT_UNDEFINED -> "Undefined"
+        else -> "Unknown"
+    }
 }
