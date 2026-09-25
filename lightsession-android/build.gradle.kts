@@ -1084,7 +1084,16 @@ publishing {
             // thread first.
             //
             // Patch: no API, and a regression of 0.38.1 undone.
-            version = "0.38.3"
+            //
+            // 0.39.0 files captures under the appearance an embedder draws in. The theme came from
+            // the platform's night mode alone, and a Flutter app with `ThemeMode.dark` paints dark on
+            // a device in light mode: measured on an emulator, such a screen — dark to the pixel —
+            // was filed as `Light`, wireframe and screenshot. `setAppearance(dark)` lets the embedder
+            // say so, and every capture takes its theme from one function, so a screen's wireframe
+            // and screenshot land in one slot. A native app never calls it and is filed as before.
+            //
+            // Minor: new API, `setAppearance`, which the Flutter plugin needs.
+            version = "0.39.0"
 
             afterEvaluate {
                 from(components["release"])
