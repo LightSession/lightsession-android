@@ -1074,7 +1074,17 @@ publishing {
             // that was resized is walked again.
             //
             // Patch: no API, and a leak closed in the same masking the last releases worked on.
-            version = "0.38.2"
+            //
+            // 0.38.3 takes a surface capture asked for off the main thread. 0.38.1 made it wait for
+            // the next frame through the `Choreographer`, which exists only on a looper thread, and
+            // the wireframe's recolour asks from the worker that scanned the screen: it threw "the
+            // current thread must have a looper", and the wireframe was not sent. On a Flutter app,
+            // where the surface path is the only one, that was every screen described by the Dart
+            // side — the example's form never got a wireframe. The capture now moves to the main
+            // thread first.
+            //
+            // Patch: no API, and a regression of 0.38.1 undone.
+            version = "0.38.3"
 
             afterEvaluate {
                 from(components["release"])
