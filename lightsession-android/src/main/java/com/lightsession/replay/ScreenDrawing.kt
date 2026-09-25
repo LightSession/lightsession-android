@@ -482,6 +482,15 @@ internal class ScreenDrawing {
         baseWindow: android.view.Window?,
         onResult: (Bitmap?) -> Unit,
     ) {
+        // On the main thread, which is where the frame this waits for is drawn and the only thread
+        // with a `Choreographer`. Callers are on any thread: the wireframe's recolour asks from the
+        // worker that scanned it, and asking for the Choreographer there threw — "the current
+        // thread must have a looper" — so every Flutter screen's wireframe failed to send on
+        // Android. Measured with the Flutter example on an emulator.
+        if (android.os.Looper.myLooper() !== android.os.Looper.getMainLooper()) {
+            mainHandler.post { captureViaSurface(scaleFactor, baseWindow, onResult) }
+            return
+        }
         // One at a time. The wait below is for a vsync, and a screen that is off has none: without
         // this every tick while it is dark would queue another capture, and all of them would run
         // in the first frame after it lights up.
