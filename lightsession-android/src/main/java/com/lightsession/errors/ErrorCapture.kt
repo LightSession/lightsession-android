@@ -1,5 +1,6 @@
 package com.lightsession.errors
 
+import android.os.SystemClock
 import android.util.Log
 import com.lightsession.session.SessionDataManager
 import com.lightsession.mapper.ScreenMapperIntegration
@@ -55,6 +56,9 @@ internal object ErrorCapture {
     @Volatile
     private var appPackage: String = ""
 
+    /** The crash an embedder last reported, which the native crash after it is. */
+    private val reportedDeath = ReportedDeath { SystemClock.elapsedRealtime() }
+
     /**
      * Starts capturing. Idempotent; the second caller changes nothing.
      *
@@ -69,7 +73,7 @@ internal object ErrorCapture {
 
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler(
-            CrashHandler(previous, crashing) { thread, throwable ->
+            CrashHandler(previous, crashing, alreadyRecorded = reportedDeath::covers) { thread, throwable ->
                 capture(throwable, handled = false, thread = thread)
             },
         )
@@ -110,9 +114,13 @@ internal object ErrorCapture {
     /**
      * An error an embedder reports, attributed and delivered exactly as a caught one is.
      *
-     * Never fatal. The runtimes that report through here run inside a process that has not died —
-     * a Dart exception that escapes every handler leaves the app running — so there is nothing to
-     * write before the process goes, and the ordinary flush is the right one.
+     * A handled one rides the ordinary flush: the process it happened in is still running — a Dart
+     * exception that escapes every handler leaves the app up. One that is not handled is a crash,
+     * and the embedder reports it because its runtime is about to end the process: React Native
+     * throws a `JavascriptException` over a JavaScript error nothing caught, as soon as its handler
+     * returns. So it is written the way the crash handler writes one — `fatal`, to disk, before this
+     * returns — and it stands for that death: the native exception that follows is not recorded
+     * again. See [ReportedDeath].
      */
     fun captureReported(
         type: String,
@@ -134,8 +142,11 @@ internal object ErrorCapture {
             screen = screen,
             screenId = mapper.getCurrentScreenId(),
             attributes = attributes,
-            fatal = false,
+            fatal = !handled,
         )
+        // After the write, not before: a native crash racing it is then recorded rather than
+        // skipped — two records of one death is a count off by one, and none is a crash lost.
+        if (!handled) reportedDeath.record()
     }
 
 }
@@ -156,16 +167,23 @@ internal object ErrorCapture {
  *  2. [capture] runs at most once per process. A second thread crashing while the first crash
  *     is still being written — or our own capture throwing into itself — must fall straight
  *     through to [previous], not re-enter.
+ *  3. [capture] does not run for a death an embedder already recorded — [alreadyRecorded] — and
+ *     [previous] still does, exactly as in 1.
  */
 internal class CrashHandler(
     private val previous: Thread.UncaughtExceptionHandler?,
     private val once: AtomicBoolean,
+    /**
+     * Whether this death is already on the record: an embedder reported it as the crash it is,
+     * moments before its runtime ended the process the one way it can. See [ReportedDeath].
+     */
+    private val alreadyRecorded: () -> Boolean = { false },
     private val capture: (Thread, Throwable) -> Unit,
 ) : Thread.UncaughtExceptionHandler {
 
     override fun uncaughtException(thread: Thread, throwable: Throwable) {
         try {
-            if (once.compareAndSet(false, true)) {
+            if (once.compareAndSet(false, true) && !alreadyRecorded()) {
                 capture(thread, throwable)
             }
         } catch (t: Throwable) {

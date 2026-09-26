@@ -75,6 +75,27 @@ class CrashHandlerTest {
         assertEquals(2, previous.calls)
     }
 
+    /**
+     * React Native's `JavascriptException` after the JavaScript crash was reported in its own
+     * terms: the same death, so no second record — and the system still gets the crash, or the
+     * app would not die.
+     */
+    @Test
+    fun `a death already recorded is forwarded and not captured`() {
+        val previous = RecordingHandler()
+        var captures = 0
+        val crash = RuntimeException("the runtime's own way of dying")
+        val handler = CrashHandler(previous, AtomicBoolean(false), alreadyRecorded = { true }) { _, _ ->
+            captures++
+        }
+
+        handler.uncaughtException(Thread.currentThread(), crash)
+
+        assertEquals(0, captures)
+        assertEquals(1, previous.calls)
+        assertSame(crash, previous.lastThrowable)
+    }
+
     /** An app with no previous handler: nothing to chain to must not become an NPE of ours. */
     @Test
     fun `no previous handler is fine`() {

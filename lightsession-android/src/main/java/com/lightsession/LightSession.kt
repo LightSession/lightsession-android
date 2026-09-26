@@ -234,7 +234,10 @@ public class LightSession private constructor() {
      * [handled] means the app survived, which is what the dashboard shows as the difference between
      * an error and a crash. An error that escaped the app's own handlers without ending the process
      * is `handled`, and [mechanism] records what it escaped through — `manual` for one the app
-     * reported itself.
+     * reported itself. `handled = false` says the runtime is ending the process over this error,
+     * and it is written the way a crash is: to disk, before this returns. It stands for that
+     * death, too — the native exception the runtime ends the process with, a moment later, is not
+     * recorded a second time.
      *
      * A release built without names reports [frames] as addresses — see [ErrorFrame.address] —
      * and [symbols] says which build they belong to, so the server can name them.
