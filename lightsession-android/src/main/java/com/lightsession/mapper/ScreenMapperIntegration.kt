@@ -343,6 +343,23 @@ internal class ScreenMapperIntegration private constructor() {
     @Volatile
     private var lastScanCameFromDescription = false
 
+    /**
+     * The layout of the wireframe this run last sent for each capture slot, by
+     * [SkeletonFrame.layoutKey].
+     *
+     * A frame built from a description ships on being newer rather than on being bigger — see
+     * [lastScanCameFromDescription] — and "newer" used to mean any description at all. An embedder
+     * describes its screen again whenever it paints, so an unchanged screen was sent again and
+     * again: measured with the Flutter example on an emulator, 16 of 24 wireframe sends across six
+     * navigations were the same layout the slot already held. Newer now means a different layout
+     * from the one this run last sent there.
+     */
+    private val sentLayouts = ConcurrentHashMap<String, Int>()
+
+    /** Whether [frame] is a description whose layout differs from what [screenCacheKey] was sent. */
+    private fun isNewDescription(frame: SkeletonFrame, screenCacheKey: String): Boolean =
+        lastScanCameFromDescription && sentLayouts[screenCacheKey] != frame.layoutKey()
+
     private val lateContent = LateContent().also { watcher ->
         // A Flutter screen announces itself through `setScreenContent` rather than through a
         // snapshot apply, and without this the announcement reached nobody: the wireframe was taken
@@ -607,7 +624,7 @@ internal class ScreenMapperIntegration private constructor() {
                 scanWireframe(current, screenName) { frame ->
                     if (frame == null || lastScreen != screenName) return@scanWireframe
                     val bar = cacheManager.wireframeRects(screenCacheKey)
-                    if (frame.rects.size > bar || lastScanCameFromDescription) {
+                    if (frame.rects.size > bar || isNewDescription(frame, screenCacheKey)) {
                         shipRicherWireframe(
                             current, frame, bar, screenId, screenName, screenType,
                             screenWidth, screenHeight, appVersionCode, appVersionName, theme,
@@ -661,7 +678,7 @@ internal class ScreenMapperIntegration private constructor() {
         scanWireframe(activity, screenName) { frame ->
             if (frame == null || !Recording.enabled) return@scanWireframe
             val bar = cacheManager.wireframeRects(screenCacheKey)
-            if (frame.rects.size > bar || lastScanCameFromDescription) {
+            if (frame.rects.size > bar || isNewDescription(frame, screenCacheKey)) {
                 shipRicherWireframe(
                     activity, frame, bar, screenId, screenName, screenType,
                     screenWidth, screenHeight, appVersionCode, appVersionName, theme,
@@ -713,6 +730,9 @@ internal class ScreenMapperIntegration private constructor() {
                 )
                 if (result?.isSuccess == true) {
                     cacheManager.recordWireframeRects(screenCacheKey, coloured.rects.size)
+                    // The layout as scanned, not as recoloured: the colours are sampled per capture
+                    // and would make every send look new.
+                    sentLayouts[screenCacheKey] = frame.layoutKey()
                     Log.d(
                         "ScreenMapper",
                         "Wireframe upgraded for $screenName ($bar -> ${coloured.rects.size} rects)",
@@ -2244,6 +2264,7 @@ internal class ScreenMapperIntegration private constructor() {
                                     // it at zero, and the next visit resends by itself.
                                     wireframe.skeleton?.let {
                                         cacheManager.recordWireframeRects(screenCacheKey, it.rects.size)
+                                        sentLayouts[screenCacheKey] = it.layoutKey()
                                     }
                                     Log.d("ScreenMapper", "Skeleton screen sent for: $screenId (${screenWidth}x${screenHeight})")
                                 } else {
@@ -2379,6 +2400,7 @@ internal class ScreenMapperIntegration private constructor() {
                                     // See the navigation path: the ratchet's bar, on success only.
                                     wireframe.skeleton?.let {
                                         cacheManager.recordWireframeRects(screenCacheKey, it.rects.size)
+                                        sentLayouts[screenCacheKey] = it.layoutKey()
                                     }
                                     Log.d("ScreenMapper", "Initial skeleton screen sent: $screenId (${screenWidth}x${screenHeight})")
                                 } else {
