@@ -118,6 +118,24 @@ internal data class SkeletonFrame(
 }
 
 /** One widget, in screen pixels. */
+/**
+ * The layout this frame draws, as one number: two frames with the same key draw the same rectangles,
+ * of the same kinds, in the same order, whatever colours were sampled into them. What tells a
+ * description that changed from one that was merely sent again — see
+ * `ScreenMapperIntegration.sentLayouts`.
+ */
+internal fun SkeletonFrame.layoutKey(): Int {
+    var key = 31 * width + height
+    for (rect in rects) {
+        key = 31 * key + rect.left
+        key = 31 * key + rect.top
+        key = 31 * key + rect.right
+        key = 31 * key + rect.bottom
+        key = 31 * key + rect.kind.hashCode()
+    }
+    return key
+}
+
 internal data class SkeletonRect(
     val left: Int,
     val top: Int,
