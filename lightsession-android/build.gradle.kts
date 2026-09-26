@@ -1103,7 +1103,20 @@ publishing {
             // screen it is for.
             //
             // Patch: no API.
-            version = "0.39.1"
+            //
+            // 0.39.2 sends a described wireframe again only when its layout changed. An embedder
+            // describes its screen whenever it paints, so an unchanged screen went out again on
+            // every revisit and every late-content rescan: measured with the Flutter example, 16 of
+            // 24 wireframe sends across six navigations were the layout the slot already held, and
+            // 8 were sent after, with the same final wireframes. And a crash an embedder reports is
+            // counted once. React Native reports a JavaScript crash in its own terms and then ends
+            // the app with a `JavascriptException`, which arrived as a second crash, in one group
+            // shared by every JavaScript crash. The report is now written to disk before
+            // `recordError` returns and stands for the death: a native crash within ten seconds of
+            // it is not captured again.
+            //
+            // Patch: no API.
+            version = "0.39.2"
 
             afterEvaluate {
                 from(components["release"])
