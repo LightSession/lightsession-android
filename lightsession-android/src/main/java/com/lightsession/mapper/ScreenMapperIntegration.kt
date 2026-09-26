@@ -460,7 +460,11 @@ internal class ScreenMapperIntegration private constructor() {
      * same layout — should be made on the walk alone, and pay for pixels only once it has decided
      * to ship them.
      */
-    private fun scanWireframe(activity: Activity, onComplete: (SkeletonFrame?) -> Unit) {
+    private fun scanWireframe(
+        activity: Activity,
+        forScreen: String,
+        onComplete: (SkeletonFrame?) -> Unit,
+    ) {
         // A screen the embedder described is used in place of the walk, because for the apps this
         // exists for the walk has nothing to find: a surface-rendering toolkit gives it one view and
         // no children, and the wireframe comes out a single grey rectangle the size of the display.
@@ -473,9 +477,9 @@ internal class ScreenMapperIntegration private constructor() {
         // screen's, arriving in the window between a navigation and the embedder redescribing.
         // Using it files one screen's layout under another's name, and the ratchet then refuses the
         // right one for being smaller. Ignored rather than waited for: the walk's answer is poor
-        // but honest, and the embedder's next report upgrades it through [LateContent].
-        val supplied = SuppliedScreen.snapshot()
-            ?.takeIf { it.screenName == null || it.screenName == lastScreen }
+        // but honest, and the embedder's next report upgrades it through [LateContent]. Checked
+        // against [forScreen], not [lastScreen] — see [SuppliedScreen.describing].
+        val supplied = SuppliedScreen.describing(forScreen)
         if (supplied != null) {
             wireframeBuiltFromRevision = SuppliedScreen.revisionNow()
             lastScanCameFromDescription = true
@@ -497,12 +501,16 @@ internal class ScreenMapperIntegration private constructor() {
         }
     }
 
-    private fun captureWireframe(activity: Activity, onComplete: (Wireframe?) -> Unit) {
+    private fun captureWireframe(
+        activity: Activity,
+        forScreen: String,
+        onComplete: (Wireframe?) -> Unit,
+    ) {
         val overlay = modalRootView?.get()?.takeIf { it.isAttachedToWindow }
 
         when (wireframeMode) {
             LightSessionConfig.WireframeMode.RECTS -> {
-                scanWireframe(activity) { frame ->
+                scanWireframe(activity, forScreen) { frame ->
                     if (frame == null || !trueColourWireframes) {
                         onComplete(frame?.let { Wireframe(skeleton = it) })
                     } else {
@@ -596,7 +604,7 @@ internal class ScreenMapperIntegration private constructor() {
                 // The arm described one screen; an apply belonging to any other must not
                 // overwrite that screen's wireframe with a picture of this one.
                 if (lastScreen != screenName) return@post
-                scanWireframe(current) { frame ->
+                scanWireframe(current, screenName) { frame ->
                     if (frame == null || lastScreen != screenName) return@scanWireframe
                     val bar = cacheManager.wireframeRects(screenCacheKey)
                     if (frame.rects.size > bar || lastScanCameFromDescription) {
@@ -650,7 +658,7 @@ internal class ScreenMapperIntegration private constructor() {
         screenCacheKey: String,
     ) {
         if (wireframeMode != LightSessionConfig.WireframeMode.RECTS) return
-        scanWireframe(activity) { frame ->
+        scanWireframe(activity, screenName) { frame ->
             if (frame == null || !Recording.enabled) return@scanWireframe
             val bar = cacheManager.wireframeRects(screenCacheKey)
             if (frame.rects.size > bar || lastScanCameFromDescription) {
@@ -2197,7 +2205,7 @@ internal class ScreenMapperIntegration private constructor() {
 
             screenNodes[to]?.let { toNode ->
                 if (!cacheManager.isScreenSent(screenCacheKey)) {
-                    captureWireframe(activity) { wireframe ->
+                    captureWireframe(activity, to) { wireframe ->
                         // Sent even when the screenshot already landed. The two are stored in
                         // separate slots now, so a wireframe arriving second adds a layer instead
                         // of replacing the better image — which is what the dropped-wireframe
@@ -2339,7 +2347,7 @@ internal class ScreenMapperIntegration private constructor() {
                 val screenCacheKey = generateCacheKey(screenId)
 
                 if (!cacheManager.isScreenSent(screenCacheKey)) {
-                    captureWireframe(activity) { wireframe ->
+                    captureWireframe(activity, screenName) { wireframe ->
                         // See the same send on the navigation path: with a slot each, a late
                         // wireframe adds a layer rather than displacing the screenshot.
                         if (wireframe != null) {

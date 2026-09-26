@@ -184,6 +184,20 @@ public object SuppliedScreen {
     /** The standing description, or null when no embedder has spoken. */
     internal fun snapshot(): Screen? = current
 
+    /**
+     * The standing description if it describes [screen], or null.
+     *
+     * Asked of the screen a capture is *for*, not of whichever screen is current, and the
+     * difference is a navigation. The navigation code maps the flow and asks for the destination's
+     * wireframe before it moves the current screen to it — so the screen being left is still
+     * current, its description is still standing, and a check against the current screen passes
+     * it. Measured with the Flutter example on an emulator: every pop filed the page being left
+     * under the one returned to — `/form`'s 25 rectangles as the hub, `/wireframe`'s 33 as the
+     * list — before the right description replaced it. One that names no screen makes no claim.
+     */
+    internal fun describing(screen: String): Screen? =
+        current?.takeIf { it.screenName == null || it.screenName == screen }
+
     /** Which description is standing, for a caller deciding whether it has already used it. */
     internal fun revisionNow(): Long = revision
 
