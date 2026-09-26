@@ -1093,7 +1093,17 @@ publishing {
             // and screenshot land in one slot. A native app never calls it and is filed as before.
             //
             // Minor: new API, `setAppearance`, which the Flutter plugin needs.
-            version = "0.39.0"
+            //
+            // 0.39.1 draws a screen from its own description. A navigation asked for the
+            // destination's wireframe before moving the current screen to it, and the description
+            // was taken if it named the current screen — still the one being left. Measured with
+            // the Flutter example on an emulator: every pop filed the page being left under the one
+            // returned to, and every first visit went out as the page it was pushed from, before
+            // the right description replaced it. The scan now asks for the description of the
+            // screen it is for.
+            //
+            // Patch: no API.
+            version = "0.39.1"
 
             afterEvaluate {
                 from(components["release"])
